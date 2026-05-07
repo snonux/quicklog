@@ -1,83 +1,96 @@
-# Quick logger
+# Quicklog
 
-![Quicklogger](./logo-small.png)
+![Quicklog](./logo-small.png)
 
-This is a tiny GUI app written in Go using the Fyne framework to quickly log a message to a file. Read on my blog more about this: https://foo.zone/gemfeed/2024-03-03-a-fine-fyne-android-app-for-quickly-logging-ideas-programmed-in-golang.html
+Tiny GUI app to quickly jot a thought into a timestamped Markdown file.
+Originally a Go/Fyne app called *Quicklogger* — this is the Flutter rewrite,
+renamed to **Quicklog**, targeting Android (primary) and Linux desktop
+(development).
 
-The purpose of this is to have a small Android app to quickly log Ideas into a folder as plain text files.  From there, Syncthing will sync it to my computer at home. 
-
-This are screenshots of the App running on Android and Fedora Linux.
+The intent is the same as before: type a quick note on Android, hit **Log
+text**, and let Syncthing copy the resulting `ql-YYMMDD-HHMMSS.md` file to your
+home computer.
 
 ![Screenshot](./screenshot-android.png)
 ![Screenshot](./screenshot-fedora.png)
 
-## Build and Run (Mage)
+## Features
 
-This repo includes Mage tasks to build, run and cross‑compile.
+- Single-screen text editor with character counter and a one-shot warning at
+  5,000 characters.
+- Each press of **Log text** writes the current text to a new file named
+  `ql-YYMMDD-HHMMSS.md` in the configured directory.
+- **Preferences**: configurable log directory and an "Auto-log shared text"
+  toggle.
+- **Entry browser**: list of previous entries (newest first) with read-only
+  viewer and long-press to delete.
+- **Share to Quicklog** on Android: share text from any app and Quicklog
+  either prefills the editor or logs it immediately, depending on the
+  preference.
 
-Install Mage:
+## Requirements
 
-```sh
-go install github.com/magefile/mage@latest
-```
+- [Flutter](https://flutter.dev) stable channel (3.41+).
+- For Android builds: Android SDK + JDK 17 (Flutter's Gradle does not yet
+  support newer JDKs). On Fedora, GraalVM 17 works — point Flutter at it with
+  `flutter config --jdk-dir=/usr/lib/jvm/graalvm-community-openjdk-17.0.9+9.1`.
+- For Linux desktop builds: `gtk3-devel`, `mesa-demos`, `clang`, `cmake`,
+  `ninja-build`, `pkg-config`, `xz-devel`.
 
-Clone and enter the repo:
+## Build and Run
 
-```sh
-git clone https://codeberg.org/snonux/quicklogger
-cd quicklogger
-```
-
-Common tasks:
-
-```sh
-# Build desktop binary into ./bin
-mage build
-
-# Run the app (shows verbose Go build output)
-mage run
-
-# Clean build artifacts
-mage clean
-```
-
-## Android Builds
-
-Two options exist: local Fyne packaging or containerized cross‑compile.
-
-- Local packaging (requires Fyne CLI and Android NDK):
-
-  ```sh
-  # Install Fyne CLI if needed
-  go install fyne.io/fyne/v2/cmd/fyne@latest
-
-  # Ensure ANDROID_NDK_HOME points to your NDK (e.g. ~/android-ndk/android-ndk-r26b)
-  export ANDROID_NDK_HOME=~/android-ndk/android-ndk-r26b
-
-  # Build APK in the project root as quicklogger.apk
-  mage android
-  ```
-
-- Containerized cross‑compile (recommended, uses fyne-cross with Docker/Podman):
-
-  ```sh
-  # Start Podman if you prefer Podman over Docker
-  sudo systemctl start podman
-
-  # The task auto-detects a user Podman socket; otherwise it uses Docker defaults
-  mage androidcross
-  ```
-
-After cross‑compiling, the APK is located at `fyne-cross/dist/android/quicklogger.apk`.
-Copy it to your device and install it (you may need to allow installing from unknown sources):
+### Linux desktop
 
 ```sh
-adb install -r fyne-cross/dist/android/quicklogger.apk
-# or copy manually and install on device
+flutter run -d linux              # dev with hot reload
+flutter build linux --release     # release bundle: build/linux/x64/release/bundle/
 ```
 
-## Share with QuickLogger on Android
+### Android
 
-From any Android app that can share text, choose **Share** and send it to QuickLogger. The text opens in the editor so you can review it, edit it, or tap **Log text**.
+```sh
+flutter run -d <device-id>        # dev on a connected device
+flutter build apk --release       # fat APK with all ABIs
+```
 
-If you want shared text to be saved immediately, open **Preferences** and enable **Auto-log shared text**. With that on, shared text goes straight to your log directory instead of being prefilled.
+### Cross-compile from amd64 Linux to ARM Android APK
+
+Unlike the previous Fyne build, no Docker / Podman / `fyne-cross` / NDK is
+needed. Flutter's Dart AOT compiler emits ARM machine code directly from x86_64.
+
+```sh
+# Per-ABI split APKs (smaller, recommended for distribution)
+flutter build apk --release --split-per-abi
+# → build/app/outputs/flutter-apk/app-arm64-v8a-release.apk     (modern phones)
+# → build/app/outputs/flutter-apk/app-armeabi-v7a-release.apk   (older 32-bit)
+# → build/app/outputs/flutter-apk/app-x86_64-release.apk        (emulators)
+
+# ARM64 only
+flutter build apk --release --target-platform android-arm64
+```
+
+Install on the device:
+
+```sh
+adb install -r build/app/outputs/flutter-apk/app-arm64-v8a-release.apk
+```
+
+### Tests
+
+```sh
+flutter test
+flutter analyze
+```
+
+## Share with Quicklog on Android
+
+From any app that can share text, choose **Share** → **Quicklog**. With
+auto-log off (default), the text opens in the editor for review. Toggle
+"Auto-log shared text" in Preferences to have shared text written
+straight to disk.
+
+## Storage on Android
+
+Log files are written to the app-specific external directory at
+`/Android/data/org.buetow.quicklog/files/`. No storage permissions are
+required; point Syncthing at that folder to sync to your home computer.

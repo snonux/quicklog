@@ -1,3 +1,34 @@
-fyne-cross
-quicklogger
-tmp-pkg
+# Dart / Flutter
+.dart_tool/
+.flutter-plugins
+.flutter-plugins-dependencies
+.packages
+.pub-cache/
+.pub/
+build/
+.dart_tool/
+pubspec.lock.bak
+
+# IDE
+.idea/
+*.iml
+*.ipr
+*.iws
+.vscode/
+
+# Android
+android/.gradle/
+android/local.properties
+android/captures/
+android/.cxx/
+android/key.properties
+*.jks
+*.keystore
+
+# Linux
+linux/flutter/ephemeral/
+
+# Misc
+.DS_Store
+.claude/
+.serena/
