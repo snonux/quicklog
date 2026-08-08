@@ -91,6 +91,13 @@ straight to disk.
 
 ## Storage on Android
 
-Log files are written to the app-specific external directory at
+By default, log files are written to the app-specific external directory at
 `/Android/data/org.buetow.quicklog/files/`. No storage permissions are
 required; point Syncthing at that folder to sync to your home computer.
+
+You can instead point **Preferences → Directory** at any other folder (e.g.
+an existing notes vault) — doing so needs "All files access" or, on
+GrapheneOS, Storage Scopes. See
+[docs/installation.md](./docs/installation.md) for how to install the APK
+and set that up, including a GrapheneOS Storage Scopes trick that avoids
+granting broad filesystem access.

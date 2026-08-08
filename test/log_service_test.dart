@@ -34,9 +34,10 @@ void main() {
       expect(p.basename(f.path), 'ql-260507-143045.md');
     });
 
-    test('throws on a non-existent directory', () async {
-      final bad = p.join(tmp.path, 'does', 'not', 'exist');
-      expect(() => logEntry(bad, 'x'), throwsA(isA<FileSystemException>()));
+    test('creates missing intermediate directories', () async {
+      final fresh = p.join(tmp.path, 'does', 'not', 'exist');
+      final f = await logEntry(fresh, 'x');
+      expect(await f.readAsString(), 'x');
     });
   });
 

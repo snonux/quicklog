@@ -13,6 +13,10 @@ final _filenameRegex = RegExp(r'^ql-(\d{6})-(\d{6})\.md$');
 final _timestampFormat = DateFormat('yyMMdd-HHmmss');
 
 Future<File> logEntry(String dir, String text, {DateTime? now}) async {
+  // Create the target directory if missing so a fresh, app-owned folder
+  // (e.g. a Storage Scopes destination the app hasn't been granted access
+  // to yet) still works: apps can freely write files/folders they created.
+  await Directory(dir).create(recursive: true);
   final stamp = _timestampFormat.format(now ?? DateTime.now());
   final file = File(p.join(dir, 'ql-$stamp.md'));
   await file.writeAsString(text);
@@ -21,13 +25,19 @@ Future<File> logEntry(String dir, String text, {DateTime? now}) async {
 
 Future<List<LogEntry>> listEntries(String dir) async {
   final directory = Directory(dir);
-  if (!await directory.exists()) return const [];
   final entries = <LogEntry>[];
-  await for (final entity in directory.list(followLinks: false)) {
-    if (entity is! File) continue;
-    final ts = _parseFilename(p.basename(entity.path));
-    if (ts == null) continue;
-    entries.add(LogEntry(file: entity, timestamp: ts));
+  try {
+    // GrapheneOS Storage Scopes can report a directory as existing while
+    // still denying the actual listing, so treat that as "no entries yet"
+    // rather than surfacing an error for a folder the user hasn't scoped.
+    await for (final entity in directory.list(followLinks: false)) {
+      if (entity is! File) continue;
+      final ts = _parseFilename(p.basename(entity.path));
+      if (ts == null) continue;
+      entries.add(LogEntry(file: entity, timestamp: ts));
+    }
+  } on FileSystemException {
+    return const [];
   }
   entries.sort((a, b) => b.timestamp.compareTo(a.timestamp));
   return entries;

@@ -1,4 +1,7 @@
 <manifest xmlns:android="http://schemas.android.com/apk/res/android">
+    <!-- Needed to read/write user-chosen directories outside the app sandbox
+         (e.g. a synced notes vault), since Quicklog lets the user type any path. -->
+    <uses-permission android:name="android.permission.MANAGE_EXTERNAL_STORAGE"/>
     <application
         android:label="Quicklog"
         android:name="${applicationName}"

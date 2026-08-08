@@ -2,7 +2,7 @@ name: quicklog
 description: "Quicklog - jot timestamped markdown notes."
 publish_to: 'none'
 
-version: 0.1.2+65
+version: 0.1.0+1
 
 environment:
   sdk: ^3.11.5
