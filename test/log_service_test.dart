@@ -126,4 +126,31 @@ void main() {
       expect(await entryPreview(f, maxChars: 10), 'short');
     });
   });
+
+  group('editing entries', () {
+    late Directory tmp;
+    setUp(() async => tmp = await Directory.systemTemp.createTemp('ql-edit-'));
+    tearDown(() async {
+      if (await tmp.exists()) await tmp.delete(recursive: true);
+    });
+
+    test('entryContent returns the full text', () async {
+      final f = await logEntry(tmp.path, 'head\ntail');
+      expect(await entryContent(f), 'head\ntail');
+    });
+
+    test('entryContent throws for unreadable files', () async {
+      final missing = File(p.join(tmp.path, 'gone.md'));
+      expect(entryContent(missing), throwsA(isA<FileSystemException>()));
+    });
+
+    test('updateEntry rewrites the same file', () async {
+      final f = await logEntry(tmp.path, 'before');
+      await updateEntry(f, 'after');
+      expect(await f.readAsString(), 'after');
+      // The filename carries the creation time, so editing must not add a
+      // second file for the same note.
+      expect((await listEntries(tmp.path)).length, 1);
+    });
+  });
 }

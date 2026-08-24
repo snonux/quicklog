@@ -22,8 +22,11 @@ home computer.
   `ql-YYMMDD-HHMMSS.md` in the configured directory.
 - **Preferences**: configurable log directory and an "Auto-log shared text"
   toggle.
-- **Entry browser**: list of previous entries (newest first) with a read-only
-  viewer.
+- **Entry browser**: list of previous entries (newest first) with a viewer.
+- **Edit entries**: from the list (pencil icon) or from the entry viewer. The
+  editor writes back to the same file, so the note keeps its creation
+  timestamp and its place in the list. Save and Revert stay disabled until
+  something changes, and leaving with unsaved changes asks first.
 - **Delete entries**: from the list (trash icon or long-press) or from the
   entry viewer. Deletion always goes through a full-screen confirmation that
   shows the filename, timestamp and a preview of the note — the file is

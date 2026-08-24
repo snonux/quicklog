@@ -72,6 +72,24 @@ Future<String> entryPreview(File f, {int maxChars = 200}) async {
   return '${content.substring(0, maxChars)}\u2026';
 }
 
+/// Full text of an entry, for the editor.
+///
+/// Unlike [entryFirstLine] this lets read errors propagate: the editor must
+/// not silently start from an empty buffer, because saving that would wipe a
+/// note that is present but momentarily unreadable.
+Future<String> entryContent(File f) => f.readAsString();
+
+/// Overwrites an existing entry with edited [text].
+///
+/// The filename encodes when the note was *created*, so an edit reuses the
+/// same file instead of writing a new one: the entry keeps its place in the
+/// list and sync peers see an update rather than a duplicate. Writes can fail
+/// for files the app did not create (Storage Scopes / scoped storage), so the
+/// error is left to the caller to report to the user.
+Future<void> updateEntry(File f, String text) async {
+  await f.writeAsString(text);
+}
+
 DateTime? _parseFilename(String name) {
   final m = _filenameRegex.firstMatch(name);
   if (m == null) return null;

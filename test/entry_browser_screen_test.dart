@@ -76,6 +76,49 @@ void main() {
     expect(find.text('Delete entry?'), findsOneWidget);
   });
 
+  testWidgets('the row edit icon opens the editor and saving updates the list',
+      (tester) async {
+    await pumpBrowser(tester);
+
+    await tester.tap(find.byIcon(Icons.edit_outlined));
+    await pumpWithIo(tester);
+    expect(find.text('note body'), findsOneWidget);
+
+    await tester.enterText(find.byType(TextField), 'edited body');
+    await pumpWithIo(tester);
+    await tester.tap(find.widgetWithText(FilledButton, 'Save'));
+    await pumpWithIo(tester);
+    await tester.pump(const Duration(seconds: 1));
+
+    final content = await tester.runAsync(() => entryFile.readAsString());
+    expect(content, 'edited body');
+    // Back on the list, whose subtitle is re-read from the changed file.
+    expect(find.text('Entries'), findsOneWidget);
+    expect(find.text('edited body'), findsOneWidget);
+  });
+
+  testWidgets('editing from the detail view shows the new text',
+      (tester) async {
+    await pumpBrowser(tester);
+
+    await tester.tap(find.text('2026-05-07 14:30:45'));
+    await pumpWithIo(tester);
+    await tester.tap(find.byIcon(Icons.edit_outlined));
+    await pumpWithIo(tester);
+
+    await tester.enterText(find.byType(TextField), 'detail edit');
+    await pumpWithIo(tester);
+    await tester.tap(find.widgetWithText(FilledButton, 'Save'));
+    await pumpWithIo(tester);
+    await tester.pump(const Duration(seconds: 1));
+
+    // Still on the detail screen (its app bar shows the filename), with the
+    // re-read content.
+    expect(find.text('ql-260507-143045.md'), findsOneWidget);
+    expect(find.text('detail edit'), findsOneWidget);
+    expect(find.byType(TextField), findsNothing);
+  });
+
   testWidgets('deleting from the detail view returns to the list',
       (tester) async {
     await pumpBrowser(tester);
