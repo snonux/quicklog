@@ -22,8 +22,12 @@ home computer.
   `ql-YYMMDD-HHMMSS.md` in the configured directory.
 - **Preferences**: configurable log directory and an "Auto-log shared text"
   toggle.
-- **Entry browser**: list of previous entries (newest first) with read-only
-  viewer and long-press to delete.
+- **Entry browser**: list of previous entries (newest first) with a read-only
+  viewer.
+- **Delete entries**: from the list (trash icon or long-press) or from the
+  entry viewer. Deletion always goes through a full-screen confirmation that
+  shows the filename, timestamp and a preview of the note — the file is
+  removed for good, there is no trash folder.
 - **Share to Quicklog** on Android: share text from any app and Quicklog
   either prefills the editor or logs it immediately, depending on the
   preference.

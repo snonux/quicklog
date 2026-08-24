@@ -43,8 +43,33 @@ Future<List<LogEntry>> listEntries(String dir) async {
   return entries;
 }
 
+/// Permanently removes an entry file. There is no trash folder, so callers
+/// must confirm with the user first (see confirmEntryDeletion). Missing files
+/// are treated as already deleted rather than as an error, which keeps a
+/// stale list (e.g. after a Syncthing sync) from throwing.
 Future<void> deleteEntry(File f) async {
   if (await f.exists()) await f.delete();
+}
+
+/// First line of an entry, used as the list subtitle. Unreadable files yield
+/// an empty string so one bad file cannot break the whole listing.
+Future<String> entryFirstLine(File f) async {
+  try {
+    final content = await f.readAsString();
+    final i = content.indexOf('\n');
+    return i < 0 ? content : content.substring(0, i);
+  } catch (_) {
+    return '';
+  }
+}
+
+/// Leading [maxChars] characters of an entry, ellipsised when truncated.
+/// Used by the delete confirmation screen to show what is about to be lost
+/// without loading a huge note into a widget tree.
+Future<String> entryPreview(File f, {int maxChars = 200}) async {
+  final content = await f.readAsString();
+  if (content.length <= maxChars) return content;
+  return '${content.substring(0, maxChars)}\u2026';
 }
 
 DateTime? _parseFilename(String name) {
