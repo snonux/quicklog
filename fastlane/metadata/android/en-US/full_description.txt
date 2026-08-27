@@ -1,0 +1,39 @@
+Quicklog is a deliberately tiny note taker. You open it, you type, you press
+"Log text", and the note lands on disk as a plain Markdown file named
+ql-YYMMDD-HHMMSS.md. There is no account, no cloud, no database and no network
+access at all -- the files are yours, and any file syncer you already run
+(Syncthing, for example) can pick them up and carry them to your computer.
+
+Features:
+
+* Single-screen editor with a character counter.
+* Every press of "Log text" writes a new timestamped Markdown file.
+* Entry browser listing previous notes, newest first, with a reader view.
+* Edit a past entry in place: the note keeps its original filename, timestamp
+  and position in the list. Save and Revert stay disabled until something
+  actually changes, and leaving with unsaved changes asks first.
+* Delete an entry from the list or from the reader, always behind a
+  full-screen confirmation showing the filename, timestamp and a preview.
+  Deletion is permanent -- there is no trash folder.
+* "Share to Quicklog" from any app that can share text. Depending on your
+  preference the text is either prefilled in the editor or logged straight
+  away.
+* Configurable log directory.
+
+Storage and permissions:
+
+By default Quicklog writes to its own app-specific external directory,
+/storage/emulated/0/Android/data/org.buetow.quicklog/files/, which needs no
+storage permission at all. Point your file syncer at that folder and you are
+done.
+
+If instead you want Quicklog to write into a folder it does not own -- an
+existing notes vault, say -- it asks for "All files access"
+(MANAGE_EXTERNAL_STORAGE), because the directory is one you type in rather
+than one picked through the system file picker. That permission is entirely
+optional: decline it and the default directory keeps working. On GrapheneOS
+you can use Storage Scopes instead of granting broad access; the project
+documentation explains how.
+
+Quicklog is free software under the MIT licence, and it requests no network
+permission whatsoever.

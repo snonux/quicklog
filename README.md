@@ -35,6 +35,37 @@ home computer.
   either prefills the editor or logs it immediately, depending on the
   preference.
 
+## Releases
+
+Versions live in a single place: the `version:` line of `pubspec.yaml`, written
+as `<semver>+<buildNumber>`. The build number is a plain counter — bump it by
+one per release — and it has to stay below 1000 (see below). Android's
+`versionName` and `versionCode` are derived from it, and every release commit
+gets a matching `vX.Y.Z` git tag.
+
+`.flutter-version` pins the Flutter SDK a release was built with; the F-Droid
+build recipe reads it, so bump it whenever the toolchain moves.
+
+Note that split APKs do not carry that number verbatim: Flutter's Gradle plugin
+offsets it per ABI (`+1000` armeabi-v7a, `+2000` arm64-v8a, `+4000` x86_64), so
+`0.1.3+8` ships as 1008 / 2008 / 4008. That offset is also why the counter must
+stay below 1000 — otherwise two releases could land on the same APK version
+code.
+
+Quicklog is packaged for F-Droid, which builds it from source and signs it with
+its own key. Store text, icon and screenshots come from
+`fastlane/metadata/android/en-US/`, the build recipe to submit to `fdroiddata`
+is [docs/fdroid/org.buetow.quicklog.yml](./docs/fdroid/org.buetow.quicklog.yml),
+and the submission runbook is
+[docs/fdroid-submission.md](./docs/fdroid-submission.md).
+
+Release APKs built locally are signed with your own keystore if
+`android/key.properties` exists (git-ignored; all four of `storeFile`,
+`storePassword`, `keyAlias`, `keyPassword` are required, and the build fails
+loudly if any are missing), and with the debug keys otherwise. A relative
+`storeFile` is resolved against `android/app/`, not against the directory
+`key.properties` itself lives in.
+
 ## Requirements
 
 - [Flutter](https://flutter.dev) stable channel (3.41+).
