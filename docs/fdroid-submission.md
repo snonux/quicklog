@@ -202,28 +202,21 @@ first automatic update after submission. Pin the toolchain from inside the
 repository instead (a Gradle Java toolchain or `org.gradle.java.home`), where
 auto-update cannot undo it.
 
-## Known rough edges
-
-**Preferences always warns about storage.** `preferences_screen.dart` renders
-the red "No storage access" card whenever `_hasAllFilesAccess` is false, without
-checking whether the *configured* directory actually needs the permission. On a
-default install the directory is Quicklog's own app-specific folder, which never
-needs it — so a first run shows an error card while everything works fine. It is
-the first thing anyone sees in Preferences, and it contradicts what the F-Droid
-description says about the default directory. Worth fixing before the app page
-is public; it is also why Preferences is not one of the screenshots.
-
 ## Screenshots
 
-`fastlane/metadata/android/en-US/images/phoneScreenshots/` holds three: the
+`fastlane/metadata/android/en-US/images/phoneScreenshots/` holds four: the
 editor (`1.png`, from a real phone at 1080x2340), the Entries browser
-(`2.png`) and the full-screen delete confirmation (`3.png`), the latter two
-captured at 1080x2220 on a Pixel 3a API 34 emulator running the x86_64 release
-APK. Mixed sizes are fine — F-Droid scales them.
+(`2.png`), the full-screen delete confirmation (`3.png`) and Preferences
+(`4.png`) — the last three captured at 1080x2220 on a Pixel 3a API 34 emulator
+running the x86_64 release APK. Mixed sizes are fine — F-Droid scales them.
 
 To recapture, boot the AVD, `adb install -r` the x86_64 release APK, and drive
 it with `adb shell input tap`. Flutter exposes its semantics tree to
-`uiautomator dump`, so element bounds can be read out rather than guessed:
+`uiautomator dump`, so element bounds can be read out rather than guessed —
+but note the dump is not a substitute for looking: a `Card`'s text does not
+show up in it, so check state on the screenshot, not the dump. Bounds also
+shift when the soft keyboard opens; dismiss it before tapping a button near
+the bottom.
 
 ```sh
 adb shell uiautomator dump /sdcard/ui.xml

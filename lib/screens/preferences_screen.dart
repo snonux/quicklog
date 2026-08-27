@@ -16,7 +16,9 @@ class _PreferencesScreenState extends State<PreferencesScreen> with WidgetsBindi
   final TextEditingController _dirController = TextEditingController();
   bool _autoLog = false;
   bool _loaded = false;
-  bool _hasAllFilesAccess = true;
+  // Whether the configured directory is actually writable -- not whether the
+  // All files access permission is held. See canWriteToDirectory().
+  bool _directoryWritable = true;
 
   @override
   void initState() {
@@ -28,8 +30,10 @@ class _PreferencesScreenState extends State<PreferencesScreen> with WidgetsBindi
   @override
   void didChangeAppLifecycleState(AppLifecycleState state) {
     if (state == AppLifecycleState.resumed) {
-      StorageAccessService.hasAllFilesAccess().then((granted) {
-        if (mounted) setState(() => _hasAllFilesAccess = granted);
+      // The user may have just granted access in Settings, so re-probe rather
+      // than trust what we found when the screen opened.
+      canWriteToDirectory(_dirController.text).then((writable) {
+        if (mounted) setState(() => _directoryWritable = writable);
       });
     }
   }
@@ -37,7 +41,7 @@ class _PreferencesScreenState extends State<PreferencesScreen> with WidgetsBindi
   Future<void> _load() async {
     _dirController.text = await _prefs.directory();
     _autoLog = await _prefs.autoLogSharedText();
-    _hasAllFilesAccess = await StorageAccessService.hasAllFilesAccess();
+    _directoryWritable = await canWriteToDirectory(_dirController.text);
     if (!mounted) return;
     setState(() => _loaded = true);
   }
@@ -89,12 +93,12 @@ class _PreferencesScreenState extends State<PreferencesScreen> with WidgetsBindi
       body: ListView(
         padding: const EdgeInsets.all(12),
         children: [
-          if (!_hasAllFilesAccess) ...[
+          if (!_directoryWritable) ...[
             Card(
               color: Theme.of(context).colorScheme.errorContainer,
               child: ListTile(
                 leading: const Icon(Icons.folder_off),
-                title: const Text('No storage access'),
+                title: const Text('Cannot write to this folder'),
                 subtitle: const Text(
                   'Quicklog needs "All files access" to write outside its own app '
                   'folder (e.g. a synced notes vault). Tap to grant it in Settings.',
