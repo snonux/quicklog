@@ -188,18 +188,19 @@ message that points at the wrong thing. If that happens, drop the
 give you 17: `provision-apt-get-install` installs `default-jdk-headless` on a
 Debian trixie base and then runs `update-java-alternatives --set` on the
 *highest* JDK present, which today means JDK 21. Local release builds here use
-JDK 17 (the README's toolchain note), so the two differ. Gradle 8.14 with AGP
-8.11.1 and `sourceCompatibility 17` is expected to build fine under 21, but
-that combination has not been exercised on this machine — no JDK 21 installed —
-so treat it as the most likely first-build surprise.
+JDK 17, so the two differ — and that is fine. `flutter build apk --release
+--split-per-abi` was run against Temurin 21.0.12.1 on this project: all three
+APKs build and stamp the same 1008 / 2008 / 4008 as the JDK 17 build. No `sudo:`
+step is needed.
 
-If it does fail, do **not** reach for a `sudo:` step: `checkupdates.py` carries
-a `trixie_blocklist` containing `apt-get install -y openjdk-17-jdk-headless`
-and `update-alternatives --auto java` verbatim, and strips those lines out of
-every auto-generated build block — so with `AutoUpdateMode: Version` the
-workaround would quietly disappear on the first automatic update after
-submission. Pin the toolchain from inside the repository instead (a Gradle
-Java toolchain or `org.gradle.java.home`), where auto-update cannot undo it.
+Should a future toolchain bump break that, do **not** reach for one anyway:
+`checkupdates.py` carries a `trixie_blocklist` containing
+`apt-get install -y openjdk-17-jdk-headless` and `update-alternatives --auto
+java` verbatim, and strips those lines out of every auto-generated build block —
+so with `AutoUpdateMode: Version` the workaround would quietly disappear on the
+first automatic update after submission. Pin the toolchain from inside the
+repository instead (a Gradle Java toolchain or `org.gradle.java.home`), where
+auto-update cannot undo it.
 
 ## Known rough edges
 

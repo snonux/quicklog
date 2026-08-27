@@ -69,9 +69,12 @@ loudly if any are missing), and with the debug keys otherwise. A relative
 ## Requirements
 
 - [Flutter](https://flutter.dev) stable channel (3.41+).
-- For Android builds: Android SDK + JDK 17 (Flutter's Gradle does not yet
-  support newer JDKs). On Fedora, GraalVM 17 works — point Flutter at it with
-  `flutter config --jdk-dir=/usr/lib/jvm/graalvm-community-openjdk-17.0.9+9.1`.
+- For Android builds: Android SDK + JDK 17 or 21. Fedora only packages 25 and
+  26, which Gradle 8.14 refuses ("What went wrong: 25.0.4"), so install a
+  Temurin build and point Flutter at it:
+  `flutter config --jdk-dir=$HOME/jdk21`. GraalVM 17 from Fedora's repos works
+  too. F-Droid's build server runs JDK 21; both 17 and 21 have been used to
+  build the release APKs for this project.
 - For Linux desktop builds: `gtk3-devel`, `mesa-demos`, `clang`, `cmake`,
   `ninja-build`, `pkg-config`, `xz-devel`.
 
