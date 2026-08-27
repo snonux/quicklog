@@ -4,4 +4,3 @@ First F-Droid release.
 * Deleting an entry now goes through a full-screen confirmation showing the
   filename, timestamp and a preview of the note.
 * Custom log directories, with All Files Access or GrapheneOS Storage Scopes.
-* Release builds no longer depend on a keystore being present.
