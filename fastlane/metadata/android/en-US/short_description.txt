@@ -1,1 +1,1 @@
-Jot a thought into a timestamped Markdown file and sync it wherever you like
+Timestamped Markdown notes in a plain folder, ready for your own sync app

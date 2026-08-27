@@ -1,8 +1,15 @@
 Quicklog is a deliberately tiny note taker. You open it, you type, you press
 "Log text", and the note lands on disk as a plain Markdown file named
-ql-YYMMDD-HHMMSS.md. There is no account, no cloud, no database and no network
-access at all -- the files are yours, and any file syncer you already run
-(Syncthing, for example) can pick them up and carry them to your computer.
+ql-YYMMDD-HHMMSS.md. There is no account, no cloud and no database -- the
+files are yours, sitting in a folder you choose.
+
+Quicklog does not synchronise anything itself. It has no network access at
+all, so nothing ever leaves your device on its own. If you want your notes on
+your computer or another phone, run a separate sync app -- Syncthing is the
+one this was written for -- and point it at the folder Quicklog writes to.
+Because the notes are ordinary Markdown files in an ordinary directory, any
+sync, backup or file manager app works; there is nothing Quicklog-specific
+about them.
 
 Features:
 
@@ -24,7 +31,7 @@ Storage and permissions:
 
 By default Quicklog writes to its own app-specific external directory,
 /storage/emulated/0/Android/data/org.buetow.quicklog/files/, which needs no
-storage permission at all. Point your file syncer at that folder and you are
+storage permission at all. Point your sync app at that folder and you are
 done.
 
 If instead you want Quicklog to write into a folder it does not own -- an
