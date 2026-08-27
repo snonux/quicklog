@@ -35,7 +35,9 @@ flutter:
 flutter_launcher_icons:
   android: true
   ios: false
-  image_path: "icon.png"
+  # Generated from the 600x600 logo, not the 64x64 icon.png: the xxxhdpi
+  # foreground is 432x432, so a 64px source was upscaled ~7x and looked soft.
+  image_path: "logo.png"
   min_sdk_android: 21
   adaptive_icon_background: "#FFFFFF"
-  adaptive_icon_foreground: "icon.png"
+  adaptive_icon_foreground: "logo.png"

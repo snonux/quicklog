@@ -204,23 +204,31 @@ auto-update cannot undo it.
 
 ## Known rough edges
 
-**Launcher icon source.** `icon.png` at the repo root — the source
-`flutter_launcher_icons` generates the Android mipmaps from — is only 64x64, so
-the in-APK launcher icon is upscaled and soft. The F-Droid website uses
-`fastlane/.../images/icon.png` (512x512, generated from `logo.png`), so the app
-page looks right, but regenerating the launcher icons from the 600x600
-`logo.png` would fix the icon on the device itself.
-
-**Stray file in the tagged tree.** `ql-250516-000347.md` in the repository root
-is a Quicklog log entry ("7 share:ma Reading Articles") that was committed by
-accident. It ships inside every source tarball F-Droid builds and archives.
-Harmless, but worth deleting before submission so a reviewer does not have to
-ask what it is.
+**Preferences always warns about storage.** `preferences_screen.dart` renders
+the red "No storage access" card whenever `_hasAllFilesAccess` is false, without
+checking whether the *configured* directory actually needs the permission. On a
+default install the directory is Quicklog's own app-specific folder, which never
+needs it — so a first run shows an error card while everything works fine. It is
+the first thing anyone sees in Preferences, and it contradicts what the F-Droid
+description says about the default directory. Worth fixing before the app page
+is public; it is also why Preferences is not one of the screenshots.
 
 ## Screenshots
 
-`fastlane/metadata/android/en-US/images/phoneScreenshots/` currently holds one
-screenshot (the editor). F-Droid renders however many are there, but two or
-three read much better on the app page — the Entries browser and Preferences
-are the obvious additions. Capture them at the device's native resolution and
-drop them in as `2.png`, `3.png`.
+`fastlane/metadata/android/en-US/images/phoneScreenshots/` holds three: the
+editor (`1.png`, from a real phone at 1080x2340), the Entries browser
+(`2.png`) and the full-screen delete confirmation (`3.png`), the latter two
+captured at 1080x2220 on a Pixel 3a API 34 emulator running the x86_64 release
+APK. Mixed sizes are fine — F-Droid scales them.
+
+To recapture, boot the AVD, `adb install -r` the x86_64 release APK, and drive
+it with `adb shell input tap`. Flutter exposes its semantics tree to
+`uiautomator dump`, so element bounds can be read out rather than guessed:
+
+```sh
+adb shell uiautomator dump /sdcard/ui.xml
+adb shell cat /sdcard/ui.xml | tr '<' '\n<' \
+  | grep -E 'content-desc="[^"]+"' \
+  | sed -E 's/.*content-desc="([^"]*)".*bounds="([^"]*)".*/\1  @ \2/'
+adb exec-out screencap -p > shot.png
+```
