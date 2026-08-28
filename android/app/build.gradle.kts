@@ -63,6 +63,14 @@ android {
         versionName = flutter.versionName
     }
 
+    // AGP otherwise embeds a Google Play dependency-metadata blob in the APK
+    // signing block. F-Droid's scanner rejects the APK over it ("Found extra
+    // signing block 'Dependency metadata'"), and it serves nothing outside Play.
+    dependenciesInfo {
+        includeInApk = false
+        includeInBundle = false
+    }
+
     signingConfigs {
         if (hasReleaseKeystore) {
             create("release") {

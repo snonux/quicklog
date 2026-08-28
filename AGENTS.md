@@ -34,6 +34,13 @@ code, and split builds have three. For counter `n` they are named
 `fastlane/metadata/android/en-US/changelogs/` -- see the copy loop in the
 runbook. A changelog named after the pubspec counter alone is never read.
 
+**Never remove the `dependenciesInfo` block from `android/app/build.gradle.kts`.**
+Without it AGP embeds a Google Play dependency-metadata blob in the APK signing
+block, and F-Droid's scanner fails the build with "Found extra signing block
+'Dependency metadata'". Note that `fdroid scanner` 2.4.5 does *not* catch this
+-- their CI runs a newer version, so a local pass is not proof. Check directly
+if in doubt: the block id to look for in the APK signing block is `0x504b4453`.
+
 **Keep `.flutter-version` current.** The F-Droid recipe checks that file out in
 the Flutter srclib, so a stale value means F-Droid builds with the wrong SDK.
 

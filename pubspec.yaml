@@ -7,8 +7,8 @@ publish_to: 'none'
 # the semver: `--split-per-abi` makes Flutter stamp buildNumber + 1000/2000/4000
 # into the per-ABI APKs, so any scheme that lets the counter reach 1000 would
 # eventually collide two different releases on the same APK versionCode, which
-# F-Droid rejects and Android treats as the same build. v0.1.3 is release 8.
-version: 0.1.3+8
+# F-Droid rejects and Android treats as the same build. v0.1.4 is release 9.
+version: 0.1.4+9
 
 environment:
   sdk: ^3.11.5
