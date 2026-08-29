@@ -18,7 +18,7 @@ F-Droid (done, see below), and opening a merge request against F-Droid's
 | FOSS licence | [`LICENSE`](../LICENSE) — MIT |
 | No proprietary dependencies | `pubspec.yaml` — Flutter, `shared_preferences`, `path_provider`, `path`, `intl`. No Firebase, no Google Mobile Services, no analytics, no network permission. |
 | Release tag matching `versionName` | tag `vX.Y.Z` ↔ `version: X.Y.Z+<code>` in `pubspec.yaml` |
-| Monotonic `versionCode` | plain counter in `pubspec.yaml`; `0.1.3` is release `8` |
+| Monotonic `versionCode` | plain counter in `pubspec.yaml`; `0.1.5` is release `10` |
 | Release build works without a keystore | `android/app/build.gradle.kts` — falls back to the debug keys, and F-Droid re-signs anyway |
 | Pinned Flutter SDK | [`.flutter-version`](../.flutter-version), read by the F-Droid build recipe |
 | Store description, icon, screenshots | `fastlane/metadata/android/en-US/` |
@@ -30,18 +30,16 @@ F-Droid (done, see below), and opening a merge request against F-Droid's
 Do this before every submission, and before every update afterwards.
 
 1. Bump `version:` in `pubspec.yaml` — both halves. The build number is a plain
-   counter: `0.1.3+8` becomes `0.2.0+9`. Do not switch it to something derived
-   from the semver; see the version-code table below for why it has to stay
-   below 1000.
+   counter: `0.1.5+10` becomes `0.2.0+11`.
 2. Write the changelog (max 500 characters). F-Droid looks it up by the
    version code *of the published APK*, and with per-ABI splits there are three
    of those — so the same text has to exist under all three names:
 
    ```sh
-   n=9                                    # the new pubspec build number
+   n=11                                   # the new pubspec build number
    cd fastlane/metadata/android/en-US/changelogs
-   $EDITOR "$((2000 + n)).txt"            # write it once
-   for off in 1000 4000; do cp "$((2000 + n)).txt" "$((off + n)).txt"; done
+   $EDITOR "$((n * 10 + 2)).txt"          # write it once (arm64)
+   for abi in 1 3; do cp "$((n * 10 + 2)).txt" "$((n * 10 + abi)).txt"; done
    ```
 3. If the release was built with a different Flutter SDK, update
    `.flutter-version`. The F-Droid recipe checks that file out in the Flutter
@@ -125,42 +123,39 @@ rather than a single universal one, which takes the download from 50.5 MB to
 15.5-19.5 MB. That means three build blocks, and three version codes derived from
 the build number in `pubspec.yaml` by `VercodeOperation`:
 
-| ABI | `VercodeOperation` | versionCode at `0.1.3+8` |
+| ABI | `VercodeOperation` | versionCode at `0.1.5+10` |
 | --- | --- | --- |
-| `armeabi-v7a` | `%c + 1000` | 1008 |
-| `arm64-v8a` | `%c + 2000` | 2008 |
-| `x86_64` | `%c + 4000` | 4008 |
+| `armeabi-v7a` | `%c * 10 + 1` | 101 |
+| `arm64-v8a` | `%c * 10 + 2` | 102 |
+| `x86_64` | `%c * 10 + 3` | 103 |
 
-Those offsets are not a choice. Flutter's Gradle plugin computes
-`abiVersionCode * 1000 + versionCode`, with the ABI codes fixed at 1
-(armeabi-v7a), 2 (arm64-v8a) and 4 (x86_64) — `ABI_VERSION` in
-`FlutterPluginConstants.kt`, where 3 is reserved for the since-removed 32-bit
-x86, and the arithmetic in `FlutterPlugin.kt`. Both those sources and
-`aapt2 dump badging` on the real build output agree. F-Droid
-rejects a build whose APK version code differs from the recipe, so if a future
-Flutter release changes the scheme, rebuild locally and re-read the codes
-before touching these numbers.
+These are not Flutter's own numbers. Flutter's Gradle plugin would stamp
+`abiVersionCode * 1000 + versionCode`, which collides two releases as soon as
+the build number reaches 1000. The `applicationVariants` block at the bottom of
+`android/app/build.gradle.kts` overrides that with F-Droid's convention, moving
+the ABI digit to the end so the counter has no ceiling. F-Droid asked for this
+in [!47118](https://gitlab.com/fdroid/fdroiddata/-/merge_requests/47118); the
+snippet comes from the
+[Quick Start Guide](https://f-droid.org/en/docs/Submitting_to_F-Droid_Quick_Start_Guide/#setup-abi-split).
 
-Two consequences worth spelling out:
+F-Droid rejects a build whose APK version code differs from what the recipe
+predicted, so the Gradle block and `VercodeOperation` must always agree.
+`test/version_test.dart` pins the arithmetic; `aapt2 dump badging` on a real
+build confirms it end to end.
 
-* **The pubspec build number must stay below 1000.** Two releases whose build
-  numbers differ by exactly 1000, 2000 or 3000 would produce the *same* APK
-  version code — e.g. build 8 on arm64 and build 1008 on armeabi-v7a both give
-  2008. A plain counter reaches 1000 only after a thousand releases; a scheme
-  derived from the semver reaches it almost immediately, which is why this
-  project does not use one.
-* Android installs the highest version code an APK is compatible with, and
-  Flutter's ABI codes happen to rank `armeabi-v7a < arm64-v8a < x86_64`, so a
-  64-bit phone gets the arm64 build rather than the 32-bit one. That ordering
-  comes from Flutter, not from a rule of F-Droid's.
+Two more consequences:
+
+* Android installs the highest version code a device can run, and the scheme
+  ranks `armeabi-v7a < arm64-v8a < x86_64`, so a 64-bit phone gets the arm64
+  build rather than the 32-bit one.
 * **Do not reorder the three `Builds:` blocks.** `checkupdates.py` pairs
   `builds[-3:]` *in file order* with the `VercodeOperation` results *sorted
   ascending*. Sorted by readability instead of by version code, auto-update
-  would pair the `--target-platform=android-arm` command with the `+4000` code,
-  and F-Droid would then reject the APK for not matching its declared version
-  code.
+  would pair the `--target-platform=android-arm` command with the `* 10 + 3`
+  code, and F-Droid would then reject the APK for not matching its declared
+  version code.
 
-`CurrentVersionCode` must be the *highest* of the three (4008), not the build
+`CurrentVersionCode` must be the *highest* of the three (103), not the build
 number in `pubspec.yaml`.
 
 **Where the Dart packages get fetched.** `prebuild:` sets
@@ -190,7 +185,7 @@ Debian trixie base and then runs `update-java-alternatives --set` on the
 *highest* JDK present, which today means JDK 21. Local release builds here use
 JDK 17, so the two differ — and that is fine. `flutter build apk --release
 --split-per-abi` was run against Temurin 21.0.12.1 on this project: all three
-APKs build and stamp the same 1008 / 2008 / 4008 as the JDK 17 build. No `sudo:`
+APKs build and stamp the same version codes as the JDK 17 build. No `sudo:`
 step is needed.
 
 Should a future toolchain bump break that, do **not** reach for one anyway:

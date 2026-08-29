@@ -1,3 +1,4 @@
+import com.android.build.gradle.internal.api.ApkVariantOutputImpl
 import java.util.Properties
 
 plugins {
@@ -94,4 +95,24 @@ android {
 
 flutter {
     source = "../.."
+}
+
+// Per-ABI version codes for the split APKs, in F-Droid's scheme rather than
+// Flutter's. Flutter's Gradle plugin would stamp `abi * 1000 + versionCode`,
+// which collides two releases as soon as the build number reaches 1000. Putting
+// the ABI digit last instead (`versionCode * 10 + abi`) has no such ceiling, and
+// matches the VercodeOperation in the F-Droid recipe. Ordering matters: F-Droid
+// serves the highest version code a device can install, so arm64 must outrank
+// armeabi-v7a. Requested in fdroiddata!47118.
+val abiCodes = mapOf("armeabi-v7a" to 1, "arm64-v8a" to 2, "x86_64" to 3)
+
+android.applicationVariants.configureEach {
+    val variant = this
+    variant.outputs.forEach { output ->
+        val abiVersionCode = abiCodes[output.filters.find { it.filterType == "ABI" }?.identifier]
+        if (abiVersionCode != null) {
+            (output as ApkVariantOutputImpl).versionCodeOverride =
+                variant.versionCode * 10 + abiVersionCode
+        }
+    }
 }

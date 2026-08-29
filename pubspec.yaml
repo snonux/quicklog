@@ -3,12 +3,10 @@ description: "Quicklog - jot timestamped markdown notes."
 publish_to: 'none'
 
 # <semver>+<buildNumber>. The build number is a plain counter -- bump it by one
-# for every release, never reuse or lower it. It is deliberately NOT derived from
-# the semver: `--split-per-abi` makes Flutter stamp buildNumber + 1000/2000/4000
-# into the per-ABI APKs, so any scheme that lets the counter reach 1000 would
-# eventually collide two different releases on the same APK versionCode, which
-# F-Droid rejects and Android treats as the same build. v0.1.4 is release 9.
-version: 0.1.4+9
+# for every release, never reuse or lower it. android/app/build.gradle.kts turns
+# it into a per-ABI version code of `buildNumber * 10 + abi`, so it has no upper
+# bound. v0.1.5 is release 10.
+version: 0.1.5+10
 
 environment:
   sdk: ^3.11.5

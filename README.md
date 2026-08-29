@@ -39,18 +39,17 @@ home computer.
 
 Versions live in a single place: the `version:` line of `pubspec.yaml`, written
 as `<semver>+<buildNumber>`. The build number is a plain counter — bump it by
-one per release — and it has to stay below 1000 (see below). Android's
-`versionName` and `versionCode` are derived from it, and every release commit
-gets a matching `vX.Y.Z` git tag.
+one per release. Android's `versionName` and `versionCode` are derived from it,
+and every release commit gets a matching `vX.Y.Z` git tag.
 
 `.flutter-version` pins the Flutter SDK a release was built with; the F-Droid
 build recipe reads it, so bump it whenever the toolchain moves.
 
-Note that split APKs do not carry that number verbatim: Flutter's Gradle plugin
-offsets it per ABI (`+1000` armeabi-v7a, `+2000` arm64-v8a, `+4000` x86_64), so
-`0.1.3+8` ships as 1008 / 2008 / 4008. That offset is also why the counter must
-stay below 1000 — otherwise two releases could land on the same APK version
-code.
+Note that split APKs do not carry that number verbatim. `android/app/build.gradle.kts`
+turns it into `buildNumber * 10 + abi`, with 1, 2 and 3 for armeabi-v7a, arm64-v8a
+and x86_64, so `0.1.5+10` ships as 101 / 102 / 103. This is F-Droid's convention
+and it replaces Flutter's own `abi * 1000 + buildNumber`, which would collide two
+releases once the counter reached 1000.
 
 Quicklog is packaged for F-Droid, which builds it from source and signs it with
 its own key. Store text, icon and screenshots come from

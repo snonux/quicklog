@@ -18,21 +18,23 @@ point Flutter at a Temurin build: `flutter config --jdk-dir=$HOME/jdk21`.
 The full runbook is [docs/fdroid-submission.md](./docs/fdroid-submission.md).
 The traps that are easy to step on, and cheap to avoid:
 
-**Bump the build number, and keep it under 1000.** `version:` in `pubspec.yaml`
-is `<semver>+<counter>`. The counter is a plain counter on purpose. Forgetting
-to bump it is the dangerous mistake: F-Droid's tag-based update check just
-reports "up to date" and the release silently never ships -- no error anywhere.
-`test/version_test.dart` guards the 1000 ceiling but cannot guard this.
+**Bump the build number.** `version:` in `pubspec.yaml` is `<semver>+<counter>`.
+Forgetting to bump it is the dangerous mistake: F-Droid's tag-based update check
+just reports "up to date" and the release silently never ships -- no error
+anywhere, and no test can catch it.
 
-**Do not derive the counter from the semver.** `--split-per-abi` makes Flutter
-stamp `counter + 1000/2000/4000` into the per-ABI APKs, so any scheme that lets
-the counter reach 1000 eventually collides two releases on one APK version code.
+**The per-ABI version code scheme is `counter * 10 + abi`** (1 armeabi-v7a,
+2 arm64-v8a, 3 x86_64), set by the `applicationVariants` block at the bottom of
+`android/app/build.gradle.kts` and mirrored by `VercodeOperation` in the recipe.
+The two must agree or F-Droid rejects the build. Do not drop that block: without
+it Flutter stamps `abi * 1000 + counter` instead, which collides two releases
+once the counter reaches 1000. F-Droid asked for this scheme in fdroiddata!47118.
 
 **Write the changelog three times.** F-Droid looks it up by the *APK's* version
-code, and split builds have three. For counter `n` they are named
-`1000+n`, `2000+n` and `4000+n` under
-`fastlane/metadata/android/en-US/changelogs/` -- see the copy loop in the
-runbook. A changelog named after the pubspec counter alone is never read.
+code, and split builds have three. For counter `n` they are named `n0+1`, `n0+2`
+and `n0+3` under `fastlane/metadata/android/en-US/changelogs/` -- so counter 10
+gives `101.txt`, `102.txt`, `103.txt`. A changelog named after the pubspec
+counter alone is never read.
 
 **Never remove the `dependenciesInfo` block from `android/app/build.gradle.kts`.**
 Without it AGP embeds a Google Play dependency-metadata blob in the APK signing
