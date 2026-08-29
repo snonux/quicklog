@@ -43,6 +43,18 @@ block, and F-Droid's scanner fails the build with "Found extra signing block
 -- their CI runs a newer version, so a local pass is not proof. Check directly
 if in doubt: the block id to look for in the APK signing block is `0x504b4453`.
 
+**Build releases from `/tmp/build`, never from the working copy.** The Dart AOT
+snapshot in `libapp.so` embeds absolute source paths, so building anywhere else
+produces a different binary and F-Droid's reproducible-build check fails. Clone
+the tag to `/tmp/build`, set `PUB_CACHE=/tmp/build/.pub-cache`, and build there;
+the F-Droid recipe moves its own checkout to the same path for the same reason.
+
+**Publish the signed APKs to a GitHub release named after the tag.** The recipe's
+`binary:` URLs point at them and F-Droid diffs its own build against them. A
+release with missing or stale assets fails the build, not just the check. The
+signing key is at `~/keys/quicklog-release.jks`; `AllowedAPKSigningKeys` in the
+recipe pins its SHA-256, so signing with a different key also fails.
+
 **Keep `.flutter-version` current.** The F-Droid recipe checks that file out in
 the Flutter srclib, so a stale value means F-Droid builds with the wrong SDK.
 

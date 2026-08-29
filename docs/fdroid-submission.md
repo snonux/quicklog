@@ -44,9 +44,28 @@ Do this before every submission, and before every update afterwards.
 3. If the release was built with a different Flutter SDK, update
    `.flutter-version`. The F-Droid recipe checks that file out in the Flutter
    srclib, so a stale value means F-Droid builds with the wrong SDK.
-4. `flutter analyze && flutter test && flutter build apk --release --split-per-abi`
-5. Commit, then tag with a leading `v`: `git tag -a v0.2.0 -m 'v0.2.0'`
-6. `git push && git push --tags`
+4. `flutter analyze && flutter test`
+5. Commit, then tag with a leading `v`: `git tag -a v0.2.0 -m 'v0.2.0'`, and
+   `git push && git push --tags`
+6. Build the release **from `/tmp/build`** and publish it. The path matters: the
+   Dart AOT snapshot embeds absolute source paths, so a build from anywhere else
+   will not reproduce and F-Droid will reject it.
+
+   ```sh
+   rm -rf /tmp/build
+   git clone --branch v0.2.0 --depth 1 ~/git/quicklog /tmp/build
+   cp ~/git/quicklog/android/key.properties /tmp/build/android/
+   cd /tmp/build
+   export PUB_CACHE=/tmp/build/.pub-cache
+   flutter pub get --enforce-lockfile
+   flutter build apk --release --split-per-abi
+   gh release create v0.2.0 --title v0.2.0 --notes-file - \
+       build/app/outputs/flutter-apk/app-*-release.apk
+   ```
+
+7. Bump `versionName`, the three `versionCode`s, `commit` (the **full hash**, not
+   the tag) and `CurrentVersion*` in `docs/fdroid/org.buetow.quicklog.yml`, and
+   open an fdroiddata MR — or let `AutoUpdateMode: Version` do it for you.
 
 The tagged tree must contain `.flutter-version` and `fastlane/` — the recipe
 reads the first in `prebuild:` under `bash -e` (a missing file aborts the
@@ -104,6 +123,26 @@ own and F-Droid generates the build blocks itself.
 Expect review comments about licensing, dependencies and anti-features. Once
 merged, the app appears in the repository roughly 24–48 hours later, and on
 f-droid.org a little after that.
+
+## Reproducible builds
+
+F-Droid builds from source, downloads the APK published on the GitHub release,
+and ships **your** signed APK if the two match apart from the signature. Users
+can then verify the binary against public source and move between your builds
+and F-Droid's without uninstalling.
+
+Three things make it work, and breaking any one of them fails the build:
+
+* `binary:` on each build block points at the release asset for that ABI.
+* `AllowedAPKSigningKeys` pins the SHA-256 of the release certificate
+  (`87f168a1e524cb5a218653f3630e08d064c4af7a0393b39b38ff0f1a350b74b0`).
+* Both sides build at the identical absolute path, `/tmp/build`. The recipe
+  moves its checkout there; the release procedure above clones there. Without
+  this, `libapp.so` and `libdartjni.so` differ and everything else matches --
+  that is the signature of a path mismatch, not a real difference.
+
+The signing key at `~/keys/quicklog-release.jks` is now the app's identity.
+Losing it ends the ability to update Quicklog for existing users, permanently.
 
 ## Things reviewers are likely to ask about
 
