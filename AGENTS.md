@@ -43,17 +43,62 @@ block, and F-Droid's scanner fails the build with "Found extra signing block
 -- their CI runs a newer version, so a local pass is not proof. Check directly
 if in doubt: the block id to look for in the APK signing block is `0x504b4453`.
 
-**Build releases from `/tmp/build`, never from the working copy.** The Dart AOT
-snapshot in `libapp.so` embeds absolute source paths, so building anywhere else
-produces a different binary and F-Droid's reproducible-build check fails. Clone
-the tag to `/tmp/build`, set `PUB_CACHE=/tmp/build/.pub-cache`, and build there;
-the F-Droid recipe moves its own checkout to the same path for the same reason.
+**Release builds are path-sensitive in two places.** F-Droid rebuilds the app
+from source and requires the result to match the published APK byte for byte, so
+anything that leaks a build-host path into a binary breaks the check. Two do:
+
+* `libapp.so` (the Dart AOT snapshot) embeds the **source** path -- so build from
+  `/tmp/build`, which is where the F-Droid recipe moves its own checkout.
+* `libdartjni.so` (native C from the transitive `jni` package, compiled by
+  CMake + NDK) varies with the **Android SDK** path. F-Droid's builder uses
+  `/opt/android-sdk`, so the release must be built against that path too.
+  Verified by building one commit twice changing only `sdk.dir`: the file's
+  sha256 went from `09db6068...` to `1f7a3a12...`.
+
+Setting `ANDROID_HOME` is not enough for the second one: the Flutter tool writes
+`sdk.dir` into `android/local.properties` from its own config, and that wins. Use
+`flutter config --android-sdk`, and put it back afterwards.
 
 **Publish the signed APKs to a GitHub release named after the tag.** The recipe's
 `binary:` URLs point at them and F-Droid diffs its own build against them. A
-release with missing or stale assets fails the build, not just the check. The
-signing key is at `~/keys/quicklog-release.jks`; `AllowedAPKSigningKeys` in the
-recipe pins its SHA-256, so signing with a different key also fails.
+release with missing or stale assets fails the build, not just the check.
+`AllowedAPKSigningKeys` pins the signing certificate's SHA-256, so signing with a
+different key fails too.
+
+**The signing key at `~/keys/quicklog-release.jks` is the app's identity.** Keep
+it; `android/key.properties` points at it and every release build needs it. If it
+is ever lost, existing users can never be updated again -- a new key means a new
+app. It is backed up offline; that backup is the real safety net.
+
+### The release build, start to finish
+
+```sh
+# 1. one-time on a new machine: F-Droid's builder path
+sudo ln -sfn "$HOME/Android/Sdk" /opt/android-sdk
+
+# 2. point Flutter at that path for the duration
+flutter config --android-sdk /opt/android-sdk
+
+# 3. build the tag from /tmp/build with its own pub cache
+rm -rf /tmp/build
+git clone --branch vX.Y.Z ~/git/quicklog /tmp/build
+cp ~/git/quicklog/android/key.properties /tmp/build/android/
+cd /tmp/build
+export ANDROID_HOME=/opt/android-sdk PUB_CACHE=/tmp/build/.pub-cache
+export JAVA_HOME=$HOME/jdk21          # or jdk17; 25+ is rejected by Gradle
+flutter pub get --enforce-lockfile
+flutter build apk --release --split-per-abi
+grep sdk.dir android/local.properties  # must say /opt/android-sdk
+
+# 4. publish, then restore your normal SDK path
+gh release create vX.Y.Z --title vX.Y.Z build/app/outputs/flutter-apk/app-*-release.apk
+flutter config --android-sdk "$HOME/Android/Sdk"
+```
+
+To check reproducibility before pushing, run `fdroid build org.buetow.quicklog`
+in the fdroiddata checkout with `ANDROID_HOME=/opt/android-sdk` **and** Flutter's
+config pointed there. With the config left on the home path the build silently
+uses the wrong SDK and the comparison fails for the wrong reason.
 
 **Keep `.flutter-version` current.** The F-Droid recipe checks that file out in
 the Flutter srclib, so a stale value means F-Droid builds with the wrong SDK.
