@@ -71,6 +71,11 @@ trailing period; changelogs at 500.
 `docs/fdroid/org.buetow.quicklog.yml` is the file that gets copied into
 fdroiddata. Two constraints that are invisible until they break:
 
+- **`fdroid rewritemeta` strips YAML comments** from the build commands, so do
+  not explain anything inside the recipe -- it will be deleted and the CI
+  rewritemeta check will fail on the diff. Put the reasoning in this file or in
+  `docs/fdroid-submission.md` instead. Run `fdroid rewritemeta` after *every*
+  recipe edit, not just the first.
 - **Field order is canonical.** `fdroid rewritemeta` must produce no diff, or
   fdroiddata's CI fails the pipeline. `VercodeOperation` comes before
   `UpdateCheckData`.

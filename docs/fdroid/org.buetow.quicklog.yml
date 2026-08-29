@@ -27,9 +27,6 @@ Builds:
       - flutterVersion=$(cat .flutter-version)
       - '[[ $flutterVersion ]]'
       - git -C $$flutter$$ checkout -f $flutterVersion
-      # Build from the same absolute path upstream releases are built from.
-      # The Dart AOT snapshot in libapp.so embeds source paths, so a different
-      # build directory alone is enough to break reproducibility.
       - cd ..
       - mv org.buetow.quicklog /tmp/build
       - pushd /tmp/build
@@ -62,9 +59,6 @@ Builds:
       - flutterVersion=$(cat .flutter-version)
       - '[[ $flutterVersion ]]'
       - git -C $$flutter$$ checkout -f $flutterVersion
-      # Build from the same absolute path upstream releases are built from.
-      # The Dart AOT snapshot in libapp.so embeds source paths, so a different
-      # build directory alone is enough to break reproducibility.
       - cd ..
       - mv org.buetow.quicklog /tmp/build
       - pushd /tmp/build
@@ -97,9 +91,6 @@ Builds:
       - flutterVersion=$(cat .flutter-version)
       - '[[ $flutterVersion ]]'
       - git -C $$flutter$$ checkout -f $flutterVersion
-      # Build from the same absolute path upstream releases are built from.
-      # The Dart AOT snapshot in libapp.so embeds source paths, so a different
-      # build directory alone is enough to break reproducibility.
       - cd ..
       - mv org.buetow.quicklog /tmp/build
       - pushd /tmp/build
