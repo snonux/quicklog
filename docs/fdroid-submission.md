@@ -141,7 +141,7 @@ Three things make it work, and breaking any one of them fails the build:
   this, `libapp.so` and `libdartjni.so` differ and everything else matches --
   that is the signature of a path mismatch, not a real difference.
 
-The signing key at `~/keys/quicklog-release.jks` is now the app's identity.
+The signing key at `keys/quicklog-release.jks` is now the app's identity.
 Losing it ends the ability to update Quicklog for existing users, permanently.
 
 ## Things reviewers are likely to ask about

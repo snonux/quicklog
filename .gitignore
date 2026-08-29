@@ -16,6 +16,13 @@ pubspec.lock.bak
 *.iws
 .vscode/
 
+# Signing keys -- NEVER commit. The keystore in keys/ is the app's permanent
+# identity on F-Droid; losing or leaking it cannot be undone.
+# Note it is ignored, not untracked-by-accident: `git clean -xfd` WILL delete it.
+keys/
+*.jks
+*.keystore
+
 # Android
 android/.gradle/
 android/local.properties

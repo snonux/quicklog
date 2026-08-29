@@ -65,10 +65,15 @@ release with missing or stale assets fails the build, not just the check.
 `AllowedAPKSigningKeys` pins the signing certificate's SHA-256, so signing with a
 different key fails too.
 
-**The signing key at `~/keys/quicklog-release.jks` is the app's identity.** Keep
+**The signing key at `keys/quicklog-release.jks` is the app's identity.** Keep
 it; `android/key.properties` points at it and every release build needs it. If it
 is ever lost, existing users can never be updated again -- a new key means a new
 app. It is backed up offline; that backup is the real safety net.
+
+`keys/` sits inside the working tree and is git-ignored, along with `*.jks` and
+`*.keystore`, so it can never be committed by `git add -A`. The flip side is that
+`git clean -xfd` deletes ignored files and *will* remove it -- restore from the
+offline backup if that happens.
 
 ### The release build, start to finish
 
