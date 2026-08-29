@@ -16,7 +16,7 @@ Repo: https://github.com/snonux/quicklog.git
 Builds:
   - versionName: 0.1.5
     versionCode: 101
-    commit: 2be66c0a2878500caf8421628d3eeec46ed12259
+    commit: ba0f75336b44126e04eb3bc9a744fdab6c6c99f0
     output: build/app/outputs/flutter-apk/app-armeabi-v7a-release.apk
     binary: https://github.com/snonux/quicklog/releases/download/v%v/app-armeabi-v7a-release.apk
     srclibs:
@@ -51,7 +51,7 @@ Builds:
 
   - versionName: 0.1.5
     versionCode: 102
-    commit: 2be66c0a2878500caf8421628d3eeec46ed12259
+    commit: ba0f75336b44126e04eb3bc9a744fdab6c6c99f0
     output: build/app/outputs/flutter-apk/app-arm64-v8a-release.apk
     binary: https://github.com/snonux/quicklog/releases/download/v%v/app-arm64-v8a-release.apk
     srclibs:
@@ -86,7 +86,7 @@ Builds:
 
   - versionName: 0.1.5
     versionCode: 103
-    commit: 2be66c0a2878500caf8421628d3eeec46ed12259
+    commit: ba0f75336b44126e04eb3bc9a744fdab6c6c99f0
     output: build/app/outputs/flutter-apk/app-x86_64-release.apk
     binary: https://github.com/snonux/quicklog/releases/download/v%v/app-x86_64-release.apk
     srclibs:
