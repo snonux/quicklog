@@ -84,8 +84,7 @@ Builds:
     versionCode: 103
     commit: ba0f75336b44126e04eb3bc9a744fdab6c6c99f0
     output: build/app/outputs/flutter-apk/app-x86_64-release.apk
-    binary: 
-      https://github.com/snonux/quicklog/releases/download/v%v/app-x86_64-release.apk
+    binary: https://github.com/snonux/quicklog/releases/download/v%v/app-x86_64-release.apk
     srclibs:
       - flutter@stable
     rm:
