@@ -1,6 +1,5 @@
 import 'package:flutter/material.dart';
 import 'package:intl/intl.dart';
-import 'package:path/path.dart' as p;
 
 import '../services/log_service.dart';
 
@@ -14,20 +13,31 @@ const int kDeletePreviewChars = 800;
 /// Pushes the full-screen delete confirmation and reports the user's answer.
 ///
 /// A whole screen rather than an AlertDialog: deletion is irreversible (the
-/// file is unlinked, there is no trash), so the user gets the filename, the
+/// note is removed, there is no trash), so the user gets the id, the
 /// timestamp and a preview of the actual text before committing. It only
 /// asks — the caller owns the deletion so that error handling and the list
 /// refresh live in one place.
-Future<bool> confirmEntryDeletion(BuildContext context, LogEntry entry) async {
+Future<bool> confirmEntryDeletion(
+  BuildContext context,
+  NoteStore store,
+  LogEntry entry,
+) async {
   final confirmed = await Navigator.of(context).push<bool>(
-    MaterialPageRoute(builder: (_) => DeleteConfirmationScreen(entry: entry)),
+    MaterialPageRoute(
+      builder: (_) => DeleteConfirmationScreen(store: store, entry: entry),
+    ),
   );
   return confirmed ?? false;
 }
 
 class DeleteConfirmationScreen extends StatelessWidget {
-  const DeleteConfirmationScreen({super.key, required this.entry});
+  const DeleteConfirmationScreen({
+    super.key,
+    required this.store,
+    required this.entry,
+  });
 
+  final NoteStore store;
   final LogEntry entry;
 
   @override
@@ -64,7 +74,7 @@ class DeleteConfirmationScreen extends StatelessWidget {
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
               Text(
-                p.basename(entry.file.path),
+                entry.id,
                 style: theme.textTheme.titleMedium,
               ),
               const SizedBox(height: 4),
@@ -84,9 +94,9 @@ class DeleteConfirmationScreen extends StatelessWidget {
     );
   }
 
-  /// Read-only excerpt of the file so the user can double-check they picked
-  /// the right note. Read errors are shown inline instead of blocking the
-  /// deletion: an unreadable file is exactly the kind one wants to remove.
+  /// Read-only excerpt so the user can double-check they picked the right
+  /// note. Read errors are shown inline instead of blocking the deletion: an
+  /// unreadable note is exactly the kind one wants to remove.
   Widget _preview(BuildContext context) {
     final theme = Theme.of(context);
     return Container(
@@ -97,7 +107,7 @@ class DeleteConfirmationScreen extends StatelessWidget {
         borderRadius: BorderRadius.circular(8),
       ),
       child: FutureBuilder<String>(
-        future: entryPreview(entry.file, maxChars: kDeletePreviewChars),
+        future: store.preview(entry.id, maxChars: kDeletePreviewChars),
         builder: (_, snap) {
           if (snap.connectionState != ConnectionState.done) {
             return const Center(child: CircularProgressIndicator());

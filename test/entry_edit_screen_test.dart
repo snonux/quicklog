@@ -12,15 +12,16 @@ void main() {
   TestWidgetsFlutterBinding.ensureInitialized();
 
   late Directory tmp;
-  late File entryFile;
+  late LocalNoteStore store;
   late LogEntry entry;
+  const id = 'ql-260507-143045.md';
 
   setUp(() async {
     tmp = await Directory.systemTemp.createTemp('ql-edit-');
-    entryFile = File(p.join(tmp.path, 'ql-260507-143045.md'));
-    await entryFile.writeAsString('original body');
+    store = LocalNoteStore(tmp.path);
+    await File(p.join(tmp.path, id)).writeAsString('original body');
     entry = LogEntry(
-      file: entryFile,
+      id: id,
       timestamp: DateTime(2026, 5, 7, 14, 30, 45),
     );
   });
@@ -39,7 +40,8 @@ void main() {
         home: Scaffold(
           body: Builder(
             builder: (ctx) => TextButton(
-              onPressed: () async => results.add(await editEntry(ctx, entry)),
+              onPressed: () async =>
+                  results.add(await editEntry(ctx, store, entry)),
               child: const Text('open'),
             ),
           ),
@@ -60,14 +62,14 @@ void main() {
   }
 
   Future<String> readEntry(WidgetTester tester) async {
-    return await tester.runAsync(() => entryFile.readAsString()) ?? '';
+    return await tester.runAsync(() => store.read(id)) ?? '';
   }
 
   testWidgets('loads the file content with save and revert disabled',
       (tester) async {
     await pumpEditor(tester);
 
-    expect(find.text('ql-260507-143045.md'), findsOneWidget);
+    expect(find.text(id), findsOneWidget);
     expect(find.text('original body'), findsOneWidget);
     expect(find.text('13 chars'), findsOneWidget);
     final save = tester.widget<FilledButton>(
@@ -144,7 +146,7 @@ void main() {
 
   testWidgets('an unreadable entry shows the error instead of an empty editor',
       (tester) async {
-    await tester.runAsync(() => entryFile.delete());
+    await tester.runAsync(() => File(p.join(tmp.path, id)).delete());
 
     await pumpEditor(tester);
 

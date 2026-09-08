@@ -31,9 +31,9 @@ Future<String> defaultLogDirectory() async {
 
 /// Whether Quicklog can actually write log entries into [path].
 ///
-/// This mirrors what [logEntry] does -- create the directory if it is missing,
-/// then write a file into it -- because "can we write here?" is the only
-/// question worth asking the user about.
+/// This mirrors what [LocalNoteStore.create] does -- create the directory if
+/// it is missing, then write a file into it -- because "can we write here?"
+/// is the only question worth asking the user about.
 ///
 /// Asking the MANAGE_EXTERNAL_STORAGE permission instead gives the wrong
 /// answer in both directions. The default app-specific directory needs no

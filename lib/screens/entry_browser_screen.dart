@@ -1,6 +1,5 @@
 import 'package:flutter/material.dart';
 import 'package:intl/intl.dart';
-import 'package:path/path.dart' as p;
 
 import '../services/log_service.dart';
 import '../services/preferences.dart';
@@ -19,6 +18,7 @@ class EntryBrowserScreen extends StatefulWidget {
 class _EntryBrowserScreenState extends State<EntryBrowserScreen> {
   final PreferencesService _prefs = PreferencesService();
   Future<List<LogEntry>>? _future;
+  NoteStore? _store;
   String _dir = '';
 
   @override
@@ -35,7 +35,8 @@ class _EntryBrowserScreenState extends State<EntryBrowserScreen> {
 
   Future<List<LogEntry>> _load() async {
     _dir = await _prefs.directory();
-    return listEntries(_dir);
+    _store = LocalNoteStore(_dir);
+    return _store!.list();
   }
 
   /// Opens the viewer. The viewer cannot delete by itself; it pops with
@@ -44,8 +45,12 @@ class _EntryBrowserScreenState extends State<EntryBrowserScreen> {
   /// which changes the subtitle previews, so any other return re-lists the
   /// directory -- cheap, and simpler than plumbing an "edited" flag back.
   Future<void> _open(LogEntry entry) async {
+    final store = _store;
+    if (store == null) return;
     final deleteRequested = await Navigator.of(context).push<bool>(
-      MaterialPageRoute(builder: (_) => _EntryDetailScreen(entry: entry)),
+      MaterialPageRoute(
+        builder: (_) => _EntryDetailScreen(store: store, entry: entry),
+      ),
     );
     if (!mounted) return;
     if (deleteRequested == true) {
@@ -55,24 +60,30 @@ class _EntryBrowserScreenState extends State<EntryBrowserScreen> {
     }
   }
 
-  /// Edits an entry straight from the list. Only a save changes the file, so
+  /// Edits an entry straight from the list. Only a save changes the note, so
   /// the listing is re-read only then.
   Future<void> _edit(LogEntry entry) async {
-    final saved = await editEntry(context, entry);
+    final store = _store;
+    if (store == null) return;
+    final saved = await editEntry(context, store, entry);
     if (saved && mounted) _refresh();
   }
 
   Future<void> _confirmAndDelete(LogEntry entry) async {
-    final confirmed = await confirmEntryDeletion(context, entry);
+    final store = _store;
+    if (store == null) return;
+    final confirmed = await confirmEntryDeletion(context, store, entry);
     if (!confirmed || !mounted) return;
     await _delete(entry);
   }
 
   /// Performs the already-confirmed deletion and reports the outcome.
   Future<void> _delete(LogEntry entry) async {
-    final name = p.basename(entry.file.path);
+    final store = _store;
+    if (store == null) return;
+    final name = entry.id;
     try {
-      await deleteEntry(entry.file);
+      await store.delete(entry.id);
     } catch (e) {
       // Deleting can fail on Android when the directory is outside the app's
       // granted storage scope; keep the entry listed and say why.
@@ -132,12 +143,14 @@ class _EntryBrowserScreenState extends State<EntryBrowserScreen> {
   }
 
   Widget _entryList(List<LogEntry> entries) {
+    final store = _store!;
     return RefreshIndicator(
       onRefresh: () async => _refresh(),
       child: ListView.separated(
         itemCount: entries.length,
         separatorBuilder: (_, _) => const Divider(height: 1),
         itemBuilder: (_, i) => _EntryTile(
+          store: store,
           entry: entries[i],
           onTap: () => _open(entries[i]),
           onEdit: () => _edit(entries[i]),
@@ -152,12 +165,14 @@ class _EntryBrowserScreenState extends State<EntryBrowserScreen> {
 
 class _EntryTile extends StatelessWidget {
   const _EntryTile({
+    required this.store,
     required this.entry,
     required this.onTap,
     required this.onEdit,
     required this.onDelete,
   });
 
+  final NoteStore store;
   final LogEntry entry;
   final VoidCallback onTap;
   final VoidCallback onEdit;
@@ -168,7 +183,7 @@ class _EntryTile extends StatelessWidget {
     return ListTile(
       title: Text(_displayFormat.format(entry.timestamp)),
       subtitle: FutureBuilder<String>(
-        future: entryFirstLine(entry.file),
+        future: store.firstLine(entry.id),
         builder: (_, snap) => Text(
           snap.data ?? '',
           maxLines: 1,
@@ -198,15 +213,16 @@ class _EntryTile extends StatelessWidget {
   }
 }
 
-/// Viewer for a single entry. It loads the file itself so that the browser
+/// Viewer for a single entry. It loads the note itself so that the browser
 /// does not have to read every entry up front, and it never deletes directly:
 /// confirming deletion pops with `true` and the browser does the work,
 /// keeping one code path for deletion and error reporting. Editing is pushed
-/// on top of it, and the viewer re-reads the file afterwards so what is on
-/// screen matches what is on disk.
+/// on top of it, and the viewer re-reads afterwards so what is on screen
+/// matches what is stored.
 class _EntryDetailScreen extends StatefulWidget {
-  const _EntryDetailScreen({required this.entry});
+  const _EntryDetailScreen({required this.store, required this.entry});
 
+  final NoteStore store;
   final LogEntry entry;
 
   @override
@@ -223,20 +239,21 @@ class _EntryDetailScreenState extends State<_EntryDetailScreen> {
   }
 
   /// Kept in state rather than started in build(), so a rebuild (e.g. from
-  /// the edit round-trip) does not kick off a second read of the file.
+  /// the edit round-trip) does not kick off a second read.
   void _reload() {
     setState(() {
-      _content = entryContent(widget.entry.file);
+      _content = widget.store.read(widget.entry.id);
     });
   }
 
   Future<void> _edit() async {
-    final saved = await editEntry(context, widget.entry);
+    final saved = await editEntry(context, widget.store, widget.entry);
     if (saved && mounted) _reload();
   }
 
   Future<void> _requestDelete() async {
-    final confirmed = await confirmEntryDeletion(context, widget.entry);
+    final confirmed =
+        await confirmEntryDeletion(context, widget.store, widget.entry);
     if (!confirmed || !mounted) return;
     Navigator.of(context).pop(true);
   }
@@ -245,7 +262,7 @@ class _EntryDetailScreenState extends State<_EntryDetailScreen> {
   Widget build(BuildContext context) {
     return Scaffold(
       appBar: AppBar(
-        title: Text(p.basename(widget.entry.file.path)),
+        title: Text(widget.entry.id),
         actions: [
           IconButton(
             tooltip: 'Edit entry',

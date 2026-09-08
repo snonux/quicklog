@@ -25,6 +25,8 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
   bool _warnShown = false;
   bool _loadingShared = false;
 
+  Future<NoteStore> _store() async => LocalNoteStore(await _prefs.directory());
+
   @override
   void initState() {
     super.initState();
@@ -90,9 +92,8 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
   }
 
   Future<void> _logText() async {
-    final dir = await _prefs.directory();
     try {
-      await logEntry(dir, _controller.text);
+      await (await _store()).create(_controller.text);
       _resetInput();
     } catch (e) {
       _showError(e);
@@ -129,7 +130,7 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
       resetInput: _resetInput,
       clearCache: ShareService.clearSharedTextCache,
       logFn: (d, t) async {
-        await logEntry(d, t);
+        await LocalNoteStore(d).create(t);
       },
       showInfo: _showInfo,
       showError: _showError,

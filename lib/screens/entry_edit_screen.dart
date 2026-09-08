@@ -1,5 +1,4 @@
 import 'package:flutter/material.dart';
-import 'package:path/path.dart' as p;
 
 import '../services/log_service.dart';
 
@@ -9,19 +8,26 @@ import '../services/log_service.dart';
 /// editor needs the same amount of room the compose screen gets. Returning
 /// only "saved or not" keeps the caller's job trivial — refresh what it shows
 /// when something changed, do nothing otherwise.
-Future<bool> editEntry(BuildContext context, LogEntry entry) async {
+Future<bool> editEntry(
+  BuildContext context,
+  NoteStore store,
+  LogEntry entry,
+) async {
   final saved = await Navigator.of(context).push<bool>(
-    MaterialPageRoute(builder: (_) => EntryEditScreen(entry: entry)),
+    MaterialPageRoute(
+      builder: (_) => EntryEditScreen(store: store, entry: entry),
+    ),
   );
   return saved ?? false;
 }
 
-/// Editor for an existing entry. It writes back to the same file, so the
-/// note keeps its creation timestamp (which is what the filename encodes)
-/// and its position in the browser list.
+/// Editor for an existing entry. It writes back to the same id, so the note
+/// keeps its creation timestamp (which is what the filename encodes) and its
+/// position in the browser list.
 class EntryEditScreen extends StatefulWidget {
-  const EntryEditScreen({super.key, required this.entry});
+  const EntryEditScreen({super.key, required this.store, required this.entry});
 
+  final NoteStore store;
   final LogEntry entry;
 
   @override
@@ -31,7 +37,7 @@ class EntryEditScreen extends StatefulWidget {
 class _EntryEditScreenState extends State<EntryEditScreen> {
   final TextEditingController _controller = TextEditingController();
 
-  /// Text as it is on disk, used to tell "nothing changed" from "unsaved
+  /// Text as it is stored, used to tell "nothing changed" from "unsaved
   /// changes" for both the Save button and the discard prompt.
   String _original = '';
   bool _loading = true;
@@ -60,7 +66,7 @@ class _EntryEditScreenState extends State<EntryEditScreen> {
 
   Future<void> _load() async {
     try {
-      final text = await entryContent(widget.entry.file);
+      final text = await widget.store.read(widget.entry.id);
       _original = text;
       _controller.text = text;
     } catch (e) {
@@ -76,7 +82,7 @@ class _EntryEditScreenState extends State<EntryEditScreen> {
     setState(() => _saving = true);
     final text = _controller.text;
     try {
-      await updateEntry(widget.entry.file, text);
+      await widget.store.update(widget.entry.id, text);
     } catch (e) {
       // Writing can be denied for files outside the app's storage scope;
       // stay in the editor so the user does not lose what they typed.
@@ -90,7 +96,7 @@ class _EntryEditScreenState extends State<EntryEditScreen> {
     Navigator.of(context).pop(true);
   }
 
-  /// Restores the on-disk text. Nothing is written, so this is the cheap way
+  /// Restores the stored text. Nothing is written, so this is the cheap way
   /// back out of an edit without leaving the screen.
   void _revert() {
     _controller.text = _original;
@@ -142,7 +148,7 @@ class _EntryEditScreenState extends State<EntryEditScreen> {
       canPop: !_dirty && !_saving,
       onPopInvokedWithResult: (didPop, _) => _handlePop(didPop),
       child: Scaffold(
-        appBar: AppBar(title: Text(p.basename(widget.entry.file.path))),
+        appBar: AppBar(title: Text(widget.entry.id)),
         body: SafeArea(
           child: Padding(padding: const EdgeInsets.all(12), child: _body()),
         ),
