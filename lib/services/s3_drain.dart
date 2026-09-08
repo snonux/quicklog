@@ -35,8 +35,9 @@ Future<DrainSummary> drainQuicklogObjects({
   bool dryRun = false,
   bool force = false,
   int? limit,
+  void Function(String message)? onError,
 }) async {
-  if (!await destDir.exists()) {
+  if (!dryRun && !await destDir.exists()) {
     await destDir.create(recursive: true);
   }
 
@@ -68,6 +69,13 @@ Future<DrainSummary> drainQuicklogObjects({
     }
 
     try {
+      // Re-check immediately before write so a racing local create still skips
+      // unless --force (no unconditional delete of collisions).
+      if (await target.exists() && !force) {
+        skipped++;
+        continue;
+      }
+
       final bytes = await client.getObject(key);
       final tmp = File(
         p.join(
@@ -83,16 +91,20 @@ Future<DrainSummary> drainQuicklogObjects({
           'size mismatch for $key: wrote $written, expected ${bytes.length}',
         );
       }
-      if (await target.exists()) {
-        await target.delete();
-      }
+      // On Linux, rename over an existing file is atomic; do not delete first.
       await tmp.rename(target.path);
       fetched++;
 
-      await client.deleteObject(key);
-      deleted++;
-    } catch (_) {
+      try {
+        await client.deleteObject(key);
+        deleted++;
+      } catch (e) {
+        failed++;
+        onError?.call('delete failed for $key after local write: $e');
+      }
+    } catch (e) {
       failed++;
+      onError?.call('drain failed for $key: $e');
     }
   }
 

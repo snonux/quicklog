@@ -40,6 +40,7 @@ void main(List<String> args) async {
     dryRun: opts.dryRun,
     force: opts.force,
     limit: opts.limit,
+    onError: (msg) => stderr.writeln('quicklog_drain: $msg'),
   );
 
   stdout.writeln(summary);

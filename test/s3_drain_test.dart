@@ -75,6 +75,37 @@ void main() {
     expect(await File(p.join(dest.path, 'ql-260908-100003.md')).exists(), isFalse);
   });
 
+  test('dry-run does not create missing dest directory', () async {
+    final missing = Directory(p.join(dest.path, 'missing-subdir'));
+    await client.putText('ql-260908-100004.md', 'dry');
+    await drainQuicklogObjects(
+      client: client,
+      destDir: missing,
+      dryRun: true,
+    );
+    expect(await missing.exists(), isFalse);
+  });
+
+  test('reports delete failure after successful local write', () async {
+    final flaky = _DeleteFailsClient();
+    await flaky.putText('ql-260908-100005.md', 'local ok');
+    final messages = <String>[];
+    final summary = await drainQuicklogObjects(
+      client: flaky,
+      destDir: dest,
+      onError: messages.add,
+    );
+    expect(summary.fetched, 1);
+    expect(summary.deleted, 0);
+    expect(summary.failed, 1);
+    expect(messages.first, contains('delete failed'));
+    expect(flaky.objects.containsKey('ql-260908-100005.md'), isTrue);
+    expect(
+      await File(p.join(dest.path, 'ql-260908-100005.md')).readAsString(),
+      'local ok',
+    );
+  });
+
   test('limit caps how many objects are drained', () async {
     await client.putText('ql-260908-100010.md', 'a');
     await client.putText('ql-260908-100011.md', 'b');
@@ -93,4 +124,11 @@ void main() {
     expect(summary.fetched, 0);
     expect(client.objects.containsKey('readme.txt'), isTrue);
   });
+}
+
+class _DeleteFailsClient extends MemoryS3ObjectClient {
+  @override
+  Future<void> deleteObject(String key) async {
+    throw StateError('simulated delete failure for $key');
+  }
 }
