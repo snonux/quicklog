@@ -39,7 +39,15 @@ class LocalNoteStore implements NoteStore {
 
   final String directory;
 
-  File _fileFor(String id) => File(p.join(directory, id));
+  File _fileFor(String id) {
+    // Reject anything that is not a bare basename matching the filename
+    // contract so path separators, `..`, and absolute paths cannot escape
+    // [directory] when joined.
+    if (!_filenameRegex.hasMatch(id)) {
+      throw ArgumentError.value(id, 'id', 'must match ql-YYMMDD-HHmmss.md');
+    }
+    return File(p.join(directory, id));
+  }
 
   @override
   Future<LogEntry> create(String text, {DateTime? now}) async {
@@ -49,8 +57,10 @@ class LocalNoteStore implements NoteStore {
     await Directory(directory).create(recursive: true);
     final stamp = now ?? DateTime.now();
     final id = 'ql-${_timestampFormat.format(stamp)}.md';
+    // Timestamp comes from the id so create and list share one source of
+    // truth (second precision only — the format drops subseconds).
     await _fileFor(id).writeAsString(text);
-    return LogEntry(id: id, timestamp: stamp);
+    return LogEntry(id: id, timestamp: parseLogEntryId(id)!);
   }
 
   @override
@@ -105,7 +115,7 @@ class LocalNoteStore implements NoteStore {
   /// silently start from an empty buffer, because saving that would wipe a
   /// note that is present but momentarily unreadable.
   @override
-  Future<String> read(String id) => _fileFor(id).readAsString();
+  Future<String> read(String id) async => _fileFor(id).readAsString();
 
   /// Overwrites an existing entry with edited [text].
   ///

@@ -32,10 +32,12 @@ void main() {
     });
 
     test('uses the provided timestamp when given', () async {
-      final ts = DateTime(2026, 5, 7, 14, 30, 45);
+      // Subseconds are dropped by the filename; create must match list/parse.
+      final ts = DateTime(2026, 5, 7, 14, 30, 45, 123);
       final entry = await store.create('x', now: ts);
       expect(entry.id, 'ql-260507-143045.md');
-      expect(entry.timestamp, ts);
+      expect(entry.timestamp, DateTime(2026, 5, 7, 14, 30, 45));
+      expect(entry.timestamp, parseLogEntryId(entry.id));
     });
 
     test('creates missing intermediate directories', () async {
@@ -164,7 +166,10 @@ void main() {
     });
 
     test('read throws for unreadable files', () async {
-      expect(store.read('gone.md'), throwsA(isA<FileSystemException>()));
+      expect(
+        store.read('ql-260101-000000.md'),
+        throwsA(isA<FileSystemException>()),
+      );
     });
 
     test('update rewrites the same file', () async {
@@ -174,6 +179,21 @@ void main() {
       // The filename carries the creation time, so editing must not add a
       // second file for the same note.
       expect((await store.list()).length, 1);
+    });
+
+    test('rejects unsafe ids before path join', () async {
+      for (final id in [
+        '/etc/passwd',
+        '../ql-260101-000000.md',
+        'ql-260101-000000.md/../x',
+        'gone.md',
+        'ql-bad-format.md',
+        r'..\ql-260101-000000.md',
+      ]) {
+        await expectLater(store.read(id), throwsA(isA<ArgumentError>()));
+        await expectLater(store.update(id, 'x'), throwsA(isA<ArgumentError>()));
+        await expectLater(store.delete(id), throwsA(isA<ArgumentError>()));
+      }
     });
   });
 }
