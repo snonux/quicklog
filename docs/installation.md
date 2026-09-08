@@ -79,3 +79,24 @@ The bolt icon next to the Directory field in Preferences offers shortcuts to
 a few common Android locations (a notes vault subfolder, `Documents`,
 `Download`). Pick one, then hit the checkmark to save — no need to type full
 paths by hand.
+
+## Optional S3 mode
+
+If you want notes to land in an S3-compatible bucket (for example Garage)
+instead of a local folder:
+
+1. Open **Preferences** and choose **S3 only**.
+2. Fill endpoint, region, bucket, access key, and secret. Defaults target
+   Garage (`https://garage.f3s.buetow.org`, region `garage`, bucket
+   `quicklog`). Paste keys from a laptop copy of
+   `~/.config/garage/quicklog.env` — the phone never reads that file itself.
+3. **Test connection** probes without saving. Tap the checkmark (**Save**) to
+   persist credentials on-device.
+4. Log a note as usual. Objects are named `ql-YYMMDD-HHMMSS.md`, same as local
+   files.
+
+While mode stays **Local only**, the app does not use the network. If S3
+fails after you enable it, Quicklog falls back to the configured local
+directory for about an hour (or until **Retry S3** / a cold start). To pull
+phone notes onto a laptop, use the drain CLI documented in the
+[README](../README.md#drain-cli-laptop).

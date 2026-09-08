@@ -18,7 +18,7 @@ F-Droid (done, see below), and opening a merge request against F-Droid's
 | FOSS licence | [`LICENSE`](../LICENSE) — MIT |
 | No proprietary dependencies | `pubspec.yaml` — Flutter, `shared_preferences`, `path_provider`, `path`, `intl`, optional FOSS S3 client (`minio`/`http`). No Firebase, no Google Mobile Services, no analytics, no telemetry. Default storage is local-only; `INTERNET` is present for optional user-configured S3. |
 | Release tag matching `versionName` | tag `vX.Y.Z` ↔ `version: X.Y.Z+<code>` in `pubspec.yaml` |
-| Monotonic `versionCode` | plain counter in `pubspec.yaml`; `0.1.5` is release `10` |
+| Monotonic `versionCode` | plain counter in `pubspec.yaml`; `0.2.0` is release `11` |
 | Release build works without a keystore | `android/app/build.gradle.kts` — falls back to the debug keys, and F-Droid re-signs anyway |
 | Pinned Flutter SDK | [`.flutter-version`](../.flutter-version), read by the F-Droid build recipe |
 | Store description, icon, screenshots | `fastlane/metadata/android/en-US/` |
@@ -162,11 +162,11 @@ rather than a single universal one, which takes the download from 50.5 MB to
 15.5-19.5 MB. That means three build blocks, and three version codes derived from
 the build number in `pubspec.yaml` by `VercodeOperation`:
 
-| ABI | `VercodeOperation` | versionCode at `0.1.5+10` |
+| ABI | `VercodeOperation` | versionCode at `0.2.0+11` |
 | --- | --- | --- |
-| `armeabi-v7a` | `%c * 10 + 1` | 101 |
-| `arm64-v8a` | `%c * 10 + 2` | 102 |
-| `x86_64` | `%c * 10 + 3` | 103 |
+| `armeabi-v7a` | `%c * 10 + 1` | 111 |
+| `arm64-v8a` | `%c * 10 + 2` | 112 |
+| `x86_64` | `%c * 10 + 3` | 113 |
 
 These are not Flutter's own numbers. Flutter's Gradle plugin would stamp
 `abiVersionCode * 1000 + versionCode`, which collides two releases as soon as

@@ -5,8 +5,8 @@ publish_to: 'none'
 # <semver>+<buildNumber>. The build number is a plain counter -- bump it by one
 # for every release, never reuse or lower it. android/app/build.gradle.kts turns
 # it into a per-ABI version code of `buildNumber * 10 + abi`, so it has no upper
-# bound. v0.1.5 is release 10.
-version: 0.1.5+10
+# bound. v0.2.0 is release 11.
+version: 0.2.0+11
 
 environment:
   sdk: ^3.11.5

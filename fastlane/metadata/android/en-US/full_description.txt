@@ -45,6 +45,7 @@ you can use Storage Scopes instead of granting broad access; the project
 documentation explains how.
 
 Network access is only used if you turn on S3 mode and configure an endpoint.
-Credentials never leave SharedPreferences on the device.
+Credentials never leave SharedPreferences on the device. "Test connection"
+probes without saving; only Save persists the keys.
 
 Quicklog is free software under the MIT licence.

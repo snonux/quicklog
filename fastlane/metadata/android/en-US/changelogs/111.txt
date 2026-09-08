@@ -1,0 +1,7 @@
+Optional S3 storage mode.
+
+* Preferences: Local only vs S3 only. Endpoint, region, bucket and keys stay
+  on the device; Test connection does not save until you confirm.
+* If S3 fails, Quicklog falls back to local for an hour with a Retry control.
+* Laptop drain CLI pulls ql-*.md from the bucket into a notes folder, then
+  deletes the remote objects.

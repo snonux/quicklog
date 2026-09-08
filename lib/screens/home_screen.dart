@@ -208,7 +208,7 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
     showAboutDialog(
       context: context,
       applicationName: 'Quicklog',
-      applicationVersion: '0.1.5',
+      applicationVersion: '0.2.0',
       applicationIcon: Image.asset('logo-small.png', width: 48, height: 48),
       applicationLegalese:
           'Jot timestamped markdown notes. Optional S3; default is local-only.',

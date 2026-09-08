@@ -51,7 +51,7 @@ build recipe reads it, so bump it whenever the toolchain moves.
 
 Note that split APKs do not carry that number verbatim. `android/app/build.gradle.kts`
 turns it into `buildNumber * 10 + abi`, with 1, 2 and 3 for armeabi-v7a, arm64-v8a
-and x86_64, so `0.1.5+10` ships as 101 / 102 / 103. This is F-Droid's convention
+and x86_64, so `0.2.0+11` ships as 111 / 112 / 113. This is F-Droid's convention
 and it replaces Flutter's own `abi * 1000 + buildNumber`, which would collide two
 releases once the counter reached 1000.
 
@@ -139,27 +139,36 @@ Preferences → **S3 only** writes notes as objects named `ql-YYMMDD-HHMMSS.md`
 to a user-configured S3-compatible endpoint (path-style). Defaults target
 `https://garage.f3s.buetow.org`, region `garage`, bucket `quicklog`. Paste the
 access key and secret from `~/.config/garage/quicklog.env` on a development
-machine; Android has no automatic import of that file. Credentials live only in
-SharedPreferences and are never logged. If S3 fails, Quicklog uses the local
-directory until you tap Retry or an hour elapses / the app cold-starts.
+machine; Android has no automatic import of that file. **Test connection**
+probes without writing prefs; **Save** is what persists secrets. Credentials
+live only in SharedPreferences and are never logged. If S3 fails, Quicklog
+uses the local directory until you tap **Retry S3** or an hour elapses / the
+app cold-starts.
 
 Default mode remains **Local only**. There is no analytics or background sync.
+`INTERNET` is declared for the optional S3 path and stays unused in local mode.
 
 ### Drain CLI (laptop)
 
-When notes land in the Garage bucket from a phone, drain them into
-`~/Notes/Quicklog` (then delete the remote objects) with:
+When notes land in the bucket from a phone, pull them into a local notes
+directory and delete the remote objects:
 
 ```sh
-# after sourcing credentials the same way as tasksync / fish quicklog_drain
+# from this repo, with GARAGE_* exported (see ~/.config/garage/quicklog.env)
 dart run bin/quicklog_drain.dart [--dest DIR] [--dry-run] [--force] [--limit N]
+# default --dest is ~/Notes/Quicklog
 ```
 
 Credentials: `GARAGE_ENDPOINT`, `GARAGE_REGION`, `GARAGE_BUCKET`,
-`GARAGE_ACCESS_KEY_ID`, `GARAGE_SECRET_ACCESS_KEY` (see
-`~/.config/garage/quicklog.env`). Fetch is atomic (temp + rename); remote
-delete runs only after a successful local write. Existing local files are
-skipped unless `--force`.
+`GARAGE_ACCESS_KEY_ID`, `GARAGE_SECRET_ACCESS_KEY`. Fetch is atomic (temp +
+rename); remote delete runs only after a successful local write. Existing
+local files are skipped unless `--force`. A dry run lists what would move
+without creating files or deleting objects.
+
+After drain, ordinary `ql-*.md` files sit on disk for whatever imports them
+next (for example Taskwarrior's quicklogger). Dotfiles may wrap the CLI
+(`taskwarrior::quicklog_drain` before `quicklogger` in `ti` / `invoke`); that
+wrapper is not part of this repository.
 
 ## Storage on Android
 
