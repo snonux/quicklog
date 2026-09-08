@@ -1,11 +1,13 @@
 import 'package:flutter/material.dart';
 
 import 'screens/home_screen.dart';
+import 'services/active_note_store.dart';
 import 'services/s3_session_controller.dart';
 
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
   await S3SessionController.instance.load();
+  ActiveNoteStore.instance.bindSessionProbe();
   runApp(const QuickLoggerApp());
 }
 

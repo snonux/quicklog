@@ -1,8 +1,13 @@
 # Working on Quicklog
 
 Quicklog is a Flutter app (Android primary, Linux desktop for development) that
-writes each note to its own timestamped Markdown file. Notes are plain files in
-a plain directory; the app itself never syncs and holds no network permission.
+writes each note to its own timestamped Markdown file. The default mode is
+local-only: notes are plain files in a plain directory, and the app holds no
+accounts and sends no telemetry. Optional **S3 mode** (Preferences) can write
+the same `ql-*.md` keys to a user-configured endpoint (e.g. Garage); credentials
+stay in on-device SharedPreferences and are never logged. Release builds include
+the `INTERNET` permission for that optional path — unused when storage stays
+local.
 
 Before calling anything done: `flutter analyze` and `flutter test` must both be
 clean. For anything touching the Android build, build a release APK too --

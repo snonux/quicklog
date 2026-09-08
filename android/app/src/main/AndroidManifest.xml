@@ -1,4 +1,7 @@
 <manifest xmlns:android="http://schemas.android.com/apk/res/android">
+    <!-- Optional S3 mode (user-configured endpoint). Default storage is still
+         local-only; nothing is sent unless the user enables S3 and pastes keys. -->
+    <uses-permission android:name="android.permission.INTERNET"/>
     <!-- Needed to read/write user-chosen directories outside the app sandbox
          (e.g. a synced notes vault), since Quicklog lets the user type any path. -->
     <uses-permission android:name="android.permission.MANAGE_EXTERNAL_STORAGE"/>

@@ -1,1 +1,1 @@
-Timestamped Markdown notes in a plain folder, ready for your own sync app
+Timestamped Markdown notes locally, or optional user-configured S3

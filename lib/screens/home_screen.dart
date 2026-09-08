@@ -2,6 +2,7 @@ import 'dart:io';
 
 import 'package:flutter/material.dart';
 
+import '../services/active_note_store.dart';
 import '../services/log_service.dart';
 import '../services/preferences.dart';
 import '../services/s3_session_controller.dart';
@@ -14,10 +15,13 @@ import 'preferences_screen.dart';
 const int kMaxTextLength = 5000;
 
 class HomeScreen extends StatefulWidget {
-  const HomeScreen({super.key, this.session});
+  const HomeScreen({super.key, this.session, this.activeStore});
 
   /// Optional override for tests; defaults to the process-wide session.
   final S3SessionController? session;
+
+  /// Optional override for tests (inject fake S3).
+  final ActiveNoteStore? activeStore;
 
   @override
   State<HomeScreen> createState() => _HomeScreenState();
@@ -33,12 +37,10 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
   S3SessionController get _session =>
       widget.session ?? S3SessionController.instance;
 
-  Future<NoteStore> _store() async {
-    final dir = await _prefs.directory();
-    // S3NoteStore lands in a later task; resolveStore still applies local
-    // fallback when preferred S3 is degraded.
-    return _session.resolveStore(local: () => LocalNoteStore(dir));
-  }
+  ActiveNoteStore get _active =>
+      widget.activeStore ?? ActiveNoteStore.instance;
+
+  Future<NoteStore> _store() => _active.resolve();
 
   @override
   void initState() {
@@ -144,8 +146,8 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
       focus: () => _focusNode.requestFocus(),
       resetInput: _resetInput,
       clearCache: ShareService.clearSharedTextCache,
-      logFn: (d, t) async {
-        await LocalNoteStore(d).create(t);
+      logFn: (_, t) async {
+        await (await _store()).create(t);
       },
       showInfo: _showInfo,
       showError: _showError,
@@ -157,7 +159,10 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
   Future<void> _openPreferences() async {
     await Navigator.of(context).push(
       MaterialPageRoute(
-        builder: (_) => PreferencesScreen(session: _session),
+        builder: (_) => PreferencesScreen(
+          session: _session,
+          activeStore: _active,
+        ),
       ),
     );
   }
@@ -165,7 +170,10 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
   Future<void> _openEntryBrowser() async {
     await Navigator.of(context).push(
       MaterialPageRoute(
-        builder: (_) => EntryBrowserScreen(session: _session),
+        builder: (_) => EntryBrowserScreen(
+          session: _session,
+          activeStore: _active,
+        ),
       ),
     );
   }
@@ -199,9 +207,10 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
     showAboutDialog(
       context: context,
       applicationName: 'Quicklog',
-      applicationVersion: '0.1.2',
+      applicationVersion: '0.1.5',
       applicationIcon: Image.asset('logo-small.png', width: 48, height: 48),
-      applicationLegalese: 'Jot timestamped markdown notes.',
+      applicationLegalese:
+          'Jot timestamped markdown notes. Optional S3; default is local-only.',
     );
   }
 

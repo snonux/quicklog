@@ -20,8 +20,12 @@ home computer.
   5,000 characters.
 - Each press of **Log text** writes the current text to a new file named
   `ql-YYMMDD-HHMMSS.md` in the configured directory.
-- **Preferences**: configurable log directory and an "Auto-log shared text"
-  toggle.
+- **Preferences**: configurable log directory, Local vs S3 storage mode, and
+  an "Auto-log shared text" toggle. S3 mode stores endpoint/region/bucket/keys
+  on-device only (paste from `~/.config/garage/quicklog.env` on a laptop).
+- **Optional S3**: same `ql-*.md` object keys against a path-style S3 endpoint
+  (defaults aimed at Garage). On failure the app falls back to local for an
+  hour with a Retry control. No telemetry; default remains local-only.
 - **Entry browser**: list of previous entries (newest first) with a viewer.
 - **Edit entries**: from the list (pencil icon) or from the entry viewer. The
   editor writes back to the same file, so the note keeps its creation
@@ -128,6 +132,18 @@ From any app that can share text, choose **Share** → **Quicklog**. With
 auto-log off (default), the text opens in the editor for review. Toggle
 "Auto-log shared text" in Preferences to have shared text written
 straight to disk.
+
+## Optional S3 mode
+
+Preferences → **S3 only** writes notes as objects named `ql-YYMMDD-HHMMSS.md`
+to a user-configured S3-compatible endpoint (path-style). Defaults target
+`https://garage.f3s.buetow.org`, region `garage`, bucket `quicklog`. Paste the
+access key and secret from `~/.config/garage/quicklog.env` on a development
+machine; Android has no automatic import of that file. Credentials live only in
+SharedPreferences and are never logged. If S3 fails, Quicklog uses the local
+directory until you tap Retry or an hour elapses / the app cold-starts.
+
+Default mode remains **Local only**. There is no analytics or background sync.
 
 ## Storage on Android
 

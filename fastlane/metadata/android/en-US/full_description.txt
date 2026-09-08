@@ -1,20 +1,22 @@
 Quicklog is a deliberately tiny note taker. You open it, you type, you press
-"Log text", and the note lands on disk as a plain Markdown file named
-ql-YYMMDD-HHMMSS.md. There is no account, no cloud and no database -- the
-files are yours, sitting in a folder you choose.
+"Log text", and the note lands as a plain Markdown file named
+ql-YYMMDD-HHMMSS.md. There is no account, no telemetry and no database -- by
+default the files are yours, sitting in a folder you choose.
 
-Quicklog does not synchronise anything itself. It has no network access at
-all, so nothing ever leaves your device on its own. If you want your notes on
-your computer or another phone, run a separate sync app -- Syncthing is the
-one this was written for -- and point it at the folder Quicklog writes to.
-Because the notes are ordinary Markdown files in an ordinary directory, any
-sync, backup or file manager app works; there is nothing Quicklog-specific
-about them.
+Quicklog does not synchronise anything by itself. The default mode is local
+only. An optional S3 mode (Preferences) can write the same Markdown notes to a
+user-configured S3-compatible endpoint; access keys stay on the device and are
+never uploaded elsewhere. If you want local notes on your computer or another
+phone, run a separate sync app -- Syncthing is the one this was written for --
+and point it at the folder Quicklog writes to. Because the notes are ordinary
+Markdown files (or ordinary S3 objects with the same names), any sync, backup
+or file manager app works; there is nothing Quicklog-specific about them.
 
 Features:
 
 * Single-screen editor with a character counter.
-* Every press of "Log text" writes a new timestamped Markdown file.
+* Every press of "Log text" writes a new timestamped Markdown file (or S3
+  object, if you enable S3 mode).
 * Entry browser listing previous notes, newest first, with a reader view.
 * Edit a past entry in place: the note keeps its original filename, timestamp
   and position in the list. Save and Revert stay disabled until something
@@ -25,7 +27,7 @@ Features:
 * "Share to Quicklog" from any app that can share text. Depending on your
   preference the text is either prefilled in the editor or logged straight
   away.
-* Configurable log directory.
+* Configurable log directory; optional S3 endpoint, region, bucket and keys.
 
 Storage and permissions:
 
@@ -42,5 +44,7 @@ optional: decline it and the default directory keeps working. On GrapheneOS
 you can use Storage Scopes instead of granting broad access; the project
 documentation explains how.
 
-Quicklog is free software under the MIT licence, and it requests no network
-permission whatsoever.
+Network access is only used if you turn on S3 mode and configure an endpoint.
+Credentials never leave SharedPreferences on the device.
+
+Quicklog is free software under the MIT licence.

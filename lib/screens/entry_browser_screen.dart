@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:intl/intl.dart';
 
+import '../services/active_note_store.dart';
 import '../services/log_service.dart';
 import '../services/preferences.dart';
 import '../services/s3_session_controller.dart';
@@ -11,10 +12,13 @@ import 'entry_edit_screen.dart';
 final _displayFormat = DateFormat('yyyy-MM-dd HH:mm:ss');
 
 class EntryBrowserScreen extends StatefulWidget {
-  const EntryBrowserScreen({super.key, this.session});
+  const EntryBrowserScreen({super.key, this.session, this.activeStore});
 
   /// Optional override for tests; defaults to the process-wide session.
   final S3SessionController? session;
+
+  /// Optional override for tests (inject fake S3).
+  final ActiveNoteStore? activeStore;
 
   @override
   State<EntryBrowserScreen> createState() => _EntryBrowserScreenState();
@@ -28,6 +32,9 @@ class _EntryBrowserScreenState extends State<EntryBrowserScreen> {
 
   S3SessionController get _session =>
       widget.session ?? S3SessionController.instance;
+
+  ActiveNoteStore get _active =>
+      widget.activeStore ?? ActiveNoteStore.instance;
 
   @override
   void initState() {
@@ -44,8 +51,7 @@ class _EntryBrowserScreenState extends State<EntryBrowserScreen> {
 
   Future<List<LogEntry>> _load() async {
     _dir = await _prefs.directory();
-    // S3NoteStore lands later; local fallback still applies when degraded.
-    _store = _session.resolveStore(local: () => LocalNoteStore(_dir));
+    _store = await _active.resolve();
     return _store!.list();
   }
 

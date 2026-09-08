@@ -16,7 +16,7 @@ F-Droid (done, see below), and opening a merge request against F-Droid's
 | --- | --- |
 | Public source repository | <https://github.com/snonux/quicklog> |
 | FOSS licence | [`LICENSE`](../LICENSE) — MIT |
-| No proprietary dependencies | `pubspec.yaml` — Flutter, `shared_preferences`, `path_provider`, `path`, `intl`. No Firebase, no Google Mobile Services, no analytics, no network permission. |
+| No proprietary dependencies | `pubspec.yaml` — Flutter, `shared_preferences`, `path_provider`, `path`, `intl`, optional FOSS S3 client (`minio`/`http`). No Firebase, no Google Mobile Services, no analytics, no telemetry. Default storage is local-only; `INTERNET` is present for optional user-configured S3. |
 | Release tag matching `versionName` | tag `vX.Y.Z` ↔ `version: X.Y.Z+<code>` in `pubspec.yaml` |
 | Monotonic `versionCode` | plain counter in `pubspec.yaml`; `0.1.5` is release `10` |
 | Release build works without a keystore | `android/app/build.gradle.kts` — falls back to the debug keys, and F-Droid re-signs anyway |

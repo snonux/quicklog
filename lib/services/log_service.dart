@@ -32,6 +32,10 @@ abstract class NoteStore {
 final _filenameRegex = RegExp(r'^ql-(\d{6})-(\d{6})\.md$');
 final _timestampFormat = DateFormat('yyMMdd-HHmmss');
 
+/// Builds a `ql-YYMMDD-HHmmss.md` id from [stamp] (second precision).
+String logEntryIdFor(DateTime stamp) =>
+    'ql-${_timestampFormat.format(stamp)}.md';
+
 /// Filesystem-backed [NoteStore] writing `ql-YYMMDD-HHmmss.md` under [directory].
 /// Same filename contract Syncthing / quicklogger already expect.
 class LocalNoteStore implements NoteStore {
@@ -56,7 +60,7 @@ class LocalNoteStore implements NoteStore {
     // to yet) still works: apps can freely write files/folders they created.
     await Directory(directory).create(recursive: true);
     final stamp = now ?? DateTime.now();
-    final id = 'ql-${_timestampFormat.format(stamp)}.md';
+    final id = logEntryIdFor(stamp);
     // Timestamp comes from the id so create and list share one source of
     // truth (second precision only — the format drops subseconds).
     await _fileFor(id).writeAsString(text);
