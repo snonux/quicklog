@@ -5,12 +5,14 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:path/path.dart' as p;
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:quicklog/screens/preferences_screen.dart';
+import 'package:quicklog/services/s3_session_controller.dart';
 
 import 'io_pump.dart';
 
 void main() {
   late Directory tmp;
   late String unwritableDir;
+  late S3SessionController session;
 
   setUp(() async {
     tmp = await Directory.systemTemp.createTemp('ql-prefs-');
@@ -20,9 +22,13 @@ void main() {
     final blocker = File(p.join(tmp.path, 'blocker'));
     await blocker.writeAsString('not a directory');
     unwritableDir = p.join(blocker.path, 'notes');
+    SharedPreferences.setMockInitialValues(<String, Object>{});
+    session = S3SessionController();
+    await session.load();
   });
 
   tearDown(() async {
+    session.dispose();
     if (await tmp.exists()) await tmp.delete(recursive: true);
   });
 
@@ -30,7 +36,9 @@ void main() {
     SharedPreferences.setMockInitialValues(<String, Object>{
       'flutter.Directory': directory,
     });
-    await tester.pumpWidget(const MaterialApp(home: PreferencesScreen()));
+    await tester.pumpWidget(
+      MaterialApp(home: PreferencesScreen(session: session)),
+    );
     await pumpWithIo(tester);
   }
 

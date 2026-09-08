@@ -32,7 +32,7 @@ class _EntryBrowserScreenState extends State<EntryBrowserScreen> {
   @override
   void initState() {
     super.initState();
-    _session.load();
+    // Session is loaded once in main(); avoid racing re-load (see HomeScreen).
     _refresh();
   }
 

@@ -22,6 +22,10 @@ void main() {
     await session.load(now: now);
   });
 
+  tearDown(() {
+    session.dispose();
+  });
+
   group('mode toggle', () {
     test('defaults to local-only', () {
       expect(session.preferredMode, StorageMode.local);
@@ -63,6 +67,18 @@ void main() {
       expect(await prefs.degradedUntil(), now.add(kS3DegradeDuration));
     });
 
+    test('markS3Failed is a no-op when preferred mode is local', () async {
+      var notified = 0;
+      session.addListener(() => notified++);
+
+      await session.markS3Failed(now: now);
+
+      expect(session.degradedUntil, isNull);
+      expect(await prefs.degradedUntil(), isNull);
+      expect(session.isDegraded, isFalse);
+      expect(notified, 0);
+    });
+
     test('resolveStore returns local while degraded even if s3 factory given',
         () async {
       await session.setPreferredMode(StorageMode.s3);
@@ -87,6 +103,16 @@ void main() {
       );
       expect(identical(active, s3), isTrue);
     });
+
+    test('resolveStore uses local when s3 factory is null but shouldAttemptS3',
+        () async {
+      await session.setPreferredMode(StorageMode.s3);
+      expect(session.shouldAttemptS3, isTrue);
+
+      final local = _FakeStore('local');
+      final active = session.resolveStore(local: () => local);
+      expect(identical(active, local), isTrue);
+    });
   });
 
   group('1h expiry', () {
@@ -98,6 +124,23 @@ void main() {
       now = now.add(kS3DegradeDuration);
       expect(session.isDegraded, isFalse);
       expect(session.shouldAttemptS3, isTrue);
+      await pumpEventQueue();
+    });
+
+    test('mid-session expiry clears prefs and notifies listeners', () async {
+      await session.setPreferredMode(StorageMode.s3);
+      await session.markS3Failed(now: now);
+
+      var notified = 0;
+      session.addListener(() => notified++);
+
+      now = now.add(kS3DegradeDuration);
+      expect(session.isDegraded, isFalse);
+      await pumpEventQueue();
+
+      expect(session.degradedUntil, isNull);
+      expect(await prefs.degradedUntil(), isNull);
+      expect(notified, greaterThan(0));
     });
 
     test('just before expiry remains degraded', () async {
@@ -126,6 +169,7 @@ void main() {
       expect(cold.isDegraded, isFalse);
       expect(cold.shouldAttemptS3, isTrue);
       expect(await prefs.degradedUntil(), isNull);
+      cold.dispose();
     });
 
     test('load keeps a still-active persisted window', () async {
@@ -142,6 +186,23 @@ void main() {
       expect(cold.degradedUntil, until);
       expect(cold.isDegraded, isTrue);
       expect(cold.usesLocalFallback, isTrue);
+      cold.dispose();
+    });
+
+    test('second load does not resurrect a cleared degrade window', () async {
+      await session.setPreferredMode(StorageMode.s3);
+      await session.markS3Failed(now: now);
+      expect(await prefs.degradedUntil(), isNotNull);
+
+      await session.retryS3(probe: () async {});
+      expect(session.degradedUntil, isNull);
+
+      // Stale prefs would resurrect if load re-read them; idempotent load must not.
+      await prefs.setDegradedUntil(now.add(kS3DegradeDuration));
+      await session.load(now: now);
+
+      expect(session.degradedUntil, isNull);
+      expect(session.isDegraded, isFalse);
     });
   });
 
@@ -186,6 +247,39 @@ void main() {
     test('retry is a no-op when preferred mode is local', () async {
       final ok = await session.retryS3(probe: () async {});
       expect(ok, isFalse);
+    });
+
+    test('retry without probe clears degrade optimistically', () async {
+      await session.setPreferredMode(StorageMode.s3);
+      await session.markS3Failed(now: now);
+      expect(session.isDegraded, isTrue);
+
+      final ok = await session.retryS3();
+      expect(ok, isTrue);
+      expect(session.isDegraded, isFalse);
+      expect(session.degradedUntil, isNull);
+      expect(await prefs.degradedUntil(), isNull);
+      expect(session.shouldAttemptS3, isTrue);
+    });
+  });
+
+  group('corrupt prefs', () {
+    test('corrupt S3DegradedUntil parses to null', () async {
+      SharedPreferences.setMockInitialValues(<String, Object>{
+        'flutter.S3DegradedUntil': 'not-a-timestamp',
+        'flutter.StorageMode': 's3',
+      });
+      final freshPrefs = PreferencesService();
+      expect(await freshPrefs.degradedUntil(), isNull);
+
+      final cold = S3SessionController(
+        preferences: freshPrefs,
+        clock: () => now,
+      );
+      await cold.load(now: now);
+      expect(cold.degradedUntil, isNull);
+      expect(cold.isDegraded, isFalse);
+      cold.dispose();
     });
   });
 }

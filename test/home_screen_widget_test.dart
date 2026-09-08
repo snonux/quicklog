@@ -1,14 +1,26 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:quicklog/screens/home_screen.dart';
+import 'package:quicklog/services/s3_session_controller.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
 void main() {
   TestWidgetsFlutterBinding.ensureInitialized();
 
-  testWidgets('character counter updates as user types', (tester) async {
+  late S3SessionController session;
+
+  setUp(() async {
     SharedPreferences.setMockInitialValues(<String, Object>{});
-    await tester.pumpWidget(const MaterialApp(home: HomeScreen()));
+    session = S3SessionController();
+    await session.load();
+  });
+
+  tearDown(() {
+    session.dispose();
+  });
+
+  testWidgets('character counter updates as user types', (tester) async {
+    await tester.pumpWidget(MaterialApp(home: HomeScreen(session: session)));
     await tester.pumpAndSettle();
 
     expect(find.text('0 chars'), findsOneWidget);
@@ -19,8 +31,7 @@ void main() {
   });
 
   testWidgets('Clear button empties the input', (tester) async {
-    SharedPreferences.setMockInitialValues(<String, Object>{});
-    await tester.pumpWidget(const MaterialApp(home: HomeScreen()));
+    await tester.pumpWidget(MaterialApp(home: HomeScreen(session: session)));
     await tester.pumpAndSettle();
 
     await tester.enterText(find.byType(TextField), 'something');
@@ -33,8 +44,7 @@ void main() {
   });
 
   testWidgets('Log text button is rendered and enabled', (tester) async {
-    SharedPreferences.setMockInitialValues(<String, Object>{});
-    await tester.pumpWidget(const MaterialApp(home: HomeScreen()));
+    await tester.pumpWidget(MaterialApp(home: HomeScreen(session: session)));
     await tester.pumpAndSettle();
 
     final btn = find.widgetWithText(FilledButton, 'Log text');

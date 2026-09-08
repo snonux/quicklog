@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:flutter/foundation.dart';
 
 import 'log_service.dart';
@@ -30,16 +32,28 @@ class S3SessionController extends ChangeNotifier {
   final DateTime Function() _clock;
 
   /// Optional default probe for [retryS3] when no argument is passed.
+  /// Left injectable (not private) so tests / S3NoteStore can wire it later.
   S3Probe? probe;
 
-  StorageMode preferredMode = StorageMode.local;
-  DateTime? degradedUntil;
-  bool loaded = false;
+  StorageMode _preferredMode = StorageMode.local;
+  DateTime? _degradedUntil;
+  bool _loaded = false;
+  Timer? _expiryTimer;
+  bool _expiryClearInFlight = false;
+  bool _disposed = false;
+
+  StorageMode get preferredMode => _preferredMode;
+  DateTime? get degradedUntil => _degradedUntil;
+  bool get loaded => _loaded;
 
   /// Preferred S3 and still inside the degrade window.
+  ///
+  /// Reading after the window elapses clears persistence and notifies listeners
+  /// so the banner can drop without a cold start (also covered by [_expiryTimer]).
   bool get isDegraded {
-    if (preferredMode != StorageMode.s3) return false;
-    final until = degradedUntil;
+    _syncExpiryOnAccess();
+    if (_preferredMode != StorageMode.s3) return false;
+    final until = _degradedUntil;
     if (until == null) return false;
     return _clock().isBefore(until);
   }
@@ -65,16 +79,24 @@ class S3SessionController extends ChangeNotifier {
 
   /// Load persisted mode / degrade window. Clears an expired window so a cold
   /// start (or a long-lived process that re-loads) can attempt S3 again.
+  ///
+  /// Idempotent: once [loaded], subsequent calls only re-check expiry and do
+  /// not re-read prefs (avoids resurrecting a window cleared mid-session).
   Future<void> load({DateTime? now}) async {
-    preferredMode = await _prefs.storageMode();
-    degradedUntil = await _prefs.degradedUntil();
+    if (_loaded) {
+      await _clearIfExpired(now: now);
+      return;
+    }
+    _preferredMode = await _prefs.storageMode();
+    _degradedUntil = await _prefs.degradedUntil();
     await _clearIfExpired(now: now);
-    loaded = true;
+    _loaded = true;
+    _scheduleExpiryTimer();
     notifyListeners();
   }
 
   Future<void> setPreferredMode(StorageMode mode) async {
-    preferredMode = mode;
+    _preferredMode = mode;
     await _prefs.setStorageMode(mode);
     if (mode == StorageMode.local) {
       // Local-only: degrade state is irrelevant; drop it so a later switch
@@ -85,23 +107,30 @@ class S3SessionController extends ChangeNotifier {
   }
 
   /// Record an S3 I/O failure: fall back to local for [kS3DegradeDuration].
+  /// No-op when preferred mode is local (degrade is meaningless there).
   Future<void> markS3Failed({DateTime? now}) async {
+    if (_preferredMode != StorageMode.s3) return;
     final t = now ?? _clock();
-    degradedUntil = t.add(kS3DegradeDuration);
-    await _prefs.setDegradedUntil(degradedUntil);
+    _degradedUntil = t.add(kS3DegradeDuration);
+    await _prefs.setDegradedUntil(_degradedUntil);
+    _scheduleExpiryTimer();
     notifyListeners();
   }
 
   /// Clear the degrade window and run [probe] (or [this.probe]).
-  /// Success keeps S3 active; failure re-arms the 1h window.
+  ///
+  /// When no probe is configured yet (S3NoteStore not landed), clears the
+  /// degrade window optimistically and returns true — Retry must not throw
+  /// [StateError] at the user from the banner.
   Future<bool> retryS3({S3Probe? probe, DateTime? now}) async {
-    if (preferredMode != StorageMode.s3) return false;
+    if (_preferredMode != StorageMode.s3) return false;
     final run = probe ?? this.probe;
-    if (run == null) {
-      throw StateError('S3 probe not configured');
-    }
     await _clearDegraded();
     notifyListeners();
+    if (run == null) {
+      // Optimistic clear until a real probe exists.
+      return true;
+    }
     try {
       await run();
       return true;
@@ -111,8 +140,44 @@ class S3SessionController extends ChangeNotifier {
     }
   }
 
+  /// If the clock has passed [degradedUntil], clear memory immediately and
+  /// schedule prefs clear + [notifyListeners] (so ListenableBuilder rebuilds).
+  void _syncExpiryOnAccess() {
+    final until = _degradedUntil;
+    if (until == null) return;
+    if (_clock().isBefore(until)) return;
+    _degradedUntil = null;
+    _expiryTimer?.cancel();
+    _expiryTimer = null;
+    if (_expiryClearInFlight) return;
+    _expiryClearInFlight = true;
+    scheduleMicrotask(() async {
+      try {
+        await _prefs.setDegradedUntil(null);
+        if (!_disposed) notifyListeners();
+      } finally {
+        _expiryClearInFlight = false;
+      }
+    });
+  }
+
+  void _scheduleExpiryTimer() {
+    _expiryTimer?.cancel();
+    _expiryTimer = null;
+    final until = _degradedUntil;
+    if (until == null) return;
+    final remaining = until.difference(_clock());
+    if (remaining <= Duration.zero) {
+      _syncExpiryOnAccess();
+      return;
+    }
+    _expiryTimer = Timer(remaining, () {
+      _syncExpiryOnAccess();
+    });
+  }
+
   Future<void> _clearIfExpired({DateTime? now}) async {
-    final until = degradedUntil;
+    final until = _degradedUntil;
     if (until == null) return;
     final t = now ?? _clock();
     if (!t.isBefore(until)) {
@@ -121,11 +186,20 @@ class S3SessionController extends ChangeNotifier {
   }
 
   Future<void> _clearDegraded() async {
-    if (degradedUntil == null) {
+    _expiryTimer?.cancel();
+    _expiryTimer = null;
+    if (_degradedUntil == null) {
       await _prefs.setDegradedUntil(null);
       return;
     }
-    degradedUntil = null;
+    _degradedUntil = null;
     await _prefs.setDegradedUntil(null);
+  }
+
+  @override
+  void dispose() {
+    _disposed = true;
+    _expiryTimer?.cancel();
+    super.dispose();
   }
 }

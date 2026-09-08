@@ -45,9 +45,8 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
     super.initState();
     WidgetsBinding.instance.addObserver(this);
     _controller.addListener(_onTextChanged);
-    // Re-load every time so widget tests (and a prefs change while the
-    // singleton was already warm) pick up persisted mode / degrade state.
-    _session.load();
+    // Session is loaded once in main(); do not re-load here — a racing
+    // unawaited load can resurrect a degrade window cleared by retry/mode.
     if (Platform.isAndroid) {
       WidgetsBinding.instance.addPostFrameCallback((_) => _loadSharedText());
     }

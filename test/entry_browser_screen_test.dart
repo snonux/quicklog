@@ -4,6 +4,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:path/path.dart' as p;
 import 'package:quicklog/screens/entry_browser_screen.dart';
+import 'package:quicklog/services/s3_session_controller.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
 import 'io_pump.dart';
@@ -13,6 +14,7 @@ void main() {
 
   late Directory tmp;
   late File entryFile;
+  late S3SessionController session;
 
   setUp(() async {
     tmp = await Directory.systemTemp.createTemp('ql-browser-');
@@ -21,14 +23,19 @@ void main() {
     SharedPreferences.setMockInitialValues(<String, Object>{
       'flutter.Directory': tmp.path,
     });
+    session = S3SessionController();
+    await session.load();
   });
 
   tearDown(() async {
+    session.dispose();
     if (await tmp.exists()) await tmp.delete(recursive: true);
   });
 
   Future<void> pumpBrowser(WidgetTester tester) async {
-    await tester.pumpWidget(const MaterialApp(home: EntryBrowserScreen()));
+    await tester.pumpWidget(
+      MaterialApp(home: EntryBrowserScreen(session: session)),
+    );
     await pumpWithIo(tester);
   }
 
