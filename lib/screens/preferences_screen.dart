@@ -14,6 +14,7 @@ class PreferencesScreen extends StatefulWidget {
     super.key,
     this.session,
     this.activeStore,
+    this.s3ClientFactory,
   });
 
   /// Optional override for tests; defaults to the process-wide session.
@@ -21,6 +22,10 @@ class PreferencesScreen extends StatefulWidget {
 
   /// Optional override for tests (inject fake S3 factory).
   final ActiveNoteStore? activeStore;
+
+  /// Optional client factory for "Test connection" (defaults to Minio).
+  /// Injected in tests so the probe never hits the network or prefs.
+  final S3ObjectClientFactory? s3ClientFactory;
 
   @override
   State<PreferencesScreen> createState() => _PreferencesScreenState();
@@ -129,10 +134,10 @@ class _PreferencesScreenState extends State<PreferencesScreen>
       if (!config.hasCredentials) {
         throw StateError('Enter access key and secret first.');
       }
-      // Persist temporarily so the factory sees the values under test.
-      await _prefs.setS3Config(config);
-      final client = MinioS3ObjectClient(config);
-      final store = S3NoteStore(client);
+      // Probe in-memory only — never persist secrets before Save.
+      final factory =
+          widget.s3ClientFactory ?? ((c) => MinioS3ObjectClient(c));
+      final store = S3NoteStore(factory(config));
       await store.probe();
       if (!mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(

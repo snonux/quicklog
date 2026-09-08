@@ -98,6 +98,31 @@ void main() {
       expect(session.usesLocalFallback, isTrue);
     });
 
+    test('ArgumentError (bad id) does not markS3Failed', () async {
+      await expectLater(
+        store.read('../escape.md'),
+        throwsA(isA<ArgumentError>()),
+      );
+      expect(session.isDegraded, isFalse);
+    });
+
+    test('NoSuchKey / missing object on read does not markS3Failed', () async {
+      await expectLater(
+        store.read('ql-260908-000000.md'),
+        throwsA(isA<StateError>()),
+      );
+      expect(session.isDegraded, isFalse);
+    });
+
+    test('firstLine never marks S3 failed (missing or transport)', () async {
+      expect(await store.firstLine('ql-260908-000000.md'), '');
+      expect(session.isDegraded, isFalse);
+
+      client.alwaysFail = Exception('network down');
+      expect(await store.firstLine('ql-260908-102230.md'), '');
+      expect(session.isDegraded, isFalse);
+    });
+
     test('probe failure degrades; successful probe does not', () async {
       await store.probe();
       expect(session.isDegraded, isFalse);

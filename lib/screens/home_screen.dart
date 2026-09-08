@@ -184,8 +184,9 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
       if (!mounted) return;
       final message = switch (result) {
         S3RetryResult.reachable => 'S3 reachable again.',
-        S3RetryResult.armedWithoutProbe =>
-          'S3 retry armed (no connectivity check yet).',
+        S3RetryResult.armedWithoutProbe => _session.probe == null
+            ? 'S3 retry armed (no connectivity check yet).'
+            : 'S3 reachable again.',
         S3RetryResult.unavailable => 'S3 still unavailable.',
         S3RetryResult.ignored => 'S3 retry not applicable.',
       };

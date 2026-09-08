@@ -121,4 +121,134 @@ void main() {
     expect(File(p.join(tmp.path, entry.id)).existsSync(), isTrue);
     expect(fakeS3.objects, isEmpty);
   });
+
+  test('preferred S3 with empty credentials falls back to local + degrades',
+      () async {
+    SharedPreferences.setMockInitialValues(<String, Object>{
+      'flutter.Directory': tmp.path,
+      // No access/secret keys.
+    });
+    prefs = PreferencesService();
+    session.dispose();
+    session = S3SessionController(preferences: prefs);
+    await session.load();
+    await session.setPreferredMode(StorageMode.s3);
+    active = ActiveNoteStore(
+      preferences: prefs,
+      session: session,
+      s3ClientFactory: (_) => fakeS3,
+    );
+
+    final resolved = await active.resolve();
+    expect(session.isDegraded, isTrue);
+    expect(session.usesLocalFallback, isTrue);
+
+    final entry = await resolved.create(
+      'no creds local',
+      now: DateTime(2026, 9, 8, 7, 0, 0),
+    );
+    expect(File(p.join(tmp.path, entry.id)).existsSync(), isTrue);
+    expect(fakeS3.objects, isEmpty);
+  });
+
+  testWidgets('browser re-resolves to local after session degrades',
+      (tester) async {
+    await session.setPreferredMode(StorageMode.s3);
+    await prefs.setS3Config(
+      S3Config(
+        endpoint: kDefaultS3Endpoint,
+        region: kDefaultS3Region,
+        bucket: kDefaultS3Bucket,
+        accessKeyId: 'AKIA_TEST',
+        secretAccessKey: 'secret_test',
+      ),
+    );
+    final s3Store = await active.resolve();
+    await s3Store.create(
+      'on s3 only',
+      now: DateTime(2026, 9, 8, 9, 30, 0),
+    );
+
+    await tester.pumpWidget(
+      MaterialApp(
+        home: EntryBrowserScreen(session: session, activeStore: active),
+      ),
+    );
+    await pumpWithIo(tester);
+    expect(find.textContaining('on s3 only'), findsWidgets);
+
+    // Local-only note written while S3 is still preferred; after degrade the
+    // browser must list from LocalNoteStore and show it.
+    await tester.runAsync(() async {
+      await File(p.join(tmp.path, 'ql-260908-093100.md'))
+          .writeAsString('local after degrade');
+    });
+
+    await tester.runAsync(() => session.markS3Failed());
+    await pumpWithIo(tester);
+
+    expect(find.textContaining('local after degrade'), findsWidgets);
+    expect(
+      find.text('Using local (S3 unavailable). Retry or wait until the '
+          'degrade window ends.'),
+      findsOneWidget,
+    );
+  });
+
+  testWidgets('Test connection probes without persisting secrets',
+      (tester) async {
+    SharedPreferences.setMockInitialValues(<String, Object>{
+      'flutter.Directory': tmp.path,
+    });
+    prefs = PreferencesService();
+    session.dispose();
+    session = S3SessionController(preferences: prefs);
+    await session.load();
+    final probeClient = MemoryS3ObjectClient();
+    active = ActiveNoteStore(
+      preferences: prefs,
+      session: session,
+      s3ClientFactory: (_) => probeClient,
+    );
+
+    await tester.pumpWidget(
+      MaterialApp(
+        home: PreferencesScreen(
+          session: session,
+          activeStore: active,
+          s3ClientFactory: (_) => probeClient,
+        ),
+      ),
+    );
+    await pumpWithIo(tester);
+
+    await tester.tap(find.text('S3 only'));
+    await tester.pump();
+    await tester.drag(find.byType(ListView), const Offset(0, -600));
+    await tester.pump();
+
+    final secretField = find.byWidgetPredicate(
+      (w) => w is TextField && w.obscureText,
+    );
+    expect(secretField, findsOneWidget);
+
+    final fields = find.byType(TextField);
+    final fieldCount = tester.widgetList(fields).length;
+    // Access key is the TextField immediately before the obscure secret field.
+    final accessKeyField = fields.at(fieldCount - 2);
+
+    await tester.enterText(accessKeyField, 'TEMP_KEY_NOT_SAVED');
+    await tester.enterText(secretField, 'TEMP_SECRET_NOT_SAVED');
+    await tester.pump();
+
+    await tester.ensureVisible(find.text('Test connection'));
+    await tester.tap(find.text('Test connection'));
+    await pumpWithIo(tester);
+
+    expect(find.text('S3 connection OK.'), findsOneWidget);
+
+    final saved = await prefs.s3Config();
+    expect(saved.accessKeyId, isEmpty);
+    expect(saved.secretAccessKey, isEmpty);
+  });
 }

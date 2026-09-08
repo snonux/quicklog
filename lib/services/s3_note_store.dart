@@ -14,16 +14,26 @@ class S3NoteStore implements NoteStore {
   final S3ObjectClient client;
   final Future<void> Function()? _onFailure;
 
+  /// Degrade only on real transport / S3 service failures — not bad ids
+  /// ([ArgumentError]) and not missing-key / 404 reads.
+  bool _shouldMarkFailure(Object error) {
+    if (error is ArgumentError) return false;
+    if (isMissingObjectError(error)) return false;
+    return true;
+  }
+
   Future<T> _guard<T>(Future<T> Function() op) async {
     try {
       return await op();
     } catch (e) {
-      final hook = _onFailure;
-      if (hook != null) {
-        try {
-          await hook();
-        } catch (_) {
-          // Degrade hook must not mask the original I/O error.
+      if (_shouldMarkFailure(e)) {
+        final hook = _onFailure;
+        if (hook != null) {
+          try {
+            await hook();
+          } catch (_) {
+            // Degrade hook must not mask the original I/O error.
+          }
         }
       }
       rethrow;
@@ -88,8 +98,12 @@ class S3NoteStore implements NoteStore {
 
   @override
   Future<String> firstLine(String id) async {
+    // Preview helper: never degrade the session. Missing keys, bad ids, and
+    // even transport errors here only yield an empty subtitle.
     try {
-      return firstLineOf(await read(id));
+      if (parseLogEntryId(id) == null) return '';
+      final bytes = await client.getObject(id);
+      return firstLineOf(utf8.decode(bytes));
     } catch (_) {
       return '';
     }

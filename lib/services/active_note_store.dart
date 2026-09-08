@@ -48,6 +48,15 @@ class ActiveNoteStore {
   Future<NoteStore> resolve() async {
     bindSessionProbe();
     final dir = await _prefs.directory();
+    if (_session.shouldAttemptS3) {
+      final config = await _prefs.s3Config();
+      if (!config.hasCredentials) {
+        // Preferred S3 but nothing to authenticate with: fall back to local
+        // and arm degrade so the banner / retry path stay consistent.
+        await _session.markS3Failed();
+        return LocalNoteStore(dir);
+      }
+    }
     return _session.resolveStore(
       local: () => LocalNoteStore(dir),
       s3: () {

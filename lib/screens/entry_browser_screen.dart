@@ -29,6 +29,7 @@ class _EntryBrowserScreenState extends State<EntryBrowserScreen> {
   Future<List<LogEntry>>? _future;
   NoteStore? _store;
   String _dir = '';
+  bool _wasUsingLocalFallback = false;
 
   S3SessionController get _session =>
       widget.session ?? S3SessionController.instance;
@@ -39,7 +40,25 @@ class _EntryBrowserScreenState extends State<EntryBrowserScreen> {
   @override
   void initState() {
     super.initState();
+    _wasUsingLocalFallback = _session.usesLocalFallback;
+    _session.addListener(_onSessionChanged);
     // Session is loaded once in main(); avoid racing re-load (see HomeScreen).
+    _refresh();
+  }
+
+  @override
+  void dispose() {
+    _session.removeListener(_onSessionChanged);
+    super.dispose();
+  }
+
+  /// When the session flips to/from local fallback, drop the cached store and
+  /// re-resolve so we do not keep calling a stale [S3NoteStore].
+  void _onSessionChanged() {
+    if (!mounted) return;
+    final usingLocal = _session.usesLocalFallback;
+    if (usingLocal == _wasUsingLocalFallback) return;
+    _wasUsingLocalFallback = usingLocal;
     _refresh();
   }
 
@@ -52,6 +71,7 @@ class _EntryBrowserScreenState extends State<EntryBrowserScreen> {
   Future<List<LogEntry>> _load() async {
     _dir = await _prefs.directory();
     _store = await _active.resolve();
+    _wasUsingLocalFallback = _session.usesLocalFallback;
     return _store!.list();
   }
 
@@ -61,8 +81,9 @@ class _EntryBrowserScreenState extends State<EntryBrowserScreen> {
       if (!mounted) return;
       final message = switch (result) {
         S3RetryResult.reachable => 'S3 reachable again.',
-        S3RetryResult.armedWithoutProbe =>
-          'S3 retry armed (no connectivity check yet).',
+        S3RetryResult.armedWithoutProbe => _session.probe == null
+            ? 'S3 retry armed (no connectivity check yet).'
+            : 'S3 reachable again.',
         S3RetryResult.unavailable => 'S3 still unavailable.',
         S3RetryResult.ignored => 'S3 retry not applicable.',
       };
