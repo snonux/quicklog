@@ -91,6 +91,13 @@ Future<DrainSummary> drainQuicklogObjects({
           'size mismatch for $key: wrote $written, expected ${bytes.length}',
         );
       }
+      // Final collision check immediately before publish — a peer (e.g.
+      // Syncthing) may have created the file during GET.
+      if (await target.exists() && !force) {
+        await tmp.delete();
+        skipped++;
+        continue;
+      }
       // On Linux, rename over an existing file is atomic; do not delete first.
       await tmp.rename(target.path);
       fetched++;
