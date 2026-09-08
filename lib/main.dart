@@ -1,8 +1,11 @@
 import 'package:flutter/material.dart';
 
 import 'screens/home_screen.dart';
+import 'services/s3_session_controller.dart';
 
-void main() {
+Future<void> main() async {
+  WidgetsFlutterBinding.ensureInitialized();
+  await S3SessionController.instance.load();
   runApp(const QuickLoggerApp());
 }
 

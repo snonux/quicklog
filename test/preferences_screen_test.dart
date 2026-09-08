@@ -70,5 +70,7 @@ void main() {
     expect(find.text('Preferences'), findsOneWidget);
     expect(find.text(tmp.path), findsOneWidget);
     expect(find.text('Auto-log shared text'), findsOneWidget);
+    expect(find.text('Local only'), findsOneWidget);
+    expect(find.text('S3 only'), findsOneWidget);
   });
 }

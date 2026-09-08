@@ -4,15 +4,20 @@ import 'package:flutter/material.dart';
 
 import '../services/log_service.dart';
 import '../services/preferences.dart';
+import '../services/s3_session_controller.dart';
 import '../services/share_service.dart';
 import '../services/shared_text_handler.dart';
+import '../widgets/s3_degraded_banner.dart';
 import 'entry_browser_screen.dart';
 import 'preferences_screen.dart';
 
 const int kMaxTextLength = 5000;
 
 class HomeScreen extends StatefulWidget {
-  const HomeScreen({super.key});
+  const HomeScreen({super.key, this.session});
+
+  /// Optional override for tests; defaults to the process-wide session.
+  final S3SessionController? session;
 
   @override
   State<HomeScreen> createState() => _HomeScreenState();
@@ -25,13 +30,24 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
   bool _warnShown = false;
   bool _loadingShared = false;
 
-  Future<NoteStore> _store() async => LocalNoteStore(await _prefs.directory());
+  S3SessionController get _session =>
+      widget.session ?? S3SessionController.instance;
+
+  Future<NoteStore> _store() async {
+    final dir = await _prefs.directory();
+    // S3NoteStore lands in a later task; resolveStore still applies local
+    // fallback when preferred S3 is degraded.
+    return _session.resolveStore(local: () => LocalNoteStore(dir));
+  }
 
   @override
   void initState() {
     super.initState();
     WidgetsBinding.instance.addObserver(this);
     _controller.addListener(_onTextChanged);
+    // Re-load every time so widget tests (and a prefs change while the
+    // singleton was already warm) pick up persisted mode / degrade state.
+    _session.load();
     if (Platform.isAndroid) {
       WidgetsBinding.instance.addPostFrameCallback((_) => _loadSharedText());
     }
@@ -141,14 +157,38 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
 
   Future<void> _openPreferences() async {
     await Navigator.of(context).push(
-      MaterialPageRoute(builder: (_) => const PreferencesScreen()),
+      MaterialPageRoute(
+        builder: (_) => PreferencesScreen(session: _session),
+      ),
     );
   }
 
   Future<void> _openEntryBrowser() async {
     await Navigator.of(context).push(
-      MaterialPageRoute(builder: (_) => const EntryBrowserScreen()),
+      MaterialPageRoute(
+        builder: (_) => EntryBrowserScreen(session: _session),
+      ),
     );
+  }
+
+  Future<void> _retryS3() async {
+    try {
+      final ok = await _session.retryS3();
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text(ok ? 'S3 reachable again.' : 'S3 still unavailable.'),
+        ),
+      );
+    } catch (e) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text('Retry failed: $e'),
+          backgroundColor: Colors.red,
+        ),
+      );
+    }
   }
 
   void _showAbout() {
@@ -185,46 +225,54 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
           ),
         ],
       ),
-      body: Padding(
-        padding: const EdgeInsets.all(12),
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.stretch,
-          children: [
-            Expanded(
-              child: TextField(
-                controller: _controller,
-                focusNode: _focusNode,
-                maxLines: null,
-                expands: true,
-                textAlignVertical: TextAlignVertical.top,
-                decoration: const InputDecoration(
-                  hintText: 'Enter text here...',
-                  border: OutlineInputBorder(),
-                ),
+      body: Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          S3DegradedBanner(session: _session, onRetry: _retryS3),
+          Expanded(
+            child: Padding(
+              padding: const EdgeInsets.all(12),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.stretch,
+                children: [
+                  Expanded(
+                    child: TextField(
+                      controller: _controller,
+                      focusNode: _focusNode,
+                      maxLines: null,
+                      expands: true,
+                      textAlignVertical: TextAlignVertical.top,
+                      decoration: const InputDecoration(
+                        hintText: 'Enter text here...',
+                        border: OutlineInputBorder(),
+                      ),
+                    ),
+                  ),
+                  const SizedBox(height: 8),
+                  Row(
+                    children: [
+                      FilledButton.icon(
+                        onPressed: _logText,
+                        icon: const Icon(Icons.save),
+                        label: const Text('Log text'),
+                      ),
+                      const SizedBox(width: 8),
+                      OutlinedButton(
+                        onPressed: () {
+                          _resetInput();
+                          _focusNode.requestFocus();
+                        },
+                        child: const Text('Clear'),
+                      ),
+                      const Spacer(),
+                      Text('$length chars'),
+                    ],
+                  ),
+                ],
               ),
             ),
-            const SizedBox(height: 8),
-            Row(
-              children: [
-                FilledButton.icon(
-                  onPressed: _logText,
-                  icon: const Icon(Icons.save),
-                  label: const Text('Log text'),
-                ),
-                const SizedBox(width: 8),
-                OutlinedButton(
-                  onPressed: () {
-                    _resetInput();
-                    _focusNode.requestFocus();
-                  },
-                  child: const Text('Clear'),
-                ),
-                const Spacer(),
-                Text('$length chars'),
-              ],
-            ),
-          ],
-        ),
+          ),
+        ],
       ),
     );
   }

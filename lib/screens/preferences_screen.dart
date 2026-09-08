@@ -1,11 +1,15 @@
 import 'package:flutter/material.dart';
 
 import '../services/preferences.dart';
+import '../services/s3_session_controller.dart';
 import '../services/storage.dart';
 import '../services/storage_access_service.dart';
 
 class PreferencesScreen extends StatefulWidget {
-  const PreferencesScreen({super.key});
+  const PreferencesScreen({super.key, this.session});
+
+  /// Optional override for tests; defaults to the process-wide session.
+  final S3SessionController? session;
 
   @override
   State<PreferencesScreen> createState() => _PreferencesScreenState();
@@ -15,10 +19,14 @@ class _PreferencesScreenState extends State<PreferencesScreen> with WidgetsBindi
   final PreferencesService _prefs = PreferencesService();
   final TextEditingController _dirController = TextEditingController();
   bool _autoLog = false;
+  StorageMode _storageMode = StorageMode.local;
   bool _loaded = false;
   // Whether the configured directory is actually writable -- not whether the
   // All files access permission is held. See canWriteToDirectory().
   bool _directoryWritable = true;
+
+  S3SessionController get _session =>
+      widget.session ?? S3SessionController.instance;
 
   @override
   void initState() {
@@ -41,6 +49,7 @@ class _PreferencesScreenState extends State<PreferencesScreen> with WidgetsBindi
   Future<void> _load() async {
     _dirController.text = await _prefs.directory();
     _autoLog = await _prefs.autoLogSharedText();
+    _storageMode = await _prefs.storageMode();
     _directoryWritable = await canWriteToDirectory(_dirController.text);
     if (!mounted) return;
     setState(() => _loaded = true);
@@ -63,6 +72,7 @@ class _PreferencesScreenState extends State<PreferencesScreen> with WidgetsBindi
   Future<void> _save() async {
     await _prefs.setDirectory(_dirController.text);
     await _prefs.setAutoLogSharedText(_autoLog);
+    await _session.setPreferredMode(_storageMode);
     if (!mounted) return;
     Navigator.of(context).pop();
   }
@@ -134,6 +144,36 @@ class _PreferencesScreenState extends State<PreferencesScreen> with WidgetsBindi
                 ],
               ),
             ),
+          ),
+          const SizedBox(height: 16),
+          const Text('Storage:', style: TextStyle(fontWeight: FontWeight.bold)),
+          const SizedBox(height: 4),
+          SegmentedButton<StorageMode>(
+            segments: const [
+              ButtonSegment(
+                value: StorageMode.local,
+                label: Text('Local only'),
+                icon: Icon(Icons.folder),
+              ),
+              ButtonSegment(
+                value: StorageMode.s3,
+                label: Text('S3 only'),
+                icon: Icon(Icons.cloud),
+              ),
+            ],
+            selected: {_storageMode},
+            onSelectionChanged: (selected) {
+              setState(() => _storageMode = selected.single);
+            },
+          ),
+          const SizedBox(height: 8),
+          Text(
+            _storageMode == StorageMode.local
+                ? 'Notes stay on this device as Markdown files. Default.'
+                : 'Notes go to a user-configured S3 endpoint only. On failure '
+                    'the app falls back to local until you retry or the '
+                    'degrade window ends. S3 credentials come in a later build.',
+            style: Theme.of(context).textTheme.bodySmall,
           ),
           const SizedBox(height: 16),
           SwitchListTile(

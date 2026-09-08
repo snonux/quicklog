@@ -3,13 +3,18 @@ import 'package:intl/intl.dart';
 
 import '../services/log_service.dart';
 import '../services/preferences.dart';
+import '../services/s3_session_controller.dart';
+import '../widgets/s3_degraded_banner.dart';
 import 'delete_confirmation_screen.dart';
 import 'entry_edit_screen.dart';
 
 final _displayFormat = DateFormat('yyyy-MM-dd HH:mm:ss');
 
 class EntryBrowserScreen extends StatefulWidget {
-  const EntryBrowserScreen({super.key});
+  const EntryBrowserScreen({super.key, this.session});
+
+  /// Optional override for tests; defaults to the process-wide session.
+  final S3SessionController? session;
 
   @override
   State<EntryBrowserScreen> createState() => _EntryBrowserScreenState();
@@ -21,9 +26,13 @@ class _EntryBrowserScreenState extends State<EntryBrowserScreen> {
   NoteStore? _store;
   String _dir = '';
 
+  S3SessionController get _session =>
+      widget.session ?? S3SessionController.instance;
+
   @override
   void initState() {
     super.initState();
+    _session.load();
     _refresh();
   }
 
@@ -35,8 +44,21 @@ class _EntryBrowserScreenState extends State<EntryBrowserScreen> {
 
   Future<List<LogEntry>> _load() async {
     _dir = await _prefs.directory();
-    _store = LocalNoteStore(_dir);
+    // S3NoteStore lands later; local fallback still applies when degraded.
+    _store = _session.resolveStore(local: () => LocalNoteStore(_dir));
     return _store!.list();
+  }
+
+  Future<void> _retryS3() async {
+    try {
+      final ok = await _session.retryS3();
+      if (!mounted) return;
+      _showSnack(ok ? 'S3 reachable again.' : 'S3 still unavailable.');
+      if (ok) _refresh();
+    } catch (e) {
+      if (!mounted) return;
+      _showSnack('Retry failed: $e', isError: true);
+    }
   }
 
   /// Opens the viewer. The viewer cannot delete by itself; it pops with
@@ -117,18 +139,25 @@ class _EntryBrowserScreenState extends State<EntryBrowserScreen> {
           ),
         ],
       ),
-      body: FutureBuilder<List<LogEntry>>(
-        future: _future,
-        builder: (ctx, snap) {
-          if (snap.connectionState != ConnectionState.done) {
-            return const Center(child: CircularProgressIndicator());
-          }
-          if (snap.hasError) {
-            return Center(child: Text('Error: ${snap.error}'));
-          }
-          final entries = snap.data ?? const <LogEntry>[];
-          return entries.isEmpty ? _emptyState() : _entryList(entries);
-        },
+      body: Column(
+        children: [
+          S3DegradedBanner(session: _session, onRetry: _retryS3),
+          Expanded(
+            child: FutureBuilder<List<LogEntry>>(
+              future: _future,
+              builder: (ctx, snap) {
+                if (snap.connectionState != ConnectionState.done) {
+                  return const Center(child: CircularProgressIndicator());
+                }
+                if (snap.hasError) {
+                  return Center(child: Text('Error: ${snap.error}'));
+                }
+                final entries = snap.data ?? const <LogEntry>[];
+                return entries.isEmpty ? _emptyState() : _entryList(entries);
+              },
+            ),
+          ),
+        ],
       ),
     );
   }
