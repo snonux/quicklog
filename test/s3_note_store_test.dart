@@ -114,6 +114,40 @@ void main() {
       expect(session.isDegraded, isFalse);
     });
 
+    test('NoSuchBucket / NotFound / 404 on list marks S3 failed', () async {
+      for (final err in [
+        StateError('NoSuchBucket: quicklog'),
+        Exception('NotFound'),
+        Exception('HTTP 404'),
+      ]) {
+        await session.retryS3(probe: () async {}, now: now);
+        expect(session.isDegraded, isFalse);
+
+        client.failNext = err;
+        await expectLater(store.list(), throwsA(anything));
+        expect(session.isDegraded, isTrue, reason: '$err');
+      }
+    });
+
+    test('NoSuchBucket on create/probe marks S3 failed', () async {
+      client.failNext = StateError('NoSuchBucket: quicklog');
+      await expectLater(store.create('x'), throwsA(isA<StateError>()));
+      expect(session.isDegraded, isTrue);
+
+      await session.retryS3(probe: () async {}, now: now);
+      expect(session.isDegraded, isFalse);
+
+      client.failNext = StateError('NoSuchBucket: quicklog');
+      await expectLater(store.probe(), throwsA(isA<StateError>()));
+      expect(session.isDegraded, isTrue);
+    });
+
+    test('NoSuchKey on create still marks S3 failed', () async {
+      client.failNext = StateError('NoSuchKey: unexpected');
+      await expectLater(store.create('x'), throwsA(isA<StateError>()));
+      expect(session.isDegraded, isTrue);
+    });
+
     test('firstLine never marks S3 failed (missing or transport)', () async {
       expect(await store.firstLine('ql-260908-000000.md'), '');
       expect(session.isDegraded, isFalse);
@@ -130,6 +164,15 @@ void main() {
       client.failNext = Exception('boom');
       await expectLater(store.probe(), throwsA(isA<Exception>()));
       expect(session.isDegraded, isTrue);
+    });
+  });
+
+  group('isMissingObjectError', () {
+    test('matches NoSuchKey only, not NoSuchBucket / NotFound / 404', () {
+      expect(isMissingObjectError(StateError('NoSuchKey: k')), isTrue);
+      expect(isMissingObjectError(StateError('NoSuchBucket: b')), isFalse);
+      expect(isMissingObjectError(Exception('NotFound')), isFalse);
+      expect(isMissingObjectError(Exception('HTTP 404')), isFalse);
     });
   });
 }

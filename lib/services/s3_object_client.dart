@@ -18,30 +18,20 @@ abstract class S3ObjectClient {
   Future<List<String>> listKeys({String prefix = ''});
 }
 
-/// True for missing-object / 404 responses — not transport failures.
+/// True only for an absent *object* ([NoSuchKey]) — not wrong bucket, not a
+/// generic 404 / NotFound.
 ///
-/// [S3NoteStore] must not call its degrade hook for these: a bad id or absent
-/// key is a normal read miss, not an S3 outage.
+/// [S3NoteStore] may skip its degrade hook for these on **read** only: a missing
+/// key is a normal miss. [NoSuchBucket], transport errors, and the same codes
+/// on create/list/probe must still call [S3NoteStore]'s onFailure.
 bool isMissingObjectError(Object error) {
   if (error is StateError) {
-    final msg = error.message;
-    return msg.contains('NoSuchKey') || msg.contains('404');
+    return error.message.contains('NoSuchKey');
   }
   if (error is MinioS3Error) {
-    final code = error.error?.code;
-    if (code == 'NoSuchKey' ||
-        code == 'NotFound' ||
-        code == 'Not Found' ||
-        code == 'NoSuchBucket') {
-      return true;
-    }
-    final status = error.response?.statusCode;
-    if (status == 404) return true;
+    return error.error?.code == 'NoSuchKey';
   }
-  final s = error.toString();
-  return s.contains('NoSuchKey') ||
-      s.contains('NotFound') ||
-      RegExp(r'\b404\b').hasMatch(s);
+  return error.toString().contains('NoSuchKey');
 }
 
 /// Minio client forced to path-style against [S3Config] (Garage-friendly).

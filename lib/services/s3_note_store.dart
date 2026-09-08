@@ -14,19 +14,26 @@ class S3NoteStore implements NoteStore {
   final S3ObjectClient client;
   final Future<void> Function()? _onFailure;
 
-  /// Degrade only on real transport / S3 service failures — not bad ids
-  /// ([ArgumentError]) and not missing-key / 404 reads.
-  bool _shouldMarkFailure(Object error) {
+  /// Degrade on real transport / S3 service failures — not bad ids
+  /// ([ArgumentError]). Missing-object ([isMissingObjectError]) is skipped only
+  /// when [allowMissingObject] is true (read path).
+  bool _shouldMarkFailure(
+    Object error, {
+    required bool allowMissingObject,
+  }) {
     if (error is ArgumentError) return false;
-    if (isMissingObjectError(error)) return false;
+    if (allowMissingObject && isMissingObjectError(error)) return false;
     return true;
   }
 
-  Future<T> _guard<T>(Future<T> Function() op) async {
+  Future<T> _guard<T>(
+    Future<T> Function() op, {
+    bool allowMissingObject = false,
+  }) async {
     try {
       return await op();
     } catch (e) {
-      if (_shouldMarkFailure(e)) {
+      if (_shouldMarkFailure(e, allowMissingObject: allowMissingObject)) {
         final hook = _onFailure;
         if (hook != null) {
           try {
@@ -73,11 +80,14 @@ class S3NoteStore implements NoteStore {
 
   @override
   Future<String> read(String id) {
-    return _guard(() async {
-      _requireId(id);
-      final bytes = await client.getObject(id);
-      return utf8.decode(bytes);
-    });
+    return _guard(
+      () async {
+        _requireId(id);
+        final bytes = await client.getObject(id);
+        return utf8.decode(bytes);
+      },
+      allowMissingObject: true,
+    );
   }
 
   @override
