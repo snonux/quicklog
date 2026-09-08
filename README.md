@@ -145,6 +145,22 @@ directory until you tap Retry or an hour elapses / the app cold-starts.
 
 Default mode remains **Local only**. There is no analytics or background sync.
 
+### Drain CLI (laptop)
+
+When notes land in the Garage bucket from a phone, drain them into
+`~/Notes/Quicklog` (then delete the remote objects) with:
+
+```sh
+# after sourcing credentials the same way as tasksync / fish quicklog_drain
+dart run bin/quicklog_drain.dart [--dest DIR] [--dry-run] [--force] [--limit N]
+```
+
+Credentials: `GARAGE_ENDPOINT`, `GARAGE_REGION`, `GARAGE_BUCKET`,
+`GARAGE_ACCESS_KEY_ID`, `GARAGE_SECRET_ACCESS_KEY` (see
+`~/.config/garage/quicklog.env`). Fetch is atomic (temp + rename); remote
+delete runs only after a successful local write. Existing local files are
+skipped unless `--force`.
+
 ## Storage on Android
 
 By default, log files are written to the app-specific external directory at
