@@ -51,10 +51,20 @@ class _EntryBrowserScreenState extends State<EntryBrowserScreen> {
 
   Future<void> _retryS3() async {
     try {
-      final ok = await _session.retryS3();
+      final result = await _session.retryS3();
       if (!mounted) return;
-      _showSnack(ok ? 'S3 reachable again.' : 'S3 still unavailable.');
-      if (ok) _refresh();
+      final message = switch (result) {
+        S3RetryResult.reachable => 'S3 reachable again.',
+        S3RetryResult.armedWithoutProbe =>
+          'S3 retry armed (no connectivity check yet).',
+        S3RetryResult.unavailable => 'S3 still unavailable.',
+        S3RetryResult.ignored => 'S3 retry not applicable.',
+      };
+      _showSnack(message);
+      if (result == S3RetryResult.reachable ||
+          result == S3RetryResult.armedWithoutProbe) {
+        _refresh();
+      }
     } catch (e) {
       if (!mounted) return;
       _showSnack('Retry failed: $e', isError: true);

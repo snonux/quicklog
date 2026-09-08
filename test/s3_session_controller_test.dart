@@ -143,6 +143,53 @@ void main() {
       expect(notified, greaterThan(0));
     });
 
+    test('expiry prefs clear does not wipe a newly armed window', () async {
+      await session.setPreferredMode(StorageMode.s3);
+      await session.markS3Failed(now: now);
+
+      now = now.add(kS3DegradeDuration);
+      // Schedules an async prefs clear for the expired window.
+      expect(session.isDegraded, isFalse);
+
+      // Re-arm before that deferred clear finishes writing null.
+      final rearmAt = now;
+      await session.markS3Failed(now: rearmAt);
+      final armedUntil = rearmAt.add(kS3DegradeDuration);
+      expect(session.degradedUntil, armedUntil);
+
+      await pumpEventQueue();
+
+      expect(session.degradedUntil, armedUntil);
+      expect(await prefs.degradedUntil(), armedUntil);
+      expect(session.isDegraded, isTrue);
+    });
+
+    test('expiry prefs clear does not wipe after concurrent retryS3 re-arm',
+        () async {
+      await session.setPreferredMode(StorageMode.s3);
+      await session.markS3Failed(now: now);
+
+      now = now.add(kS3DegradeDuration);
+      expect(session.isDegraded, isFalse);
+
+      final retryAt = now.add(const Duration(minutes: 1));
+      now = retryAt;
+      final result = await session.retryS3(
+        probe: () async {
+          throw Exception('still down');
+        },
+        now: retryAt,
+      );
+      expect(result, S3RetryResult.unavailable);
+      final armedUntil = retryAt.add(kS3DegradeDuration);
+
+      await pumpEventQueue();
+
+      expect(session.degradedUntil, armedUntil);
+      expect(await prefs.degradedUntil(), armedUntil);
+      expect(session.isDegraded, isTrue);
+    });
+
     test('just before expiry remains degraded', () async {
       await session.setPreferredMode(StorageMode.s3);
       await session.markS3Failed(now: now);
@@ -212,14 +259,14 @@ void main() {
       await session.markS3Failed(now: now);
       var probed = false;
 
-      final ok = await session.retryS3(
+      final result = await session.retryS3(
         probe: () async {
           probed = true;
         },
         now: now,
       );
 
-      expect(ok, isTrue);
+      expect(result, S3RetryResult.reachable);
       expect(probed, isTrue);
       expect(session.isDegraded, isFalse);
       expect(session.shouldAttemptS3, isTrue);
@@ -232,21 +279,21 @@ void main() {
       final retryAt = now.add(const Duration(minutes: 5));
       now = retryAt;
 
-      final ok = await session.retryS3(
+      final result = await session.retryS3(
         probe: () async {
           throw Exception('network down');
         },
         now: retryAt,
       );
 
-      expect(ok, isFalse);
+      expect(result, S3RetryResult.unavailable);
       expect(session.isDegraded, isTrue);
       expect(session.degradedUntil, retryAt.add(kS3DegradeDuration));
     });
 
     test('retry is a no-op when preferred mode is local', () async {
-      final ok = await session.retryS3(probe: () async {});
-      expect(ok, isFalse);
+      final result = await session.retryS3(probe: () async {});
+      expect(result, S3RetryResult.ignored);
     });
 
     test('retry without probe clears degrade optimistically', () async {
@@ -254,8 +301,8 @@ void main() {
       await session.markS3Failed(now: now);
       expect(session.isDegraded, isTrue);
 
-      final ok = await session.retryS3();
-      expect(ok, isTrue);
+      final result = await session.retryS3();
+      expect(result, S3RetryResult.armedWithoutProbe);
       expect(session.isDegraded, isFalse);
       expect(session.degradedUntil, isNull);
       expect(await prefs.degradedUntil(), isNull);

@@ -172,12 +172,17 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
 
   Future<void> _retryS3() async {
     try {
-      final ok = await _session.retryS3();
+      final result = await _session.retryS3();
       if (!mounted) return;
+      final message = switch (result) {
+        S3RetryResult.reachable => 'S3 reachable again.',
+        S3RetryResult.armedWithoutProbe =>
+          'S3 retry armed (no connectivity check yet).',
+        S3RetryResult.unavailable => 'S3 still unavailable.',
+        S3RetryResult.ignored => 'S3 retry not applicable.',
+      };
       ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(
-          content: Text(ok ? 'S3 reachable again.' : 'S3 still unavailable.'),
-        ),
+        SnackBar(content: Text(message)),
       );
     } catch (e) {
       if (!mounted) return;
