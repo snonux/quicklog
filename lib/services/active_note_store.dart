@@ -22,12 +22,31 @@ class BrowserNoteSources {
   /// True when preferred mode is S3 (merged listing + location badges).
   final bool mergeWhenS3Preferred;
 
-  /// Store used for read / edit / firstLine of [located].
+  /// Set by [list] when an S3 LIST fails; local rows are still returned.
+  bool s3ListFailed = false;
+
+  /// Store used for read / firstLine of [located].
   /// Prefer S3 when the note lives there (including [NoteStorageLocation.both]).
   NoteStore storeFor(LocatedLogEntry located) {
     final remote = s3;
     if (located.hasS3 && remote != null) return remote;
     return local;
+  }
+
+  /// [NoteStore] for view/edit/delete that keeps [both] backends in sync on
+  /// [NoteStore.update] and deletes every backend that holds the note.
+  NoteStore entryStore(LocatedLogEntry located) =>
+      _BrowserEntryStore(this, located);
+
+  /// Writes [text] to every backend that currently holds [located].
+  Future<void> update(LocatedLogEntry located, String text) async {
+    final remote = s3;
+    if (located.hasS3 && remote != null) {
+      await remote.update(located.id, text);
+    }
+    if (located.hasLocal) {
+      await local.update(located.id, text);
+    }
   }
 
   /// Deletes from every backend that holds [located].
@@ -39,6 +58,15 @@ class BrowserNoteSources {
     if (located.hasLocal) {
       await local.delete(located.id);
     }
+  }
+
+  /// Drops the local copy of a note that already exists in S3 (finishes a
+  /// partial move, or clears a duplicate after a failed local delete).
+  Future<void> removeLocalCopy(LocatedLogEntry located) async {
+    if (located.location != NoteStorageLocation.both) {
+      throw StateError('Only notes present in both places can drop the local copy.');
+    }
+    await local.delete(located.id);
   }
 
   Future<void> moveLocalToS3(LocatedLogEntry located) async {
@@ -54,6 +82,7 @@ class BrowserNoteSources {
 
   /// Lists notes from these sources (merged when [mergeWhenS3Preferred]).
   Future<List<LocatedLogEntry>> list() async {
+    s3ListFailed = false;
     final localEntries = await local.list();
     if (!mergeWhenS3Preferred) {
       return [
@@ -69,11 +98,50 @@ class BrowserNoteSources {
       } catch (_) {
         // Degrade hook (if any) already ran inside S3NoteStore; keep local
         // rows so a failing bucket does not blank the whole browser.
+        s3ListFailed = true;
         s3Entries = const [];
       }
+    } else if (mergeWhenS3Preferred) {
+      // Preferred S3 but no client (e.g. missing credentials): treat as list miss.
+      s3ListFailed = true;
     }
     return mergeNoteLists(local: localEntries, s3: s3Entries);
   }
+}
+
+/// Routes read to the preferred backend and write/delete through
+/// [BrowserNoteSources] so [NoteStorageLocation.both] stays consistent.
+class _BrowserEntryStore implements NoteStore {
+  _BrowserEntryStore(this._sources, this._located);
+
+  final BrowserNoteSources _sources;
+  final LocatedLogEntry _located;
+
+  NoteStore get _primary => _sources.storeFor(_located);
+
+  @override
+  Future<LogEntry> create(String text, {DateTime? now}) =>
+      throw UnsupportedError('Browser entry store does not create notes');
+
+  @override
+  Future<List<LogEntry>> list() => _primary.list();
+
+  @override
+  Future<String> read(String id) => _primary.read(id);
+
+  @override
+  Future<void> update(String id, String text) =>
+      _sources.update(_located, text);
+
+  @override
+  Future<void> delete(String id) => _sources.delete(_located);
+
+  @override
+  Future<String> firstLine(String id) => _primary.firstLine(id);
+
+  @override
+  Future<String> preview(String id, {int maxChars = 200}) =>
+      _primary.preview(id, maxChars: maxChars);
 }
 
 /// Resolves the process-active [NoteStore] from prefs + [S3SessionController].
@@ -164,7 +232,7 @@ class ActiveNoteStore {
         mergeWhenS3Preferred: true,
       );
     }
-    final s3 = await _buildS3Store(markFailures: true);
+    final s3 = await _buildS3Store(markFailures: false);
     return BrowserNoteSources(
       local: local,
       s3: s3,

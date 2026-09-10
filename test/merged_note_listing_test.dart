@@ -39,6 +39,11 @@ void main() {
         s3: const [],
       );
       expect(onlyLocal.single.location, NoteStorageLocation.local);
+      final onlyS3 = mergeNoteLists(
+        local: const [],
+        s3: [e('ql-260901-110000.md')],
+      );
+      expect(onlyS3.single.location, NoteStorageLocation.s3);
     });
   });
 
@@ -86,5 +91,50 @@ void main() {
       expect(File(p.join(tmp.path, entry.id)).existsSync(), isTrue);
       expect(client.objects, isEmpty);
     });
+
+    test('leaves object in S3 when local delete fails after put', () async {
+      final entry = await local.create(
+        'partial move',
+        now: DateTime(2026, 9, 1, 12, 0, 0),
+      );
+      // Replace local store with one whose delete throws after a successful put.
+      final flakyLocal = _DeleteFailsNoteStore(local);
+      await expectLater(
+        moveLocalNoteToS3(local: flakyLocal, s3: s3, id: entry.id),
+        throwsA(isA<Exception>()),
+      );
+      expect(await s3.read(entry.id), 'partial move');
+      expect(File(p.join(tmp.path, entry.id)).existsSync(), isTrue);
+    });
   });
+}
+
+/// Delegates to [inner] except [delete], which always throws.
+class _DeleteFailsNoteStore implements NoteStore {
+  _DeleteFailsNoteStore(this.inner);
+  final NoteStore inner;
+
+  @override
+  Future<LogEntry> create(String text, {DateTime? now}) =>
+      inner.create(text, now: now);
+
+  @override
+  Future<List<LogEntry>> list() => inner.list();
+
+  @override
+  Future<String> read(String id) => inner.read(id);
+
+  @override
+  Future<void> update(String id, String text) => inner.update(id, text);
+
+  @override
+  Future<void> delete(String id) =>
+      Future.error(Exception('local delete failed'));
+
+  @override
+  Future<String> firstLine(String id) => inner.firstLine(id);
+
+  @override
+  Future<String> preview(String id, {int maxChars = 200}) =>
+      inner.preview(id, maxChars: maxChars);
 }

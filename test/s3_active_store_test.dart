@@ -247,6 +247,77 @@ void main() {
     expect(find.byTooltip('Move to S3'), findsNothing);
   });
 
+  testWidgets('shows list-failure banner and still lists local notes',
+      (tester) async {
+    await session.setPreferredMode(StorageMode.s3);
+    await prefs.setS3Config(
+      S3Config(
+        endpoint: kDefaultS3Endpoint,
+        region: kDefaultS3Region,
+        bucket: kDefaultS3Bucket,
+        accessKeyId: 'AKIA_TEST',
+        secretAccessKey: 'secret_test',
+      ),
+    );
+    await tester.runAsync(() async {
+      await File(p.join(tmp.path, 'ql-260908-070000.md'))
+          .writeAsString('local while s3 down');
+    });
+    fakeS3.alwaysFail = Exception('list failed');
+
+    await tester.pumpWidget(
+      MaterialApp(
+        home: EntryBrowserScreen(session: session, activeStore: active),
+      ),
+    );
+    await pumpWithIo(tester);
+
+    expect(
+      find.textContaining('Could not list S3 notes'),
+      findsOneWidget,
+    );
+    expect(find.textContaining('local while s3 down'), findsWidgets);
+  });
+
+  testWidgets('both-location row can remove the local copy', (tester) async {
+    await session.setPreferredMode(StorageMode.s3);
+    await prefs.setS3Config(
+      S3Config(
+        endpoint: kDefaultS3Endpoint,
+        region: kDefaultS3Region,
+        bucket: kDefaultS3Bucket,
+        accessKeyId: 'AKIA_TEST',
+        secretAccessKey: 'secret_test',
+      ),
+    );
+    const id = 'ql-260908-060000.md';
+    await tester.runAsync(() async {
+      await File(p.join(tmp.path, id)).writeAsString('dup local');
+      await fakeS3.putText(id, 'dup s3');
+    });
+
+    await tester.pumpWidget(
+      MaterialApp(
+        home: EntryBrowserScreen(session: session, activeStore: active),
+      ),
+    );
+    await pumpWithIo(tester);
+
+    expect(find.byIcon(Icons.cloud_sync_outlined), findsOneWidget);
+    expect(find.byTooltip('Remove local copy'), findsOneWidget);
+
+    await tester.tap(find.byTooltip('Remove local copy'));
+    await pumpWithIo(tester);
+
+    expect(find.textContaining('Removed local copy of $id'), findsOneWidget);
+    expect(
+      await tester.runAsync(() async => File(p.join(tmp.path, id)).exists()),
+      isFalse,
+    );
+    expect(fakeS3.objects.containsKey(id), isTrue);
+    expect(find.byIcon(Icons.cloud_outlined), findsOneWidget);
+  });
+
   test('listForBrowser merges when S3 preferred and stays local-only otherwise',
       () async {
     await File(p.join(tmp.path, 'ql-260908-080000.md'))

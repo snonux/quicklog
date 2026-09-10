@@ -31,6 +31,8 @@ class _EntryBrowserScreenState extends State<EntryBrowserScreen> {
   BrowserNoteSources? _sources;
   String _dir = '';
   bool _wasUsingLocalFallback = false;
+  StorageMode _lastPreferredMode = StorageMode.local;
+  bool _s3ListFailed = false;
 
   S3SessionController get _session =>
       widget.session ?? S3SessionController.instance;
@@ -44,6 +46,7 @@ class _EntryBrowserScreenState extends State<EntryBrowserScreen> {
   void initState() {
     super.initState();
     _wasUsingLocalFallback = _session.usesLocalFallback;
+    _lastPreferredMode = _session.preferredMode;
     _session.addListener(_onSessionChanged);
     // Session is loaded once in main(); avoid racing re-load (see HomeScreen).
     _refresh();
@@ -55,13 +58,18 @@ class _EntryBrowserScreenState extends State<EntryBrowserScreen> {
     super.dispose();
   }
 
-  /// When the session flips to/from local fallback, drop the cached sources and
-  /// re-resolve so we do not keep calling a stale [S3NoteStore].
+  /// Re-list when preferred mode changes or degrade state flips (local
+  /// leftovers may appear while S3 is down; S3 rows return when it recovers).
   void _onSessionChanged() {
     if (!mounted) return;
     final usingLocal = _session.usesLocalFallback;
-    if (usingLocal == _wasUsingLocalFallback) return;
+    final mode = _session.preferredMode;
+    if (usingLocal == _wasUsingLocalFallback &&
+        mode == _lastPreferredMode) {
+      return;
+    }
     _wasUsingLocalFallback = usingLocal;
+    _lastPreferredMode = mode;
     _refresh();
   }
 
@@ -69,7 +77,7 @@ class _EntryBrowserScreenState extends State<EntryBrowserScreen> {
     setState(() {
       _future = _load().then((entries) {
         // FutureBuilder rebuilds its child only; setState so AppBar actions
-        // (Move all) see the resolved sources.
+        // (Move all) see the resolved sources / list-failure flag.
         if (mounted) setState(() {});
         return entries;
       });
@@ -80,7 +88,10 @@ class _EntryBrowserScreenState extends State<EntryBrowserScreen> {
     _dir = await _prefs.directory();
     _sources = await _active.resolveBrowserSources();
     _wasUsingLocalFallback = _session.usesLocalFallback;
-    return _sources!.list();
+    _lastPreferredMode = _session.preferredMode;
+    final entries = await _sources!.list();
+    _s3ListFailed = _sources!.s3ListFailed;
+    return entries;
   }
 
   Future<void> _retryS3() async {
@@ -114,7 +125,7 @@ class _EntryBrowserScreenState extends State<EntryBrowserScreen> {
   Future<void> _open(LocatedLogEntry located) async {
     final sources = _sources;
     if (sources == null) return;
-    final store = sources.storeFor(located);
+    final store = sources.entryStore(located);
     final deleteRequested = await Navigator.of(context).push<bool>(
       MaterialPageRoute(
         builder: (_) => _EntryDetailScreen(
@@ -137,7 +148,8 @@ class _EntryBrowserScreenState extends State<EntryBrowserScreen> {
   Future<void> _edit(LocatedLogEntry located) async {
     final sources = _sources;
     if (sources == null) return;
-    final saved = await editEntry(context, sources.storeFor(located), located.entry);
+    final saved =
+        await editEntry(context, sources.entryStore(located), located.entry);
     if (saved && mounted) _refresh();
   }
 
@@ -146,7 +158,7 @@ class _EntryBrowserScreenState extends State<EntryBrowserScreen> {
     if (sources == null) return;
     final confirmed = await confirmEntryDeletion(
       context,
-      sources.storeFor(located),
+      sources.entryStore(located),
       located.entry,
     );
     if (!confirmed || !mounted) return;
@@ -184,6 +196,25 @@ class _EntryBrowserScreenState extends State<EntryBrowserScreen> {
     }
     if (!mounted) return;
     _showSnack('Moved ${located.id} to S3');
+    _refresh();
+  }
+
+  Future<void> _removeLocalCopy(LocatedLogEntry located) async {
+    final sources = _sources;
+    if (sources == null) return;
+    try {
+      await sources.removeLocalCopy(located);
+    } catch (e) {
+      if (mounted) {
+        _showSnack(
+          'Could not remove local copy of ${located.id}: $e',
+          isError: true,
+        );
+      }
+      return;
+    }
+    if (!mounted) return;
+    _showSnack('Removed local copy of ${located.id}');
     _refresh();
   }
 
@@ -256,6 +287,23 @@ class _EntryBrowserScreenState extends State<EntryBrowserScreen> {
       body: Column(
         children: [
           S3DegradedBanner(session: _session, onRetry: _retryS3),
+          if (_s3ListFailed)
+            ColoredBox(
+              color: Theme.of(context).colorScheme.errorContainer,
+              child: ListTile(
+                dense: true,
+                title: Text(
+                  'Could not list S3 notes; showing local entries only.',
+                  style: TextStyle(
+                    color: Theme.of(context).colorScheme.onErrorContainer,
+                  ),
+                ),
+                trailing: TextButton(
+                  onPressed: _refresh,
+                  child: const Text('Retry'),
+                ),
+              ),
+            ),
           Expanded(
             child: FutureBuilder<List<LocatedLogEntry>>(
               future: _future,
@@ -297,8 +345,24 @@ class _EntryBrowserScreenState extends State<EntryBrowserScreen> {
         separatorBuilder: (_, _) => const Divider(height: 1),
         itemBuilder: (_, i) {
           final located = entries[i];
+          final VoidCallback? secondaryAction;
+          final String? secondaryTooltip;
+          final IconData? secondaryIcon;
+          if (located.isLocalOnly && sources.s3 != null) {
+            secondaryAction = () => _moveToS3(located);
+            secondaryTooltip = 'Move to S3';
+            secondaryIcon = Icons.cloud_upload_outlined;
+          } else if (located.location == NoteStorageLocation.both) {
+            secondaryAction = () => _removeLocalCopy(located);
+            secondaryTooltip = 'Remove local copy';
+            secondaryIcon = Icons.folder_off_outlined;
+          } else {
+            secondaryAction = null;
+            secondaryTooltip = null;
+            secondaryIcon = null;
+          }
           return _EntryTile(
-            store: sources.storeFor(located),
+            store: sources.entryStore(located),
             entry: located.entry,
             location: _showLocation ? located.location : null,
             onTap: () => _open(located),
@@ -306,9 +370,9 @@ class _EntryBrowserScreenState extends State<EntryBrowserScreen> {
             // Long-press is kept as the original gesture; the trailing icon
             // makes the same action discoverable without knowing about it.
             onDelete: () => _confirmAndDelete(located),
-            onMoveToS3: located.isLocalOnly && sources.s3 != null
-                ? () => _moveToS3(located)
-                : null,
+            onSecondary: secondaryAction,
+            secondaryTooltip: secondaryTooltip,
+            secondaryIcon: secondaryIcon,
           );
         },
       ),
@@ -324,7 +388,9 @@ class _EntryTile extends StatelessWidget {
     required this.onEdit,
     required this.onDelete,
     this.location,
-    this.onMoveToS3,
+    this.onSecondary,
+    this.secondaryTooltip,
+    this.secondaryIcon,
   });
 
   final NoteStore store;
@@ -333,7 +399,9 @@ class _EntryTile extends StatelessWidget {
   final VoidCallback onTap;
   final VoidCallback onEdit;
   final VoidCallback onDelete;
-  final VoidCallback? onMoveToS3;
+  final VoidCallback? onSecondary;
+  final String? secondaryTooltip;
+  final IconData? secondaryIcon;
 
   @override
   Widget build(BuildContext context) {
@@ -359,11 +427,13 @@ class _EntryTile extends StatelessWidget {
       trailing: Row(
         mainAxisSize: MainAxisSize.min,
         children: [
-          if (onMoveToS3 != null)
+          if (onSecondary != null &&
+              secondaryTooltip != null &&
+              secondaryIcon != null)
             IconButton(
-              tooltip: 'Move to S3',
-              icon: const Icon(Icons.cloud_upload_outlined),
-              onPressed: onMoveToS3,
+              tooltip: secondaryTooltip,
+              icon: Icon(secondaryIcon),
+              onPressed: onSecondary,
             ),
           IconButton(
             tooltip: 'Edit entry',
