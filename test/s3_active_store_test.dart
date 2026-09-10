@@ -320,8 +320,43 @@ void main() {
     expect(find.byIcon(Icons.cloud_outlined), findsOneWidget);
   });
 
-  test('listForBrowser merges when S3 preferred and stays local-only otherwise',
-      () async {
+  testWidgets('Move all local aborts when a fresh S3 list fails',
+      (tester) async {
+    await session.setPreferredMode(StorageMode.s3);
+    await prefs.setS3Config(
+      S3Config(
+        endpoint: kDefaultS3Endpoint,
+        region: kDefaultS3Region,
+        bucket: kDefaultS3Bucket,
+        accessKeyId: 'AKIA_TEST',
+        secretAccessKey: 'secret_test',
+      ),
+    );
+    const id = 'ql-260908-050000.md';
+    await tester.runAsync(() async {
+      await File(p.join(tmp.path, id)).writeAsString('do not move');
+      await fakeS3.putText(id, 'already remote');
+    });
+
+    await tester.pumpWidget(
+      MaterialApp(
+        home: EntryBrowserScreen(session: session, activeStore: active),
+      ),
+    );
+    await pumpWithIo(tester);
+    expect(find.byTooltip('Move all local to S3'), findsOneWidget);
+
+    fakeS3.alwaysFail = Exception('list failed mid move-all');
+    await tester.tap(find.byTooltip('Move all local to S3'));
+    await pumpWithIo(tester);
+
+    expect(find.textContaining('move cancelled'), findsOneWidget);
+    expect(
+      await tester.runAsync(() async => File(p.join(tmp.path, id)).exists()),
+      isTrue,
+    );
+  });
+
     await File(p.join(tmp.path, 'ql-260908-080000.md'))
         .writeAsString('only local mode');
     var listed = await active.listForBrowser();

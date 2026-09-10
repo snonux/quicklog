@@ -227,8 +227,19 @@ class _EntryBrowserScreenState extends State<EntryBrowserScreen> {
     final sources = _sources;
     if (sources == null || sources.s3 == null) return;
     // Re-list so we move whatever is currently local-only, not a stale
-    // FutureBuilder snapshot.
+    // FutureBuilder snapshot. Abort if LIST failed — otherwise every local
+    // id looks local-only and Move would overwrite unknown remote objects.
     final fresh = await sources.list();
+    if (sources.s3ListFailed) {
+      if (mounted) {
+        setState(() => _s3ListFailed = true);
+        _showSnack(
+          'Could not list S3 notes; move cancelled.',
+          isError: true,
+        );
+      }
+      return;
+    }
     final localOnly =
         fresh.where((e) => e.isLocalOnly).toList(growable: false);
     if (localOnly.isEmpty) {
