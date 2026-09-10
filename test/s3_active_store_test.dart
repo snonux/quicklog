@@ -357,6 +357,8 @@ void main() {
     );
   });
 
+  test('listForBrowser merges when S3 preferred and stays local-only otherwise',
+      () async {
     await File(p.join(tmp.path, 'ql-260908-080000.md'))
         .writeAsString('only local mode');
     var listed = await active.listForBrowser();
