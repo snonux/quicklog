@@ -150,4 +150,37 @@ void main() {
     expect(sources.s3ListFailed, isFalse);
     expect(listed, isEmpty);
   });
+
+  test('update of both still writes local when S3 update fails', () async {
+    const id = 'ql-260901-170000.md';
+    await File(p.join(tmp.path, id)).writeAsString('local old');
+    await client.putText(id, 's3 old');
+    final sources = BrowserNoteSources(
+      local: local,
+      s3: s3,
+      mergeWhenS3Preferred: true,
+    );
+    client.failNext = Exception('s3 update failed');
+
+    await expectLater(
+      sources.update(located(id, NoteStorageLocation.both), 'new text'),
+      throwsA(isA<Exception>()),
+    );
+    expect(await local.read(id), 'new text');
+    expect(await s3.read(id), 's3 old');
+  });
+
+  test('moveLocalToS3 rejects both-location notes', () async {
+    final sources = BrowserNoteSources(
+      local: local,
+      s3: s3,
+      mergeWhenS3Preferred: true,
+    );
+    await expectLater(
+      sources.moveLocalToS3(
+        located('ql-260901-180000.md', NoteStorageLocation.both),
+      ),
+      throwsStateError,
+    );
+  });
 }

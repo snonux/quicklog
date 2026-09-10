@@ -277,6 +277,8 @@ void main() {
       findsOneWidget,
     );
     expect(find.textContaining('local while s3 down'), findsWidgets);
+    expect(find.byTooltip('Move to S3'), findsNothing);
+    expect(session.isDegraded, isFalse);
   });
 
   testWidgets('both-location row can remove the local copy', (tester) async {

@@ -33,6 +33,7 @@ class _EntryBrowserScreenState extends State<EntryBrowserScreen> {
   bool _wasUsingLocalFallback = false;
   StorageMode _lastPreferredMode = StorageMode.local;
   bool _s3ListFailed = false;
+  int _loadGeneration = 0;
 
   S3SessionController get _session =>
       widget.session ?? S3SessionController.instance;
@@ -74,23 +75,27 @@ class _EntryBrowserScreenState extends State<EntryBrowserScreen> {
   }
 
   void _refresh() {
+    final generation = ++_loadGeneration;
     setState(() {
-      _future = _load().then((entries) {
+      _future = _load(generation).then((entries) {
         // FutureBuilder rebuilds its child only; setState so AppBar actions
         // (Move all) see the resolved sources / list-failure flag.
-        if (mounted) setState(() {});
+        if (mounted && generation == _loadGeneration) setState(() {});
         return entries;
       });
     });
   }
 
-  Future<List<LocatedLogEntry>> _load() async {
-    _dir = await _prefs.directory();
-    _sources = await _active.resolveBrowserSources();
+  Future<List<LocatedLogEntry>> _load(int generation) async {
+    final dir = await _prefs.directory();
+    final sources = await _active.resolveBrowserSources();
+    final entries = await sources.list();
+    if (generation != _loadGeneration) return entries;
+    _dir = dir;
+    _sources = sources;
     _wasUsingLocalFallback = _session.usesLocalFallback;
     _lastPreferredMode = _session.preferredMode;
-    final entries = await _sources!.list();
-    _s3ListFailed = _sources!.s3ListFailed;
+    _s3ListFailed = sources.s3ListFailed;
     return entries;
   }
 
@@ -263,9 +268,10 @@ class _EntryBrowserScreenState extends State<EntryBrowserScreen> {
 
   @override
   Widget build(BuildContext context) {
-    // Show whenever S3 merge mode is active and S3 is reachable; the action
-    // re-lists and no-ops with a snackbar when nothing is local-only.
-    final canMoveAll = _showLocation && _sources?.s3 != null;
+    // Show whenever S3 merge mode is active, S3 is reachable, and LIST worked;
+    // a failed LIST means we cannot tell local-only from both — hide Move.
+    final canMoveAll =
+        _showLocation && _sources?.s3 != null && !_s3ListFailed;
 
     return Scaffold(
       appBar: AppBar(
@@ -348,7 +354,7 @@ class _EntryBrowserScreenState extends State<EntryBrowserScreen> {
           final VoidCallback? secondaryAction;
           final String? secondaryTooltip;
           final IconData? secondaryIcon;
-          if (located.isLocalOnly && sources.s3 != null) {
+          if (located.isLocalOnly && sources.s3 != null && !_s3ListFailed) {
             secondaryAction = () => _moveToS3(located);
             secondaryTooltip = 'Move to S3';
             secondaryIcon = Icons.cloud_upload_outlined;

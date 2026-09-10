@@ -39,25 +39,51 @@ class BrowserNoteSources {
       _BrowserEntryStore(this, located);
 
   /// Writes [text] to every backend that currently holds [located].
+  ///
+  /// Both backends are attempted even if one fails, so a single I/O error does
+  /// not skip the other. The first error (if any) is rethrown after both tries.
   Future<void> update(LocatedLogEntry located, String text) async {
+    Object? firstError;
     final remote = s3;
     if (located.hasS3 && remote != null) {
-      await remote.update(located.id, text);
+      try {
+        await remote.update(located.id, text);
+      } catch (e) {
+        firstError = e;
+      }
     }
     if (located.hasLocal) {
-      await local.update(located.id, text);
+      try {
+        await local.update(located.id, text);
+      } catch (e) {
+        firstError ??= e;
+      }
     }
+    if (firstError != null) throw firstError;
   }
 
   /// Deletes from every backend that holds [located].
+  ///
+  /// Same best-effort rule as [update]: attempt every side, then rethrow the
+  /// first error so a partial delete is still visible to the caller.
   Future<void> delete(LocatedLogEntry located) async {
+    Object? firstError;
     final remote = s3;
     if (located.hasS3 && remote != null) {
-      await remote.delete(located.id);
+      try {
+        await remote.delete(located.id);
+      } catch (e) {
+        firstError = e;
+      }
     }
     if (located.hasLocal) {
-      await local.delete(located.id);
+      try {
+        await local.delete(located.id);
+      } catch (e) {
+        firstError ??= e;
+      }
     }
+    if (firstError != null) throw firstError;
   }
 
   /// Drops the local copy of a note that already exists in S3 (finishes a
