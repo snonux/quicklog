@@ -1,4 +1,5 @@
 import 'log_service.dart';
+import 'merged_note_listing.dart';
 import 'preferences.dart';
 import 's3_config.dart';
 import 's3_note_store.dart';
@@ -7,11 +8,80 @@ import 's3_session_controller.dart';
 
 typedef S3ObjectClientFactory = S3ObjectClient Function(S3Config config);
 
+/// Local + optional S3 stores for the entry browser when S3 is preferred.
+class BrowserNoteSources {
+  BrowserNoteSources({
+    required this.local,
+    this.s3,
+    required this.mergeWhenS3Preferred,
+  });
+
+  final LocalNoteStore local;
+  final S3NoteStore? s3;
+
+  /// True when preferred mode is S3 (merged listing + location badges).
+  final bool mergeWhenS3Preferred;
+
+  /// Store used for read / edit / firstLine of [located].
+  /// Prefer S3 when the note lives there (including [NoteStorageLocation.both]).
+  NoteStore storeFor(LocatedLogEntry located) {
+    final remote = s3;
+    if (located.hasS3 && remote != null) return remote;
+    return local;
+  }
+
+  /// Deletes from every backend that holds [located].
+  Future<void> delete(LocatedLogEntry located) async {
+    final remote = s3;
+    if (located.hasS3 && remote != null) {
+      await remote.delete(located.id);
+    }
+    if (located.hasLocal) {
+      await local.delete(located.id);
+    }
+  }
+
+  Future<void> moveLocalToS3(LocatedLogEntry located) async {
+    final remote = s3;
+    if (remote == null) {
+      throw StateError('S3 is not available to receive the note.');
+    }
+    if (!located.isLocalOnly) {
+      throw StateError('Only local-only notes can be moved to S3.');
+    }
+    await moveLocalNoteToS3(local: local, s3: remote, id: located.id);
+  }
+
+  /// Lists notes from these sources (merged when [mergeWhenS3Preferred]).
+  Future<List<LocatedLogEntry>> list() async {
+    final localEntries = await local.list();
+    if (!mergeWhenS3Preferred) {
+      return [
+        for (final e in localEntries)
+          LocatedLogEntry(entry: e, location: NoteStorageLocation.local),
+      ];
+    }
+    List<LogEntry> s3Entries = const [];
+    final remote = s3;
+    if (remote != null) {
+      try {
+        s3Entries = await remote.list();
+      } catch (_) {
+        // Degrade hook (if any) already ran inside S3NoteStore; keep local
+        // rows so a failing bucket does not blank the whole browser.
+        s3Entries = const [];
+      }
+    }
+    return mergeNoteLists(local: localEntries, s3: s3Entries);
+  }
+}
+
 /// Resolves the process-active [NoteStore] from prefs + [S3SessionController].
 ///
 /// Preferred S3 (and not degraded) → [S3NoteStore]; otherwise [LocalNoteStore].
 /// Wires [S3SessionController.probe] for Retry and calls [markS3Failed] on
-/// S3 I/O errors.
+/// S3 I/O errors. The entry browser uses [resolveBrowserSources] to list both
+/// backends when S3 is preferred.
 class ActiveNoteStore {
   ActiveNoteStore({
     PreferencesService? preferences,
@@ -65,6 +135,48 @@ class ActiveNoteStore {
         return _LazyS3NoteStore(this);
       },
     );
+  }
+
+  /// Local directory store (always available).
+  Future<LocalNoteStore> resolveLocal() async {
+    final dir = await _prefs.directory();
+    return LocalNoteStore(dir);
+  }
+
+  /// Sources for the entry browser: always local; S3 when preferred and
+  /// credentials exist (even while degraded, so remote notes still appear).
+  Future<BrowserNoteSources> resolveBrowserSources() async {
+    bindSessionProbe();
+    final local = await resolveLocal();
+    final merge = _session.preferredMode == StorageMode.s3;
+    if (!merge) {
+      return BrowserNoteSources(
+        local: local,
+        mergeWhenS3Preferred: false,
+      );
+    }
+    // Preferred S3 with empty credentials: degrade once, list local only.
+    final config = await _prefs.s3Config();
+    if (!config.hasCredentials) {
+      if (!_session.isDegraded) await _session.markS3Failed();
+      return BrowserNoteSources(
+        local: local,
+        mergeWhenS3Preferred: true,
+      );
+    }
+    final s3 = await _buildS3Store(markFailures: true);
+    return BrowserNoteSources(
+      local: local,
+      s3: s3,
+      mergeWhenS3Preferred: true,
+    );
+  }
+
+  /// Lists notes for the browser. When S3 is preferred, merges local + S3;
+  /// otherwise returns local-only rows without location badges.
+  Future<List<LocatedLogEntry>> listForBrowser() async {
+    final sources = await resolveBrowserSources();
+    return sources.list();
   }
 
   Future<S3Config> loadConfig() => _prefs.s3Config();

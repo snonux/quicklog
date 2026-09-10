@@ -3,6 +3,7 @@ import 'package:intl/intl.dart';
 
 import '../services/active_note_store.dart';
 import '../services/log_service.dart';
+import '../services/merged_note_listing.dart';
 import '../services/preferences.dart';
 import '../services/s3_session_controller.dart';
 import '../widgets/s3_degraded_banner.dart';
@@ -26,8 +27,8 @@ class EntryBrowserScreen extends StatefulWidget {
 
 class _EntryBrowserScreenState extends State<EntryBrowserScreen> {
   final PreferencesService _prefs = PreferencesService();
-  Future<List<LogEntry>>? _future;
-  NoteStore? _store;
+  Future<List<LocatedLogEntry>>? _future;
+  BrowserNoteSources? _sources;
   String _dir = '';
   bool _wasUsingLocalFallback = false;
 
@@ -36,6 +37,8 @@ class _EntryBrowserScreenState extends State<EntryBrowserScreen> {
 
   ActiveNoteStore get _active =>
       widget.activeStore ?? ActiveNoteStore.instance;
+
+  bool get _showLocation => _sources?.mergeWhenS3Preferred ?? false;
 
   @override
   void initState() {
@@ -52,7 +55,7 @@ class _EntryBrowserScreenState extends State<EntryBrowserScreen> {
     super.dispose();
   }
 
-  /// When the session flips to/from local fallback, drop the cached store and
+  /// When the session flips to/from local fallback, drop the cached sources and
   /// re-resolve so we do not keep calling a stale [S3NoteStore].
   void _onSessionChanged() {
     if (!mounted) return;
@@ -64,15 +67,20 @@ class _EntryBrowserScreenState extends State<EntryBrowserScreen> {
 
   void _refresh() {
     setState(() {
-      _future = _load();
+      _future = _load().then((entries) {
+        // FutureBuilder rebuilds its child only; setState so AppBar actions
+        // (Move all) see the resolved sources.
+        if (mounted) setState(() {});
+        return entries;
+      });
     });
   }
 
-  Future<List<LogEntry>> _load() async {
+  Future<List<LocatedLogEntry>> _load() async {
     _dir = await _prefs.directory();
-    _store = await _active.resolve();
+    _sources = await _active.resolveBrowserSources();
     _wasUsingLocalFallback = _session.usesLocalFallback;
-    return _store!.list();
+    return _sources!.list();
   }
 
   Future<void> _retryS3() async {
@@ -103,17 +111,22 @@ class _EntryBrowserScreenState extends State<EntryBrowserScreen> {
   /// and the list is refreshed exactly once. It can edit in place, though,
   /// which changes the subtitle previews, so any other return re-lists the
   /// directory -- cheap, and simpler than plumbing an "edited" flag back.
-  Future<void> _open(LogEntry entry) async {
-    final store = _store;
-    if (store == null) return;
+  Future<void> _open(LocatedLogEntry located) async {
+    final sources = _sources;
+    if (sources == null) return;
+    final store = sources.storeFor(located);
     final deleteRequested = await Navigator.of(context).push<bool>(
       MaterialPageRoute(
-        builder: (_) => _EntryDetailScreen(store: store, entry: entry),
+        builder: (_) => _EntryDetailScreen(
+          store: store,
+          entry: located.entry,
+          location: _showLocation ? located.location : null,
+        ),
       ),
     );
     if (!mounted) return;
     if (deleteRequested == true) {
-      await _delete(entry);
+      await _delete(located);
     } else {
       _refresh();
     }
@@ -121,28 +134,32 @@ class _EntryBrowserScreenState extends State<EntryBrowserScreen> {
 
   /// Edits an entry straight from the list. Only a save changes the note, so
   /// the listing is re-read only then.
-  Future<void> _edit(LogEntry entry) async {
-    final store = _store;
-    if (store == null) return;
-    final saved = await editEntry(context, store, entry);
+  Future<void> _edit(LocatedLogEntry located) async {
+    final sources = _sources;
+    if (sources == null) return;
+    final saved = await editEntry(context, sources.storeFor(located), located.entry);
     if (saved && mounted) _refresh();
   }
 
-  Future<void> _confirmAndDelete(LogEntry entry) async {
-    final store = _store;
-    if (store == null) return;
-    final confirmed = await confirmEntryDeletion(context, store, entry);
+  Future<void> _confirmAndDelete(LocatedLogEntry located) async {
+    final sources = _sources;
+    if (sources == null) return;
+    final confirmed = await confirmEntryDeletion(
+      context,
+      sources.storeFor(located),
+      located.entry,
+    );
     if (!confirmed || !mounted) return;
-    await _delete(entry);
+    await _delete(located);
   }
 
   /// Performs the already-confirmed deletion and reports the outcome.
-  Future<void> _delete(LogEntry entry) async {
-    final store = _store;
-    if (store == null) return;
-    final name = entry.id;
+  Future<void> _delete(LocatedLogEntry located) async {
+    final sources = _sources;
+    if (sources == null) return;
+    final name = located.id;
     try {
-      await store.delete(entry.id);
+      await sources.delete(located);
     } catch (e) {
       // Deleting can fail on Android when the directory is outside the app's
       // granted storage scope; keep the entry listed and say why.
@@ -151,6 +168,56 @@ class _EntryBrowserScreenState extends State<EntryBrowserScreen> {
     }
     if (!mounted) return;
     _showSnack('Deleted $name');
+    _refresh();
+  }
+
+  Future<void> _moveToS3(LocatedLogEntry located) async {
+    final sources = _sources;
+    if (sources == null) return;
+    try {
+      await sources.moveLocalToS3(located);
+    } catch (e) {
+      if (mounted) {
+        _showSnack('Could not move ${located.id} to S3: $e', isError: true);
+      }
+      return;
+    }
+    if (!mounted) return;
+    _showSnack('Moved ${located.id} to S3');
+    _refresh();
+  }
+
+  Future<void> _moveAllLocalToS3() async {
+    final sources = _sources;
+    if (sources == null || sources.s3 == null) return;
+    // Re-list so we move whatever is currently local-only, not a stale
+    // FutureBuilder snapshot.
+    final fresh = await sources.list();
+    final localOnly =
+        fresh.where((e) => e.isLocalOnly).toList(growable: false);
+    if (localOnly.isEmpty) {
+      if (mounted) _showSnack('No local-only notes to move');
+      return;
+    }
+    var moved = 0;
+    var failed = 0;
+    for (final located in localOnly) {
+      try {
+        await sources.moveLocalToS3(located);
+        moved++;
+      } catch (_) {
+        failed++;
+      }
+    }
+    if (!mounted) return;
+    if (failed == 0) {
+      _showSnack('Moved $moved local note${moved == 1 ? '' : 's'} to S3');
+    } else {
+      _showSnack(
+        'Moved $moved, failed $failed',
+        isError: true,
+      );
+    }
     _refresh();
   }
 
@@ -165,10 +232,20 @@ class _EntryBrowserScreenState extends State<EntryBrowserScreen> {
 
   @override
   Widget build(BuildContext context) {
+    // Show whenever S3 merge mode is active and S3 is reachable; the action
+    // re-lists and no-ops with a snackbar when nothing is local-only.
+    final canMoveAll = _showLocation && _sources?.s3 != null;
+
     return Scaffold(
       appBar: AppBar(
         title: const Text('Entries'),
         actions: [
+          if (canMoveAll)
+            IconButton(
+              tooltip: 'Move all local to S3',
+              icon: const Icon(Icons.cloud_upload_outlined),
+              onPressed: _moveAllLocalToS3,
+            ),
           IconButton(
             tooltip: 'Refresh',
             icon: const Icon(Icons.refresh),
@@ -180,7 +257,7 @@ class _EntryBrowserScreenState extends State<EntryBrowserScreen> {
         children: [
           S3DegradedBanner(session: _session, onRetry: _retryS3),
           Expanded(
-            child: FutureBuilder<List<LogEntry>>(
+            child: FutureBuilder<List<LocatedLogEntry>>(
               future: _future,
               builder: (ctx, snap) {
                 if (snap.connectionState != ConnectionState.done) {
@@ -189,7 +266,7 @@ class _EntryBrowserScreenState extends State<EntryBrowserScreen> {
                 if (snap.hasError) {
                   return Center(child: Text('Error: ${snap.error}'));
                 }
-                final entries = snap.data ?? const <LogEntry>[];
+                final entries = snap.data ?? const <LocatedLogEntry>[];
                 return entries.isEmpty ? _emptyState() : _entryList(entries);
               },
             ),
@@ -200,30 +277,40 @@ class _EntryBrowserScreenState extends State<EntryBrowserScreen> {
   }
 
   Widget _emptyState() {
+    final message = _showLocation
+        ? 'No entries in local storage or S3'
+        : 'No entries in $_dir';
     return Center(
       child: Padding(
         padding: const EdgeInsets.all(24),
-        child: Text('No entries in $_dir', textAlign: TextAlign.center),
+        child: Text(message, textAlign: TextAlign.center),
       ),
     );
   }
 
-  Widget _entryList(List<LogEntry> entries) {
-    final store = _store!;
+  Widget _entryList(List<LocatedLogEntry> entries) {
+    final sources = _sources!;
     return RefreshIndicator(
       onRefresh: () async => _refresh(),
       child: ListView.separated(
         itemCount: entries.length,
         separatorBuilder: (_, _) => const Divider(height: 1),
-        itemBuilder: (_, i) => _EntryTile(
-          store: store,
-          entry: entries[i],
-          onTap: () => _open(entries[i]),
-          onEdit: () => _edit(entries[i]),
-          // Long-press is kept as the original gesture; the trailing icon
-          // makes the same action discoverable without knowing about it.
-          onDelete: () => _confirmAndDelete(entries[i]),
-        ),
+        itemBuilder: (_, i) {
+          final located = entries[i];
+          return _EntryTile(
+            store: sources.storeFor(located),
+            entry: located.entry,
+            location: _showLocation ? located.location : null,
+            onTap: () => _open(located),
+            onEdit: () => _edit(located),
+            // Long-press is kept as the original gesture; the trailing icon
+            // makes the same action discoverable without knowing about it.
+            onDelete: () => _confirmAndDelete(located),
+            onMoveToS3: located.isLocalOnly && sources.s3 != null
+                ? () => _moveToS3(located)
+                : null,
+          );
+        },
       ),
     );
   }
@@ -236,31 +323,48 @@ class _EntryTile extends StatelessWidget {
     required this.onTap,
     required this.onEdit,
     required this.onDelete,
+    this.location,
+    this.onMoveToS3,
   });
 
   final NoteStore store;
   final LogEntry entry;
+  final NoteStorageLocation? location;
   final VoidCallback onTap;
   final VoidCallback onEdit;
   final VoidCallback onDelete;
+  final VoidCallback? onMoveToS3;
 
   @override
   Widget build(BuildContext context) {
+    final theme = Theme.of(context);
     return ListTile(
+      leading: location == null ? null : _LocationBadge(location: location!),
       title: Text(_displayFormat.format(entry.timestamp)),
       subtitle: FutureBuilder<String>(
         future: store.firstLine(entry.id),
-        builder: (_, snap) => Text(
-          snap.data ?? '',
-          maxLines: 1,
-          overflow: TextOverflow.ellipsis,
-        ),
+        builder: (_, snap) {
+          final line = snap.data ?? '';
+          final label = location == null ? null : _locationLabel(location!);
+          return Text(
+            label == null ? line : '$label · $line',
+            maxLines: 1,
+            overflow: TextOverflow.ellipsis,
+            style: theme.textTheme.bodyMedium,
+          );
+        },
       ),
       // Edit and delete sit side by side so both are reachable without
       // opening the entry first; tapping the row still just views it.
       trailing: Row(
         mainAxisSize: MainAxisSize.min,
         children: [
+          if (onMoveToS3 != null)
+            IconButton(
+              tooltip: 'Move to S3',
+              icon: const Icon(Icons.cloud_upload_outlined),
+              onPressed: onMoveToS3,
+            ),
           IconButton(
             tooltip: 'Edit entry',
             icon: const Icon(Icons.edit_outlined),
@@ -279,6 +383,31 @@ class _EntryTile extends StatelessWidget {
   }
 }
 
+class _LocationBadge extends StatelessWidget {
+  const _LocationBadge({required this.location});
+
+  final NoteStorageLocation location;
+
+  @override
+  Widget build(BuildContext context) {
+    final (icon, tooltip) = switch (location) {
+      NoteStorageLocation.local => (Icons.folder_outlined, 'Local'),
+      NoteStorageLocation.s3 => (Icons.cloud_outlined, 'S3'),
+      NoteStorageLocation.both => (Icons.cloud_sync_outlined, 'Local + S3'),
+    };
+    return Tooltip(
+      message: tooltip,
+      child: Icon(icon),
+    );
+  }
+}
+
+String _locationLabel(NoteStorageLocation location) => switch (location) {
+      NoteStorageLocation.local => 'Local',
+      NoteStorageLocation.s3 => 'S3',
+      NoteStorageLocation.both => 'Local + S3',
+    };
+
 /// Viewer for a single entry. It loads the note itself so that the browser
 /// does not have to read every entry up front, and it never deletes directly:
 /// confirming deletion pops with `true` and the browser does the work,
@@ -286,10 +415,15 @@ class _EntryTile extends StatelessWidget {
 /// on top of it, and the viewer re-reads afterwards so what is on screen
 /// matches what is stored.
 class _EntryDetailScreen extends StatefulWidget {
-  const _EntryDetailScreen({required this.store, required this.entry});
+  const _EntryDetailScreen({
+    required this.store,
+    required this.entry,
+    this.location,
+  });
 
   final NoteStore store;
   final LogEntry entry;
+  final NoteStorageLocation? location;
 
   @override
   State<_EntryDetailScreen> createState() => _EntryDetailScreenState();
@@ -326,10 +460,21 @@ class _EntryDetailScreenState extends State<_EntryDetailScreen> {
 
   @override
   Widget build(BuildContext context) {
+    final location = widget.location;
     return Scaffold(
       appBar: AppBar(
         title: Text(widget.entry.id),
         actions: [
+          if (location != null)
+            Padding(
+              padding: const EdgeInsets.symmetric(horizontal: 8),
+              child: Center(
+                child: Text(
+                  _locationLabel(location),
+                  style: Theme.of(context).textTheme.labelLarge,
+                ),
+              ),
+            ),
           IconButton(
             tooltip: 'Edit entry',
             icon: const Icon(Icons.edit_outlined),

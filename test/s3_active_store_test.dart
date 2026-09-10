@@ -6,6 +6,7 @@ import 'package:path/path.dart' as p;
 import 'package:quicklog/screens/entry_browser_screen.dart';
 import 'package:quicklog/screens/preferences_screen.dart';
 import 'package:quicklog/services/active_note_store.dart';
+import 'package:quicklog/services/merged_note_listing.dart';
 import 'package:quicklog/services/preferences.dart';
 import 'package:quicklog/services/s3_config.dart';
 import 'package:quicklog/services/s3_object_client.dart';
@@ -178,7 +179,7 @@ void main() {
     expect(find.textContaining('on s3 only'), findsWidgets);
 
     // Local-only note written while S3 is still preferred; after degrade the
-    // browser must list from LocalNoteStore and show it.
+    // browser still merges both backends when S3 is preferred.
     await tester.runAsync(() async {
       await File(p.join(tmp.path, 'ql-260908-093100.md'))
           .writeAsString('local after degrade');
@@ -188,10 +189,88 @@ void main() {
     await pumpWithIo(tester);
 
     expect(find.textContaining('local after degrade'), findsWidgets);
+    expect(find.textContaining('on s3 only'), findsWidgets);
     expect(
       find.text('Using local (S3 unavailable). Retry or wait until the '
           'degrade window ends.'),
       findsOneWidget,
+    );
+  });
+
+  testWidgets('when S3 preferred, browser lists local and S3 with badges '
+      'and can move local-only notes', (tester) async {
+    await session.setPreferredMode(StorageMode.s3);
+    await prefs.setS3Config(
+      S3Config(
+        endpoint: kDefaultS3Endpoint,
+        region: kDefaultS3Region,
+        bucket: kDefaultS3Bucket,
+        accessKeyId: 'AKIA_TEST',
+        secretAccessKey: 'secret_test',
+      ),
+    );
+    final s3Store = await active.resolve();
+    await s3Store.create(
+      'remote note',
+      now: DateTime(2026, 9, 8, 10, 0, 0),
+    );
+    await tester.runAsync(() async {
+      await File(p.join(tmp.path, 'ql-260908-090000.md'))
+          .writeAsString('local leftover');
+    });
+
+    await tester.pumpWidget(
+      MaterialApp(
+        home: EntryBrowserScreen(session: session, activeStore: active),
+      ),
+    );
+    await pumpWithIo(tester);
+
+    expect(find.textContaining('remote note'), findsWidgets);
+    expect(find.textContaining('local leftover'), findsWidgets);
+    expect(find.byIcon(Icons.cloud_outlined), findsOneWidget);
+    expect(find.byIcon(Icons.folder_outlined), findsOneWidget);
+    expect(find.byTooltip('Move to S3'), findsOneWidget);
+
+    await tester.tap(find.byTooltip('Move to S3'));
+    await pumpWithIo(tester);
+
+    expect(find.textContaining('Moved ql-260908-090000.md to S3'), findsOneWidget);
+    expect(
+      await tester.runAsync(
+        () async => File(p.join(tmp.path, 'ql-260908-090000.md')).exists(),
+      ),
+      isFalse,
+    );
+    expect(fakeS3.objects.containsKey('ql-260908-090000.md'), isTrue);
+    expect(find.byIcon(Icons.folder_outlined), findsNothing);
+    expect(find.byTooltip('Move to S3'), findsNothing);
+  });
+
+  test('listForBrowser merges when S3 preferred and stays local-only otherwise',
+      () async {
+    await File(p.join(tmp.path, 'ql-260908-080000.md'))
+        .writeAsString('only local mode');
+    var listed = await active.listForBrowser();
+    expect(listed, hasLength(1));
+    expect(listed.single.location, NoteStorageLocation.local);
+
+    await session.setPreferredMode(StorageMode.s3);
+    await prefs.setS3Config(
+      S3Config(
+        endpoint: kDefaultS3Endpoint,
+        region: kDefaultS3Region,
+        bucket: kDefaultS3Bucket,
+        accessKeyId: 'AKIA_TEST',
+        secretAccessKey: 'secret_test',
+      ),
+    );
+    await fakeS3.putText('ql-260908-081000.md', 'from bucket');
+    listed = await active.listForBrowser();
+    expect(listed, hasLength(2));
+    expect(
+      listed.map((e) => e.location).toSet(),
+      {NoteStorageLocation.local, NoteStorageLocation.s3},
     );
   });
 
