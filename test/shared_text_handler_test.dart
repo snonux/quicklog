@@ -41,7 +41,10 @@ void main() {
         focus: p.focus,
         resetInput: p.resetInput,
         clearCache: p.clearCache,
-        logFn: (_, _) async { p.logged = true; return false; },
+        logFn: (_, _) async {
+          p.logged = true;
+          return null;
+        },
         showInfo: p.showInfo,
         showError: p.showError,
       );
@@ -52,8 +55,7 @@ void main() {
       expect(p.errors, isEmpty);
     });
 
-    test('autoLog with local fallback says the note is on this device',
-        () async {
+    test('autoLog uses the custom message when logFn returns one', () async {
       await handleSharedTextLoad(
         text: 'note',
         autoLog: true,
@@ -62,7 +64,10 @@ void main() {
         focus: p.focus,
         resetInput: p.resetInput,
         clearCache: p.clearCache,
-        logFn: (_, _) async { p.logged = true; return true; },
+        logFn: (_, _) async {
+          p.logged = true;
+          return 'Shared text has been logged to this device (S3 unavailable).';
+        },
         showInfo: p.showInfo,
         showError: p.showError,
       );
@@ -104,7 +109,7 @@ void main() {
         clearCache: p.clearCache,
         logFn: (_, _) async {
           p.logged = true;
-          return false;
+          return null;
         },
         showInfo: p.showInfo,
         showError: p.showError,
@@ -124,7 +129,10 @@ void main() {
         focus: p.focus,
         resetInput: p.resetInput,
         clearCache: p.clearCache,
-        logFn: (_, _) async => p.logged = true,
+        logFn: (_, _) async {
+          p.logged = true;
+          return null;
+        },
         showInfo: p.showInfo,
         showError: p.showError,
       );

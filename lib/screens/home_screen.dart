@@ -108,21 +108,29 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
   Future<void> _logText() async {
     final text = _controller.text;
     try {
-      // S3 failures fall back to the local store inside
-      // createWithFallback, so a note is saved on the first try and the
-      // input can be cleared unconditionally.
-      final result = await _active.createWithFallback(text);
+      // S3 (and local, in dual mode) failures are handled inside createNote,
+      // so the note is saved on the first try and the input can be cleared
+      // unconditionally.
+      final result = await _active.createNote(text);
       _resetInput();
-      if (result.wentLocal) {
-        _showInfo(
-          'Saved locally',
-          'S3 unavailable — the note was saved on this device.',
-        );
+      final message = _outcomeMessage(result.outcome);
+      if (message != null) {
+        _showInfo('Saved', message);
       }
     } catch (e) {
       _showError(e);
     }
   }
+
+  /// User-visible note for a save that succeeded but did not reach every
+  /// backend the mode targets; null when everything landed where expected.
+  static String? _outcomeMessage(NoteCreateOutcome outcome) => switch (outcome) {
+        NoteCreateOutcome.saved => null,
+        NoteCreateOutcome.savedLocalOnly =>
+            'S3 unavailable — the note was saved on this device.',
+        NoteCreateOutcome.savedS3Only =>
+            'The local write failed — the note is in the S3 bucket only.',
+      };
 
   void _showError(Object error) {
     if (!mounted) return;
@@ -154,9 +162,9 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
       resetInput: _resetInput,
       clearCache: ShareService.clearSharedTextCache,
       logFn: (_, t) async =>
-          // Same immediate local fallback as the main Log text button; the
-          // returned flag lets the handler say where the note landed.
-          (await _active.createWithFallback(t)).wentLocal,
+          // Same save path as the main Log text button; an optional custom
+          // message tells the handler where the note landed.
+          _outcomeMessage((await _active.createNote(t)).outcome),
       showInfo: _showInfo,
       showError: _showError,
     );

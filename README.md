@@ -24,10 +24,11 @@ home computer.
   an "Auto-log shared text" toggle. S3 mode stores endpoint/region/bucket/keys
   on-device only (paste from `~/.config/garage/quicklog.env` on a laptop).
 - **Optional S3**: same `ql-*.md` object keys against a path-style S3 endpoint
-  (defaults aimed at Garage). On failure the app falls back to local for an
-  hour with a Retry control — a note whose S3 write fails is written to the
-  local directory on the spot, so it is never lost and never asks you to
-  re-save. No telemetry; default remains local-only.
+  (defaults aimed at Garage), either **S3 only** or **Local + S3** (dual
+  write: every note lands in the local directory *and* the bucket). On S3
+  failure a note is written to the local directory on the spot, so it is
+  never lost and never asks you to re-save; the app then skips S3 for an
+  hour with a Retry control. No telemetry; default remains local-only.
 - **Entry browser**: list of previous entries (newest first) with a viewer.
 - **Edit entries**: from the list (pencil icon) or from the entry viewer. The
   editor writes back to the same file, so the note keeps its creation
@@ -148,6 +149,11 @@ while logging, Quicklog writes that note to the local directory immediately
 (same `ql-*.md` name) and tells you it was saved on this device — you do not
 re-save it. The app then uses the local directory for new notes until you tap
 **Retry S3** or an hour elapses / the app cold-starts.
+
+**Local + S3** (dual write) writes every note to the local directory *and*
+the bucket under the same `ql-*.md` name. If S3 is unavailable the note is
+still saved locally (and you are told), and S3 is skipped for an hour like
+above; editing and deleting an entry keeps both copies in sync.
 
 Default mode remains **Local only**. There is no analytics or background sync.
 `INTERNET` is declared for the optional S3 path and stays unused in local mode.

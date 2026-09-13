@@ -115,6 +115,57 @@ void main() {
     });
   });
 
+  group('dual write mode', () {
+    test('switching to both writes S3 and keeps local in the path',
+        () async {
+      await session.setPreferredMode(StorageMode.both);
+      expect(session.preferredMode, StorageMode.both);
+      expect(session.shouldAttemptS3, isTrue);
+      expect(session.usesLocalFallback, isTrue);
+      expect(session.isDegraded, isFalse);
+      expect(await prefs.storageMode(), StorageMode.both);
+      expect(StorageMode.parse('both'), StorageMode.both);
+    });
+
+    test('markS3Failed arms a 1h window in both mode', () async {
+      await session.setPreferredMode(StorageMode.both);
+      await session.markS3Failed(now: now);
+
+      expect(session.isDegraded, isTrue);
+      // Local stays in the I/O path throughout: notes keep landing on device.
+      expect(session.usesLocalFallback, isTrue);
+      expect(session.shouldAttemptS3, isFalse);
+      expect(session.degradedUntil, now.add(kS3DegradeDuration));
+      expect(await prefs.degradedUntil(), now.add(kS3DegradeDuration));
+    });
+
+    test('successful retryS3 clears degrade in both mode', () async {
+      await session.setPreferredMode(StorageMode.both);
+      await session.markS3Failed(now: now);
+
+      final result = await session.retryS3(
+        probe: () async {},
+        now: now,
+      );
+
+      expect(result, S3RetryResult.reachable);
+      expect(session.isDegraded, isFalse);
+      expect(session.shouldAttemptS3, isTrue);
+      expect(await prefs.degradedUntil(), isNull);
+    });
+
+    test('switching back to local from both clears degrade', () async {
+      await session.setPreferredMode(StorageMode.both);
+      await session.markS3Failed(now: now);
+      expect(session.isDegraded, isTrue);
+
+      await session.setPreferredMode(StorageMode.local);
+      expect(session.isDegraded, isFalse);
+      expect(session.degradedUntil, isNull);
+      expect(await prefs.degradedUntil(), isNull);
+    });
+  });
+
   group('1h expiry', () {
     test('after the window elapses, S3 is attempted again mid-session',
         () async {

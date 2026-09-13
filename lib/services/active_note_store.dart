@@ -14,22 +14,33 @@ class BrowserNoteSources {
     required this.local,
     this.s3,
     required this.mergeWhenS3Preferred,
+    this.preferLocalReads = false,
   });
 
   final LocalNoteStore local;
   final S3NoteStore? s3;
 
-  /// True when preferred mode is S3 (merged listing + location badges).
+  /// True when S3 is part of the write target (s3-only or dual): merged
+  /// listing + location badges.
   final bool mergeWhenS3Preferred;
+
+  /// True in dual-write mode: a note that exists in both places is read from
+  /// the local copy (the trusted primary), so a transient S3 GET failure
+  /// does not hide a note that is on disk. S3-only rows still read from S3.
+  final bool preferLocalReads;
 
   /// Set by [list] when an S3 LIST fails; local rows are still returned.
   bool s3ListFailed = false;
 
   /// Store used for read / firstLine of [located].
-  /// Prefer S3 when the note lives there (including [NoteStorageLocation.both]).
+  /// Prefer S3 when the note lives only there, or when local-first reads do
+  /// not apply; otherwise the local copy.
   NoteStore storeFor(LocatedLogEntry located) {
     final remote = s3;
-    if (located.hasS3 && remote != null) return remote;
+    if (located.hasS3 && remote != null &&
+        !(preferLocalReads && located.hasLocal)) {
+      return remote;
+    }
     return local;
   }
 
@@ -170,12 +181,33 @@ class _BrowserEntryStore implements NoteStore {
       _primary.preview(id, maxChars: maxChars);
 }
 
+/// Where a newly created note ended up.
+enum NoteCreateOutcome {
+  /// Written to the backend(s) the mode targets.
+  saved,
+
+  /// S3 was part of the target (s3-only or dual) and the S3 write failed;
+  /// the note is on the local device only. (A lost response can in theory
+  /// leave a copy in the bucket as well — the browser then shows the note
+  /// as present in both places.)
+  savedLocalOnly,
+
+  /// Dual write: the S3 copy landed but the local write failed; the note is
+  /// in the bucket only.
+  savedS3Only,
+}
+
+/// The outcome of [ActiveNoteStore.createNote].
+typedef NoteCreateResult = ({LogEntry entry, NoteCreateOutcome outcome});
+
 /// Resolves the process-active [NoteStore] from prefs + [S3SessionController].
 ///
-/// Preferred S3 (and not degraded) → [S3NoteStore]; otherwise [LocalNoteStore].
-/// Wires [S3SessionController.probe] for Retry and calls [markS3Failed] on
+/// S3-only preferred (and not degraded) → [S3NoteStore]; otherwise
+/// [LocalNoteStore] (dual-write mode reads the local copy; new notes go
+/// through [createNote], which writes both backends). Wires
+/// [S3SessionController.probe] for Retry and calls [markS3Failed] on
 /// S3 I/O errors. The entry browser uses [resolveBrowserSources] to list both
-/// backends when S3 is preferred.
+/// backends when S3 is part of the target.
 class ActiveNoteStore {
   ActiveNoteStore({
     PreferencesService? preferences,
@@ -212,6 +244,11 @@ class ActiveNoteStore {
   Future<NoteStore> resolve() async {
     bindSessionProbe();
     final dir = await _prefs.directory();
+    if (_session.preferredMode == StorageMode.both) {
+      // Dual write: reads prefer the local copy (present for notes created
+      // in this mode); new notes go through createNote, which writes both.
+      return LocalNoteStore(dir);
+    }
     if (_session.shouldAttemptS3) {
       final config = await _prefs.s3Config();
       if (!config.hasCredentials) {
@@ -237,65 +274,115 @@ class ActiveNoteStore {
     return LocalNoteStore(dir);
   }
 
-  /// Creates a new note on the preferred backend, falling back to the local
-  /// store **immediately** when S3 is preferred but cannot be written, so the
-  /// note lands on the first try instead of waiting for a user retry.
+  /// Creates a new note per the preferred [StorageMode]:
   ///
-  /// [wentLocal] is true when the preferred mode is S3 but the note was
-  /// written to the local directory (the S3 write failed, the degrade window
-  /// is active, or no credentials are set). With local preferred it is false:
-  /// local is the primary target, not a fallback.
+  /// - [StorageMode.local]: local directory only.
+  /// - [StorageMode.s3]: S3 first; when the S3 write fails the note is
+  ///   written to the local directory **immediately** (same timestamp, hence
+  ///   the same `ql-*.md` id), so it lands on the first try instead of
+  ///   waiting for a user retry.
+  /// - [StorageMode.both]: dual write — the local copy is written first, then
+  ///   S3 with the same id. An S3 failure still leaves the note safely on
+  ///   device ([NoteCreateOutcome.savedLocalOnly]); a local failure still
+  ///   keeps it in the bucket ([NoteCreateOutcome.savedS3Only]).
   ///
-  /// The fallback write uses the same timestamp (hence the same `ql-*.md`
-  /// id) as the failed S3 attempt. A transport error can in theory leave a
-  /// copy in the bucket (response lost) — the browser then shows the note as
-  /// present in both places and the user can drop the local copy. As in
-  /// plain local mode, logging twice inside one second overwrites the
-  /// earlier note, because the id only has second granularity.
-  ///
-  /// If the local fallback write itself fails, its error is rethrown.
-  Future<({LogEntry entry, bool wentLocal})> createWithFallback(
-    String text, {
-    DateTime? now,
-  }) async {
+  /// The same-second overwrite rule of [LocalNoteStore.create] applies in
+  /// every mode (the id only has second granularity). If both backends fail,
+  /// the local error is rethrown — the note is nowhere.
+  Future<NoteCreateResult> createNote(String text, {DateTime? now}) async {
     bindSessionProbe();
     final dir = await _prefs.directory();
     final local = LocalNoteStore(dir);
-    if (_session.preferredMode != StorageMode.s3) {
-      return (entry: await local.create(text, now: now), wentLocal: false);
+    if (_session.preferredMode == StorageMode.local) {
+      return (
+        entry: await local.create(text, now: now),
+        outcome: NoteCreateOutcome.saved,
+      );
     }
+
     if (!_session.shouldAttemptS3) {
-      // S3 preferred but inside the degrade window: write local without
+      // S3 expected but inside the degrade window: local only, without
       // spending a network timeout on every note.
-      return (entry: await local.create(text, now: now), wentLocal: true);
+      return (
+        entry: await local.create(text, now: now),
+        outcome: NoteCreateOutcome.savedLocalOnly,
+      );
     }
     final config = await _prefs.s3Config();
     if (!config.hasCredentials) {
       await _session.markS3Failed();
-      return (entry: await local.create(text, now: now), wentLocal: true);
+      return (
+        entry: await local.create(text, now: now),
+        outcome: NoteCreateOutcome.savedLocalOnly,
+      );
     }
+
     final stamp = now ?? DateTime.now();
+    LogEntry? localEntry;
+    Object? localError;
+    if (_session.preferredMode == StorageMode.both) {
+      // Dual write: the trusted local copy goes first, so it is attempted
+      // even when S3 is slow or down.
+      try {
+        localEntry = await local.create(text, now: stamp);
+      } catch (e) {
+        localError = e;
+      }
+    }
     try {
       final s3 = await _buildS3Store(markFailures: true);
-      return (entry: await s3.create(text, now: stamp), wentLocal: false);
+      final s3Entry = await s3.create(text, now: stamp);
+      final le = localError;
+      if (le != null) {
+        // Dual write with a broken local directory: the note is in the
+        // bucket. Report it, but do not pretend the save failed — the note
+        // is safe, and a retry would duplicate it in the bucket.
+        return (entry: s3Entry, outcome: NoteCreateOutcome.savedS3Only);
+      }
+      final le2 = localEntry;
+      if (le2 != null) {
+        // Dual write, both landed: the local entry is the canonical one.
+        return (entry: le2, outcome: NoteCreateOutcome.saved);
+      }
+      // s3-only mode.
+      return (entry: s3Entry, outcome: NoteCreateOutcome.saved);
     } on ArgumentError {
-      // Bad input, not a transport failure: do not paper over it with a
-      // local copy.
+      final le2 = localEntry;
+      if (le2 != null) {
+        // Dual mode: the local copy already landed. Report it rather than
+        // hiding a saved note behind an error (a re-log would duplicate).
+        return (entry: le2, outcome: NoteCreateOutcome.savedLocalOnly);
+      }
+      // Bad input (or broken config) before anything was written: surface
+      // it; there is no copy to fall back to.
       rethrow;
     } catch (_) {
       // S3 transport / service failure: the store's onFailure hook already
-      // armed the degrade window. Write the note to the local directory now,
-      // with the same stamp, so nothing is lost on the first try.
-      return (entry: await local.create(text, now: stamp), wentLocal: true);
+      // armed the degrade window.
+      final le = localError;
+      if (le != null) {
+        // Both backends failed: the note is nowhere.
+        throw le;
+      }
+      final le2 = localEntry;
+      if (le2 != null) {
+        // Dual write: the local copy is the safe one.
+        return (entry: le2, outcome: NoteCreateOutcome.savedLocalOnly);
+      }
+      // s3-only mode: immediate local fallback with the same stamp.
+      return (
+        entry: await local.create(text, now: stamp),
+        outcome: NoteCreateOutcome.savedLocalOnly,
+      );
     }
   }
 
-  /// Sources for the entry browser: always local; S3 when preferred and
-  /// credentials exist (even while degraded, so remote notes still appear).
+  /// Sources for the entry browser: always local; S3 when it is part of the
+  /// target (s3-only or dual, even while degraded, so remote notes appear).
   Future<BrowserNoteSources> resolveBrowserSources() async {
     bindSessionProbe();
     final local = await resolveLocal();
-    final merge = _session.preferredMode == StorageMode.s3;
+    final merge = _session.preferredMode.writesToS3;
     if (!merge) {
       return BrowserNoteSources(
         local: local,
@@ -316,6 +403,7 @@ class ActiveNoteStore {
       local: local,
       s3: s3,
       mergeWhenS3Preferred: true,
+      preferLocalReads: _session.preferredMode == StorageMode.both,
     );
   }
 

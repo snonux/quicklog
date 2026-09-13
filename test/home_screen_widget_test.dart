@@ -136,6 +136,146 @@ void main() {
     await tester.pump(const Duration(hours: 1));
   });
 
+  testWidgets('dual mode, S3 down: first Log text still saves locally',
+      (tester) async {
+    final tmpDir = await tester.runAsync(
+      () => Directory.systemTemp.createTemp('ql-home-both-'),
+    );
+    final base = tmpDir!.path;
+    SharedPreferences.setMockInitialValues(<String, Object>{
+      'flutter.Directory': base,
+      'flutter.StorageMode': 'both',
+      'flutter.S3AccessKeyId': 'AKIA_TEST',
+      'flutter.S3SecretAccessKey': 'secret_test',
+    });
+    final prefs = PreferencesService();
+    final s3Session = S3SessionController(preferences: prefs);
+    await s3Session.load();
+    final s3 = MemoryS3ObjectClient()
+      ..alwaysFail = Exception('network down');
+    final active = ActiveNoteStore(
+      preferences: prefs,
+      session: s3Session,
+      s3ClientFactory: (_) => s3,
+    );
+
+    addTearDown(() async {
+      s3Session.dispose();
+      final dir = Directory(base);
+      if (await dir.exists()) await dir.delete(recursive: true);
+    });
+
+    await tester.pumpWidget(
+      MaterialApp(
+        home: HomeScreen(session: s3Session, activeStore: active),
+      ),
+    );
+    await pumpWithIo(tester);
+
+    await tester.enterText(find.byType(TextField), 'dual down');
+    await tester.tap(find.widgetWithText(FilledButton, 'Log text'));
+    await pumpWithIo(tester);
+
+    final files = await tester.runAsync(() async =>
+      await Directory(base)
+          .list()
+          .where((e) => p.basename(e.path).endsWith('.md'))
+          .toList(),
+    );
+    expect(files, hasLength(1));
+    expect(
+      await tester.runAsync(() => File(files!.single.path).readAsString()),
+      'dual down',
+    );
+    expect(s3.objects, isEmpty);
+    expect(s3Session.isDegraded, isTrue);
+
+    expect(
+      tester
+          .widget<TextField>(find.byType(TextField))
+          .controller!
+          .text,
+      isEmpty,
+    );
+    expect(find.textContaining('Error:'), findsNothing);
+    expect(
+      find.text('S3 unavailable — the note was saved on this device.'),
+      findsOneWidget,
+    );
+    // The dual-mode banner says local is still the primary target.
+    expect(
+      find.textContaining('notes are still being saved locally'),
+      findsOneWidget,
+    );
+
+    // Drain the pending degrade expiry Timer (see above).
+    await tester.pump(const Duration(hours: 1));
+  });
+
+  testWidgets('dual mode, local write fails: S3-only outcome reported',
+      (tester) async {
+    final tmpDir = await tester.runAsync(
+      () => Directory.systemTemp.createTemp('ql-home-s3only-'),
+    );
+    final base = tmpDir!.path;
+    // Log dir under a regular file: the local write can never succeed.
+    await tester.runAsync(
+      () => File(p.join(base, 'blocked')).writeAsString('not a directory'),
+    );
+    SharedPreferences.setMockInitialValues(<String, Object>{
+      'flutter.Directory': p.join(base, 'blocked', 'sub'),
+      'flutter.StorageMode': 'both',
+      'flutter.S3AccessKeyId': 'AKIA_TEST',
+      'flutter.S3SecretAccessKey': 'secret_test',
+    });
+    final prefs = PreferencesService();
+    final s3Session = S3SessionController(preferences: prefs);
+    await s3Session.load();
+    final s3 = MemoryS3ObjectClient();
+    final active = ActiveNoteStore(
+      preferences: prefs,
+      session: s3Session,
+      s3ClientFactory: (_) => s3,
+    );
+
+    addTearDown(() async {
+      s3Session.dispose();
+      final dir = Directory(base);
+      if (await dir.exists()) await dir.delete(recursive: true);
+    });
+
+    await tester.pumpWidget(
+      MaterialApp(
+        home: HomeScreen(session: s3Session, activeStore: active),
+      ),
+    );
+    await pumpWithIo(tester);
+
+    await tester.enterText(find.byType(TextField), 'bucket copy');
+    await tester.tap(find.widgetWithText(FilledButton, 'Log text'));
+    await pumpWithIo(tester);
+
+    // The note is safe in the bucket; this is reported, not an error, so
+    // the input is cleared and a retry cannot duplicate it.
+    expect(s3.objects, hasLength(1));
+    expect(
+      tester
+          .widget<TextField>(find.byType(TextField))
+          .controller!
+          .text,
+      isEmpty,
+    );
+    expect(find.textContaining('Error:'), findsNothing);
+    expect(
+      find.text('The local write failed — the note is in the S3 bucket only.'),
+      findsOneWidget,
+    );
+
+    // No degrade was armed (S3 is healthy), but the snackbar's display
+    // timer is still pending on the fake clock — pump past it.
+    await tester.pump(const Duration(seconds: 5));
+  });
+
   testWidgets('S3 down and local write fails: error shown, input kept',
       (tester) async {
     final tmpDir = await tester.runAsync(

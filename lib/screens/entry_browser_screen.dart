@@ -33,6 +33,7 @@ class _EntryBrowserScreenState extends State<EntryBrowserScreen> {
   bool _wasUsingLocalFallback = false;
   StorageMode _lastPreferredMode = StorageMode.local;
   bool _s3ListFailed = false;
+  bool _wasDegraded = false;
   int _loadGeneration = 0;
 
   S3SessionController get _session =>
@@ -47,6 +48,7 @@ class _EntryBrowserScreenState extends State<EntryBrowserScreen> {
   void initState() {
     super.initState();
     _wasUsingLocalFallback = _session.usesLocalFallback;
+    _wasDegraded = _session.isDegraded;
     _lastPreferredMode = _session.preferredMode;
     _session.addListener(_onSessionChanged);
     // Session is loaded once in main(); avoid racing re-load (see HomeScreen).
@@ -65,11 +67,17 @@ class _EntryBrowserScreenState extends State<EntryBrowserScreen> {
     if (!mounted) return;
     final usingLocal = _session.usesLocalFallback;
     final mode = _session.preferredMode;
+    // Degrade flips matter even when usesLocalFallback cannot change
+    // (dual-write mode): the list-failure banner and Move-all visibility
+    // track S3 reachability.
+    final degraded = _session.isDegraded;
     if (usingLocal == _wasUsingLocalFallback &&
-        mode == _lastPreferredMode) {
+        mode == _lastPreferredMode &&
+        degraded == _wasDegraded) {
       return;
     }
     _wasUsingLocalFallback = usingLocal;
+    _wasDegraded = degraded;
     _lastPreferredMode = mode;
     _refresh();
   }
@@ -94,6 +102,7 @@ class _EntryBrowserScreenState extends State<EntryBrowserScreen> {
     _dir = dir;
     _sources = sources;
     _wasUsingLocalFallback = _session.usesLocalFallback;
+    _wasDegraded = _session.isDegraded;
     _lastPreferredMode = _session.preferredMode;
     _s3ListFailed = sources.s3ListFailed;
     return entries;
@@ -369,7 +378,11 @@ class _EntryBrowserScreenState extends State<EntryBrowserScreen> {
             secondaryAction = () => _moveToS3(located);
             secondaryTooltip = 'Move to S3';
             secondaryIcon = Icons.cloud_upload_outlined;
-          } else if (located.location == NoteStorageLocation.both) {
+          } else if (located.location == NoteStorageLocation.both &&
+              _session.preferredMode != StorageMode.both) {
+            // Dual-write users keep local copies on purpose; dropping the
+            // local side is a durability downgrade, so it is not offered.
+            // (Outage leftovers stay local-only and use 'Move to S3' instead.)
             secondaryAction = () => _removeLocalCopy(located);
             secondaryTooltip = 'Remove local copy';
             secondaryIcon = Icons.folder_off_outlined;

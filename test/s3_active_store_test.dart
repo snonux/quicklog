@@ -6,6 +6,7 @@ import 'package:path/path.dart' as p;
 import 'package:quicklog/screens/entry_browser_screen.dart';
 import 'package:quicklog/screens/preferences_screen.dart';
 import 'package:quicklog/services/active_note_store.dart';
+import 'package:quicklog/services/log_service.dart';
 import 'package:quicklog/services/merged_note_listing.dart';
 import 'package:quicklog/services/preferences.dart';
 import 'package:quicklog/services/s3_config.dart';
@@ -66,6 +67,21 @@ void main() {
     expect(find.text('Region:'), findsOneWidget);
     expect(find.text('Bucket:'), findsOneWidget);
 
+    // Dual mode shows the same S3 configuration fields and its own helper.
+    await tester.tap(find.text('Local + S3'));
+    await tester.pump();
+
+    expect(find.text('S3 endpoint:'), findsOneWidget);
+    expect(find.text('Access key ID:'), findsNothing);
+    expect(
+      find.textContaining('Every note is written to this directory and to S3'),
+      findsOneWidget,
+    );
+
+    // Back to S3 only for the credential-field checks below.
+    await tester.tap(find.text('S3 only'));
+    await tester.pump();
+
     // ListView builds lazily; scroll to reveal credential fields.
     await tester.drag(find.byType(ListView), const Offset(0, -400));
     await tester.pump();
@@ -123,7 +139,7 @@ void main() {
     expect(fakeS3.objects, isEmpty);
   });
 
-  test('createWithFallback saves to S3 when reachable', () async {
+  test('createNote saves to S3 when reachable', () async {
     await session.setPreferredMode(StorageMode.s3);
     await prefs.setS3Config(
       S3Config(
@@ -135,18 +151,18 @@ void main() {
       ),
     );
 
-    final result = await active.createWithFallback(
+    final result = await active.createNote(
       'to s3',
       now: DateTime(2026, 9, 8, 12, 0, 0),
     );
 
-    expect(result.wentLocal, isFalse);
+    expect(result.outcome, NoteCreateOutcome.saved);
     expect(result.entry.id, 'ql-260908-120000.md');
     expect(fakeS3.objects.containsKey('ql-260908-120000.md'), isTrue);
     expect(session.isDegraded, isFalse);
   });
 
-  test('createWithFallback writes locally on first try when S3 fails',
+  test('createNote writes locally on first try when S3 fails',
       () async {
     await session.setPreferredMode(StorageMode.s3);
     await prefs.setS3Config(
@@ -160,13 +176,13 @@ void main() {
     );
     fakeS3.alwaysFail = Exception('network down');
 
-    final result = await active.createWithFallback(
+    final result = await active.createNote(
       'first try',
       now: DateTime(2026, 9, 8, 12, 0, 0),
     );
 
     // The note is on disk immediately — the user does not retry.
-    expect(result.wentLocal, isTrue);
+    expect(result.outcome, NoteCreateOutcome.savedLocalOnly);
     expect(result.entry.id, 'ql-260908-120000.md');
     expect(
       File(p.join(tmp.path, 'ql-260908-120000.md')).readAsStringSync(),
@@ -179,11 +195,11 @@ void main() {
     // Second note goes local without touching S3 at all.
     final s3Calls = fakeS3.calls;
     expect(s3Calls, greaterThan(0));
-    final second = await active.createWithFallback(
+    final second = await active.createNote(
       'second try',
       now: DateTime(2026, 9, 8, 12, 0, 1),
     );
-    expect(second.wentLocal, isTrue);
+    expect(second.outcome, NoteCreateOutcome.savedLocalOnly);
     expect(
       File(p.join(tmp.path, 'ql-260908-120001.md')).readAsStringSync(),
       'second try',
@@ -195,7 +211,7 @@ void main() {
     );
   });
 
-  test('createWithFallback keeps one id when the S3 put lands but the '
+  test('createNote keeps one id when the S3 put lands but the '
       'response is lost', () async {
     await session.setPreferredMode(StorageMode.s3);
     await prefs.setS3Config(
@@ -209,14 +225,14 @@ void main() {
     );
     fakeS3.putSucceedsButThrows = Exception('response lost');
 
-    final result = await active.createWithFallback(
+    final result = await active.createNote(
       'maybe both',
       now: DateTime(2026, 9, 8, 15, 0, 0),
     );
 
     // One note, one id, in both backends: the browser renders a single
     // "both" row and the user can drop the local copy (or move it back).
-    expect(result.wentLocal, isTrue);
+    expect(result.outcome, NoteCreateOutcome.savedLocalOnly);
     expect(result.entry.id, 'ql-260908-150000.md');
     expect(
       File(p.join(tmp.path, 'ql-260908-150000.md')).readAsStringSync(),
@@ -226,7 +242,7 @@ void main() {
     expect(session.isDegraded, isTrue);
   });
 
-  test('createWithFallback rethrows ArgumentError without a local copy',
+  test('createNote rethrows ArgumentError without a local copy',
       () async {
     await session.setPreferredMode(StorageMode.s3);
     await prefs.setS3Config(
@@ -241,7 +257,7 @@ void main() {
     fakeS3.alwaysFail = ArgumentError('bad key');
 
     await expectLater(
-      active.createWithFallback('nope', now: DateTime(2026, 9, 8, 16, 0, 0)),
+      active.createNote('nope', now: DateTime(2026, 9, 8, 16, 0, 0)),
       throwsA(isA<ArgumentError>()),
     );
     // Bad input must not leave a local copy and must not arm the window.
@@ -249,7 +265,7 @@ void main() {
     expect(session.isDegraded, isFalse);
   });
 
-  test('createWithFallback rethrows when the local fallback write fails',
+  test('createNote rethrows when the local fallback write fails',
       () async {
     // Put the log directory under a regular file so it cannot be created.
     await File(p.join(tmp.path, 'blocked')).writeAsString('not a directory');
@@ -272,7 +288,7 @@ void main() {
     fakeS3.alwaysFail = Exception('network down');
 
     await expectLater(
-      active2.createWithFallback('lost', now: DateTime(2026, 9, 8, 17, 0, 0)),
+      active2.createNote('lost', now: DateTime(2026, 9, 8, 17, 0, 0)),
       throwsA(isA<FileSystemException>()),
     );
     expect(
@@ -283,13 +299,13 @@ void main() {
     );
   });
 
-  test('createWithFallback with local preferred is not a fallback', () async {
-    final result = await active.createWithFallback(
+  test('createNote with local preferred is not a fallback', () async {
+    final result = await active.createNote(
       'local preferred',
       now: DateTime(2026, 9, 8, 13, 0, 0),
     );
 
-    expect(result.wentLocal, isFalse);
+    expect(result.outcome, NoteCreateOutcome.saved);
     expect(
       File(p.join(tmp.path, 'ql-260908-130000.md')).readAsStringSync(),
       'local preferred',
@@ -297,7 +313,7 @@ void main() {
     expect(fakeS3.objects, isEmpty);
   });
 
-  test('createWithFallback with S3 preferred but no credentials saves local',
+  test('createNote with S3 preferred but no credentials saves local',
       () async {
     SharedPreferences.setMockInitialValues(<String, Object>{
       'flutter.Directory': tmp.path,
@@ -314,12 +330,12 @@ void main() {
       s3ClientFactory: (_) => fakeS3,
     );
 
-    final result = await active2.createWithFallback(
+    final result = await active2.createNote(
       'no creds',
       now: DateTime(2026, 9, 8, 14, 0, 0),
     );
 
-    expect(result.wentLocal, isTrue);
+    expect(result.outcome, NoteCreateOutcome.savedLocalOnly);
     expect(result.entry.id, 'ql-260908-140000.md');
     expect(
       File(p.join(tmp.path, 'ql-260908-140000.md')).readAsStringSync(),
@@ -327,6 +343,180 @@ void main() {
     );
     expect(fakeS3.objects, isEmpty);
     expect(session2.isDegraded, isTrue);
+  });
+
+  test('createNote dual write saves to local and S3 when S3 is up', () async {
+    await session.setPreferredMode(StorageMode.both);
+    await prefs.setS3Config(
+      S3Config(
+        endpoint: kDefaultS3Endpoint,
+        region: kDefaultS3Region,
+        bucket: kDefaultS3Bucket,
+        accessKeyId: 'AKIA_TEST',
+        secretAccessKey: 'secret_test',
+      ),
+    );
+
+    final result = await active.createNote(
+      'in both',
+      now: DateTime(2026, 9, 8, 15, 0, 0),
+    );
+
+    expect(result.outcome, NoteCreateOutcome.saved);
+    expect(result.entry.id, 'ql-260908-150000.md');
+    expect(
+      File(p.join(tmp.path, 'ql-260908-150000.md')).readAsStringSync(),
+      'in both',
+    );
+    expect(fakeS3.objects.containsKey('ql-260908-150000.md'), isTrue);
+    expect(session.isDegraded, isFalse);
+  });
+
+  test('createNote dual write keeps the note local when S3 fails', () async {
+    await session.setPreferredMode(StorageMode.both);
+    await prefs.setS3Config(
+      S3Config(
+        endpoint: kDefaultS3Endpoint,
+        region: kDefaultS3Region,
+        bucket: kDefaultS3Bucket,
+        accessKeyId: 'AKIA_TEST',
+        secretAccessKey: 'secret_test',
+      ),
+    );
+    fakeS3.alwaysFail = Exception('network down');
+
+    final result = await active.createNote(
+      'local during outage',
+      now: DateTime(2026, 9, 8, 15, 1, 0),
+    );
+
+    expect(result.outcome, NoteCreateOutcome.savedLocalOnly);
+    expect(result.entry.id, 'ql-260908-150100.md');
+    expect(
+      File(p.join(tmp.path, 'ql-260908-150100.md')).readAsStringSync(),
+      'local during outage',
+    );
+    expect(fakeS3.objects, isEmpty);
+    expect(session.isDegraded, isTrue);
+
+    // Next note: local only, without contacting S3 again.
+    final s3Calls = fakeS3.calls;
+    expect(s3Calls, greaterThan(0));
+    final second = await active.createNote(
+      'still local',
+      now: DateTime(2026, 9, 8, 15, 1, 1),
+    );
+    expect(second.outcome, NoteCreateOutcome.savedLocalOnly);
+    expect(
+      File(p.join(tmp.path, 'ql-260908-150101.md')).readAsStringSync(),
+      'still local',
+    );
+    expect(fakeS3.calls, s3Calls, reason: 'degrade window skips S3');
+  });
+
+  test('createNote dual write keeps the note in S3 when local fails',
+      () async {
+    // Put the log directory under a regular file so it cannot be created.
+    await File(p.join(tmp.path, 'blocked')).writeAsString('not a directory');
+    SharedPreferences.setMockInitialValues(<String, Object>{
+      'flutter.Directory': p.join(tmp.path, 'blocked', 'sub'),
+      'flutter.StorageMode': 'both',
+      'flutter.S3AccessKeyId': 'AKIA_TEST',
+      'flutter.S3SecretAccessKey': 'secret_test',
+    });
+    final prefs2 = PreferencesService();
+    final session2 = S3SessionController(preferences: prefs2);
+    await session2.load();
+    addTearDown(session2.dispose);
+    final active2 = ActiveNoteStore(
+      preferences: prefs2,
+      session: session2,
+      s3ClientFactory: (_) => fakeS3,
+    );
+
+    final result = await active2.createNote(
+      'bucket only',
+      now: DateTime(2026, 9, 8, 15, 2, 0),
+    );
+
+    // The note is safe in the bucket; the outcome reports the missing local
+    // copy instead of a hard error (a retry would duplicate it in S3).
+    expect(result.outcome, NoteCreateOutcome.savedS3Only);
+    expect(result.entry.id, 'ql-260908-150200.md');
+    expect(fakeS3.objects.containsKey('ql-260908-150200.md'), isTrue);
+    expect(session2.isDegraded, isFalse);
+  });
+
+  test('createNote dual write reports the local copy when S3 throws '
+      'ArgumentError', () async {
+    await session.setPreferredMode(StorageMode.both);
+    await prefs.setS3Config(
+      S3Config(
+        endpoint: kDefaultS3Endpoint,
+        region: kDefaultS3Region,
+        bucket: kDefaultS3Bucket,
+        accessKeyId: 'AKIA_TEST',
+        secretAccessKey: 'secret_test',
+      ),
+    );
+    fakeS3.alwaysFail = ArgumentError('bad key');
+
+    final result = await active.createNote(
+      'orphan check',
+      now: DateTime(2026, 9, 8, 15, 4, 0),
+    );
+
+    // The local file already landed; report it instead of erroring and
+    // leaving it unreported (a re-log would duplicate it).
+    expect(result.outcome, NoteCreateOutcome.savedLocalOnly);
+    expect(result.entry.id, 'ql-260908-150400.md');
+    expect(
+      File(p.join(tmp.path, 'ql-260908-150400.md')).readAsStringSync(),
+      'orphan check',
+    );
+    expect(fakeS3.objects, isEmpty);
+  });
+
+  test('resolve() in dual mode returns the local store', () async {
+    await session.setPreferredMode(StorageMode.both);
+    await prefs.setS3Config(
+      S3Config(
+        endpoint: kDefaultS3Endpoint,
+        region: kDefaultS3Region,
+        bucket: kDefaultS3Bucket,
+        accessKeyId: 'AKIA_TEST',
+        secretAccessKey: 'secret_test',
+      ),
+    );
+
+    final store = await active.resolve();
+    expect(store, isA<LocalNoteStore>());
+  });
+
+  test('createNote dual write throws when both backends fail', () async {
+    await File(p.join(tmp.path, 'blocked')).writeAsString('not a directory');
+    SharedPreferences.setMockInitialValues(<String, Object>{
+      'flutter.Directory': p.join(tmp.path, 'blocked', 'sub'),
+      'flutter.StorageMode': 'both',
+      'flutter.S3AccessKeyId': 'AKIA_TEST',
+      'flutter.S3SecretAccessKey': 'secret_test',
+    });
+    final prefs2 = PreferencesService();
+    final session2 = S3SessionController(preferences: prefs2);
+    await session2.load();
+    addTearDown(session2.dispose);
+    final active2 = ActiveNoteStore(
+      preferences: prefs2,
+      session: session2,
+      s3ClientFactory: (_) => fakeS3,
+    );
+    fakeS3.alwaysFail = Exception('network down');
+
+    await expectLater(
+      active2.createNote('lost', now: DateTime(2026, 9, 8, 15, 3, 0)),
+      throwsA(isA<FileSystemException>()),
+    );
+    expect(fakeS3.objects, isEmpty);
   });
 
   test('preferred S3 with empty credentials falls back to local + degrades',
@@ -587,6 +777,16 @@ void main() {
     expect(
       listed.map((e) => e.location).toSet(),
       {NoteStorageLocation.local, NoteStorageLocation.s3},
+    );
+
+    // Dual mode keeps merging; a note in both places becomes one 'both' row.
+    await session.setPreferredMode(StorageMode.both);
+    await File(p.join(tmp.path, 'ql-260908-081000.md')).writeAsString('mirror');
+    listed = await active.listForBrowser();
+    expect(listed, hasLength(2));
+    expect(
+      listed.map((e) => e.location).toSet(),
+      {NoteStorageLocation.local, NoteStorageLocation.both},
     );
   });
 

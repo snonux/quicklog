@@ -231,9 +231,12 @@ class _PreferencesScreenState extends State<PreferencesScreen>
           ),
           const SizedBox(height: 8),
           Text(
-            _storageMode == StorageMode.s3
-                ? 'Local directory is used when S3 is unavailable (degraded fallback).'
-                : 'Notes are written here as Markdown files.',
+            _storageMode == StorageMode.local
+                ? 'Notes are written here as Markdown files.'
+                : _storageMode == StorageMode.both
+                    ? 'Every note is written here and mirrored to S3.'
+                    : 'Local directory is used when S3 is unavailable '
+                        '(degraded fallback).',
             style: Theme.of(context).textTheme.bodySmall,
           ),
           const SizedBox(height: 16),
@@ -251,6 +254,11 @@ class _PreferencesScreenState extends State<PreferencesScreen>
                 label: Text('S3 only'),
                 icon: Icon(Icons.cloud),
               ),
+              ButtonSegment(
+                value: StorageMode.both,
+                label: Text('Local + S3'),
+                icon: Icon(Icons.cloud_done),
+              ),
             ],
             selected: {_storageMode},
             onSelectionChanged: (selected) {
@@ -259,15 +267,22 @@ class _PreferencesScreenState extends State<PreferencesScreen>
           ),
           const SizedBox(height: 8),
           Text(
-            _storageMode == StorageMode.local
-                ? 'Notes stay on this device as Markdown files. Default.'
-                : 'Notes go to a user-configured S3 endpoint only. On failure '
-                    'the app falls back to local until you retry or the '
-                    'degrade window ends. Credentials stay on this device; '
-                    'nothing is telemetried.',
+            switch (_storageMode) {
+              StorageMode.local =>
+                  'Notes stay on this device as Markdown files. Default.',
+              StorageMode.s3 =>
+                  'Notes go to a user-configured S3 endpoint only. On failure '
+                  'the app falls back to local until you retry or the '
+                  'degrade window ends. Credentials stay on this device; '
+                  'nothing is telemetried.',
+              StorageMode.both =>
+                  'Every note is written to this directory and to S3. If S3 '
+                  'is unavailable the note is still saved locally. '
+                  'Credentials stay on this device; nothing is telemetried.',
+            },
             style: Theme.of(context).textTheme.bodySmall,
           ),
-          if (_storageMode == StorageMode.s3) ...[
+          if (_storageMode.writesToS3) ...[
             const SizedBox(height: 16),
             const Text('S3 endpoint:',
                 style: TextStyle(fontWeight: FontWeight.bold)),

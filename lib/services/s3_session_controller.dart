@@ -31,9 +31,11 @@ enum S3RetryResult {
 
 /// Resolves preferred [StorageMode] against a persisted degrade window.
 ///
-/// When the user prefers S3 and an I/O failure is recorded, the app falls back
-/// to local until [retryS3] succeeds, the process loads after
-/// [kS3DegradeDuration], or the clock passes [degradedUntil] mid-session.
+/// When the user prefers S3 (s3-only or dual write) and an I/O failure is
+/// recorded, the app stops attempting S3 until [retryS3] succeeds, the
+/// process loads after [kS3DegradeDuration], or the clock passes
+/// [degradedUntil] mid-session. In dual-write mode notes keep landing in the
+/// local directory throughout the window.
 class S3SessionController extends ChangeNotifier {
   S3SessionController({
     PreferencesService? preferences,
@@ -64,26 +66,25 @@ class S3SessionController extends ChangeNotifier {
   DateTime? get degradedUntil => _degradedUntil;
   bool get loaded => _loaded;
 
-  /// Preferred S3 and still inside the degrade window.
+  /// Preferred S3 (s3-only or dual) and still inside the degrade window.
   ///
   /// Reading after the window elapses clears persistence and notifies listeners
   /// so the banner can drop without a cold start (also covered by [_expiryTimer]).
   bool get isDegraded {
     _syncExpiryOnAccess();
-    if (_preferredMode != StorageMode.s3) return false;
+    if (!_preferredMode.writesToS3) return false;
     final until = _degradedUntil;
     if (until == null) return false;
     return _clock().isBefore(until);
   }
 
-  /// True when I/O should go to the local store (preferred local, or S3
-  /// preferred but currently degraded).
+  /// True when the local store is part of the I/O path: local-only preferred,
+  /// dual write (local is always written), or S3-only preferred but degraded.
   bool get usesLocalFallback =>
-      preferredMode == StorageMode.local || isDegraded;
+      preferredMode != StorageMode.s3 || isDegraded;
 
-  /// True when preferred mode is S3 and the degrade window is not active.
-  bool get shouldAttemptS3 =>
-      preferredMode == StorageMode.s3 && !isDegraded;
+  /// True when preferred mode uses S3 and the degrade window is not active.
+  bool get shouldAttemptS3 => _preferredMode.writesToS3 && !isDegraded;
 
   /// Pick the active [NoteStore]. [s3] is optional until S3NoteStore lands;
   /// when omitted, local is used even if [shouldAttemptS3] is true.
@@ -124,10 +125,11 @@ class S3SessionController extends ChangeNotifier {
     notifyListeners();
   }
 
-  /// Record an S3 I/O failure: fall back to local for [kS3DegradeDuration].
-  /// No-op when preferred mode is local (degrade is meaningless there).
+  /// Record an S3 I/O failure: stop attempting S3 for [kS3DegradeDuration].
+  /// No-op when the preferred mode never writes to S3 (degrade is
+  /// meaningless there).
   Future<void> markS3Failed({DateTime? now}) async {
-    if (_preferredMode != StorageMode.s3) return;
+    if (!_preferredMode.writesToS3) return;
     final t = now ?? _clock();
     _degradeGeneration++;
     _degradedUntil = t.add(kS3DegradeDuration);
@@ -142,7 +144,7 @@ class S3SessionController extends ChangeNotifier {
   /// degrade window optimistically and returns [S3RetryResult.armedWithoutProbe]
   /// so the UI does not claim reachability.
   Future<S3RetryResult> retryS3({S3Probe? probe, DateTime? now}) async {
-    if (_preferredMode != StorageMode.s3) return S3RetryResult.ignored;
+    if (!_preferredMode.writesToS3) return S3RetryResult.ignored;
     final run = probe ?? this.probe;
     await _clearDegraded();
     notifyListeners();

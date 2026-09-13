@@ -99,6 +99,8 @@ While mode stays **Local only**, the app does not use the network. If the
 S3 write fails after you enable it, the note is written to the configured
 local directory on the spot (you are told it was saved on this device), and
 Quicklog keeps using that directory for new notes for about an hour (or until
-**Retry S3** / a cold start). To pull phone notes onto a laptop, use the
-drain CLI documented in the
+**Retry S3** / a cold start). Choose **Local + S3** instead to write every
+note to both the local directory and the bucket; an S3 outage still keeps
+notes safe on device. To pull phone notes onto a laptop, use the drain CLI
+documented in the
 [README](../README.md#drain-cli-laptop).

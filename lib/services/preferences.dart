@@ -16,17 +16,25 @@ const _kS3SecretAccessKey = 'S3SecretAccessKey';
 /// Where new notes are written. Default is [local] — on-device files only.
 enum StorageMode {
   local,
-  s3;
+  s3,
+
+  /// Dual write: every note goes to the local directory *and* S3.
+  both;
 
   static StorageMode parse(String? raw) {
     switch (raw) {
       case 's3':
         return StorageMode.s3;
+      case 'both':
+        return StorageMode.both;
       case 'local':
       default:
         return StorageMode.local;
     }
   }
+
+  /// True when S3 is part of the write target ([s3] or dual [both]).
+  bool get writesToS3 => this == StorageMode.s3 || this == StorageMode.both;
 
   String get wireName => name;
 }

@@ -18,10 +18,10 @@ SharedTextDecision prepareSharedTextLoad(String text, bool autoLog) {
   );
 }
 
-/// Logs [text] into [dir]. Returns true when the note was written to the
-/// local directory although S3 is preferred (S3 unavailable), so the caller
-/// can tell the user where it landed.
-typedef LogFn = Future<bool> Function(String dir, String text);
+/// Logs [text] into [dir]. Returns an optional custom success message
+/// (e.g. where the note landed when S3 was unavailable); null keeps the
+/// default "logged" message.
+typedef LogFn = Future<String?> Function(String dir, String text);
 typedef ShowInfo = void Function(String title, String message);
 typedef ShowError = void Function(Object error);
 
@@ -43,18 +43,16 @@ Future<void> handleSharedTextLoad({
     return;
   }
   if (decision.mode == SharedTextLoadMode.autoLog) {
-    bool wentLocal;
+    String? customMessage;
     try {
-      wentLocal = await logFn(dir, decision.text);
+      customMessage = await logFn(dir, decision.text);
     } catch (e) {
       showError(e);
       return;
     }
     showInfo(
       'Logged',
-      wentLocal
-          ? 'Shared text has been logged to this device (S3 unavailable).'
-          : 'Shared text has been logged.',
+      customMessage ?? 'Shared text has been logged.',
     );
     resetInput();
     await clearCache();

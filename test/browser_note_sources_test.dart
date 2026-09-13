@@ -183,4 +183,50 @@ void main() {
       throwsStateError,
     );
   });
+
+  test('storeFor prefers the local copy for both rows when preferLocalReads',
+      () async {
+    final sources = BrowserNoteSources(
+      local: local,
+      s3: s3,
+      mergeWhenS3Preferred: true,
+      preferLocalReads: true,
+    );
+
+    // A note in both places reads from local (the trusted primary in dual
+    // write mode) ...
+    expect(
+      sources.storeFor(
+        located('ql-260901-190000.md', NoteStorageLocation.both),
+      ),
+      same(local),
+    );
+    // ... but an S3-only note still reads from S3, and a local-only note
+    // from local.
+    expect(
+      sources.storeFor(
+        located('ql-260901-190001.md', NoteStorageLocation.s3),
+      ),
+      same(s3),
+    );
+    expect(
+      sources.storeFor(
+        located('ql-260901-190002.md', NoteStorageLocation.local),
+      ),
+      same(local),
+    );
+
+    // Without the flag (s3-only mode), both rows read from S3 as before.
+    final legacy = BrowserNoteSources(
+      local: local,
+      s3: s3,
+      mergeWhenS3Preferred: true,
+    );
+    expect(
+      legacy.storeFor(
+        located('ql-260901-190000.md', NoteStorageLocation.both),
+      ),
+      same(s3),
+    );
+  });
 }
