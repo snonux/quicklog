@@ -95,8 +95,10 @@ instead of a local folder:
 4. Log a note as usual. Objects are named `ql-YYMMDD-HHMMSS.md`, same as local
    files.
 
-While mode stays **Local only**, the app does not use the network. If S3
-fails after you enable it, Quicklog falls back to the configured local
-directory for about an hour (or until **Retry S3** / a cold start). To pull
-phone notes onto a laptop, use the drain CLI documented in the
+While mode stays **Local only**, the app does not use the network. If the
+S3 write fails after you enable it, the note is written to the configured
+local directory on the spot (you are told it was saved on this device), and
+Quicklog keeps using that directory for new notes for about an hour (or until
+**Retry S3** / a cold start). To pull phone notes onto a laptop, use the
+drain CLI documented in the
 [README](../README.md#drain-cli-laptop).

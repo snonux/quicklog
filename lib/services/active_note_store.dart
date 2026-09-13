@@ -237,6 +237,59 @@ class ActiveNoteStore {
     return LocalNoteStore(dir);
   }
 
+  /// Creates a new note on the preferred backend, falling back to the local
+  /// store **immediately** when S3 is preferred but cannot be written, so the
+  /// note lands on the first try instead of waiting for a user retry.
+  ///
+  /// [wentLocal] is true when the preferred mode is S3 but the note was
+  /// written to the local directory (the S3 write failed, the degrade window
+  /// is active, or no credentials are set). With local preferred it is false:
+  /// local is the primary target, not a fallback.
+  ///
+  /// The fallback write uses the same timestamp (hence the same `ql-*.md`
+  /// id) as the failed S3 attempt. A transport error can in theory leave a
+  /// copy in the bucket (response lost) — the browser then shows the note as
+  /// present in both places and the user can drop the local copy. As in
+  /// plain local mode, logging twice inside one second overwrites the
+  /// earlier note, because the id only has second granularity.
+  ///
+  /// If the local fallback write itself fails, its error is rethrown.
+  Future<({LogEntry entry, bool wentLocal})> createWithFallback(
+    String text, {
+    DateTime? now,
+  }) async {
+    bindSessionProbe();
+    final dir = await _prefs.directory();
+    final local = LocalNoteStore(dir);
+    if (_session.preferredMode != StorageMode.s3) {
+      return (entry: await local.create(text, now: now), wentLocal: false);
+    }
+    if (!_session.shouldAttemptS3) {
+      // S3 preferred but inside the degrade window: write local without
+      // spending a network timeout on every note.
+      return (entry: await local.create(text, now: now), wentLocal: true);
+    }
+    final config = await _prefs.s3Config();
+    if (!config.hasCredentials) {
+      await _session.markS3Failed();
+      return (entry: await local.create(text, now: now), wentLocal: true);
+    }
+    final stamp = now ?? DateTime.now();
+    try {
+      final s3 = await _buildS3Store(markFailures: true);
+      return (entry: await s3.create(text, now: stamp), wentLocal: false);
+    } on ArgumentError {
+      // Bad input, not a transport failure: do not paper over it with a
+      // local copy.
+      rethrow;
+    } catch (_) {
+      // S3 transport / service failure: the store's onFailure hook already
+      // armed the degrade window. Write the note to the local directory now,
+      // with the same stamp, so nothing is lost on the first try.
+      return (entry: await local.create(text, now: stamp), wentLocal: true);
+    }
+  }
+
   /// Sources for the entry browser: always local; S3 when preferred and
   /// credentials exist (even while degraded, so remote notes still appear).
   Future<BrowserNoteSources> resolveBrowserSources() async {

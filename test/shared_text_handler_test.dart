@@ -41,15 +41,38 @@ void main() {
         focus: p.focus,
         resetInput: p.resetInput,
         clearCache: p.clearCache,
-        logFn: (_, _) async => p.logged = true,
+        logFn: (_, _) async { p.logged = true; return false; },
         showInfo: p.showInfo,
         showError: p.showError,
       );
       expect(p.logged, true);
-      expect(p.info, ['Logged']);
+      expect(p.info, ['Shared text has been logged.']);
       expect(p.didReset, true);
       expect(p.cleared, true);
       expect(p.errors, isEmpty);
+    });
+
+    test('autoLog with local fallback says the note is on this device',
+        () async {
+      await handleSharedTextLoad(
+        text: 'note',
+        autoLog: true,
+        dir: '/tmp',
+        prefill: p.prefill,
+        focus: p.focus,
+        resetInput: p.resetInput,
+        clearCache: p.clearCache,
+        logFn: (_, _) async { p.logged = true; return true; },
+        showInfo: p.showInfo,
+        showError: p.showError,
+      );
+      expect(p.logged, true);
+      expect(
+        p.info,
+        ['Shared text has been logged to this device (S3 unavailable).'],
+      );
+      expect(p.didReset, true);
+      expect(p.cleared, true);
     });
 
     test('autoLog failure: shows error, keeps cache, does not reset', () async {
@@ -81,6 +104,7 @@ void main() {
         clearCache: p.clearCache,
         logFn: (_, _) async {
           p.logged = true;
+          return false;
         },
         showInfo: p.showInfo,
         showError: p.showError,
@@ -138,7 +162,7 @@ class _Probe {
   }
 
   void showInfo(String title, String msg) {
-    info.add(title);
+    info.add(msg);
   }
 
   void showError(Object e) {

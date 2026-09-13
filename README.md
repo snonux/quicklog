@@ -25,7 +25,9 @@ home computer.
   on-device only (paste from `~/.config/garage/quicklog.env` on a laptop).
 - **Optional S3**: same `ql-*.md` object keys against a path-style S3 endpoint
   (defaults aimed at Garage). On failure the app falls back to local for an
-  hour with a Retry control. No telemetry; default remains local-only.
+  hour with a Retry control — a note whose S3 write fails is written to the
+  local directory on the spot, so it is never lost and never asks you to
+  re-save. No telemetry; default remains local-only.
 - **Entry browser**: list of previous entries (newest first) with a viewer.
 - **Edit entries**: from the list (pencil icon) or from the entry viewer. The
   editor writes back to the same file, so the note keeps its creation
@@ -141,9 +143,11 @@ to a user-configured S3-compatible endpoint (path-style). Defaults target
 access key and secret from `~/.config/garage/quicklog.env` on a development
 machine; Android has no automatic import of that file. **Test connection**
 probes without writing prefs; **Save** is what persists secrets. Credentials
-live only in SharedPreferences and are never logged. If S3 fails, Quicklog
-uses the local directory until you tap **Retry S3** or an hour elapses / the
-app cold-starts.
+live only in SharedPreferences and are never logged. If the S3 write fails
+while logging, Quicklog writes that note to the local directory immediately
+(same `ql-*.md` name) and tells you it was saved on this device — you do not
+re-save it. The app then uses the local directory for new notes until you tap
+**Retry S3** or an hour elapses / the app cold-starts.
 
 Default mode remains **Local only**. There is no analytics or background sync.
 `INTERNET` is declared for the optional S3 path and stays unused in local mode.

@@ -123,6 +123,212 @@ void main() {
     expect(fakeS3.objects, isEmpty);
   });
 
+  test('createWithFallback saves to S3 when reachable', () async {
+    await session.setPreferredMode(StorageMode.s3);
+    await prefs.setS3Config(
+      S3Config(
+        endpoint: kDefaultS3Endpoint,
+        region: kDefaultS3Region,
+        bucket: kDefaultS3Bucket,
+        accessKeyId: 'AKIA_TEST',
+        secretAccessKey: 'secret_test',
+      ),
+    );
+
+    final result = await active.createWithFallback(
+      'to s3',
+      now: DateTime(2026, 9, 8, 12, 0, 0),
+    );
+
+    expect(result.wentLocal, isFalse);
+    expect(result.entry.id, 'ql-260908-120000.md');
+    expect(fakeS3.objects.containsKey('ql-260908-120000.md'), isTrue);
+    expect(session.isDegraded, isFalse);
+  });
+
+  test('createWithFallback writes locally on first try when S3 fails',
+      () async {
+    await session.setPreferredMode(StorageMode.s3);
+    await prefs.setS3Config(
+      S3Config(
+        endpoint: kDefaultS3Endpoint,
+        region: kDefaultS3Region,
+        bucket: kDefaultS3Bucket,
+        accessKeyId: 'AKIA_TEST',
+        secretAccessKey: 'secret_test',
+      ),
+    );
+    fakeS3.alwaysFail = Exception('network down');
+
+    final result = await active.createWithFallback(
+      'first try',
+      now: DateTime(2026, 9, 8, 12, 0, 0),
+    );
+
+    // The note is on disk immediately — the user does not retry.
+    expect(result.wentLocal, isTrue);
+    expect(result.entry.id, 'ql-260908-120000.md');
+    expect(
+      File(p.join(tmp.path, 'ql-260908-120000.md')).readAsStringSync(),
+      'first try',
+    );
+    expect(fakeS3.objects, isEmpty);
+    // The failure still arms the degrade window for the next notes.
+    expect(session.isDegraded, isTrue);
+
+    // Second note goes local without touching S3 at all.
+    final s3Calls = fakeS3.calls;
+    expect(s3Calls, greaterThan(0));
+    final second = await active.createWithFallback(
+      'second try',
+      now: DateTime(2026, 9, 8, 12, 0, 1),
+    );
+    expect(second.wentLocal, isTrue);
+    expect(
+      File(p.join(tmp.path, 'ql-260908-120001.md')).readAsStringSync(),
+      'second try',
+    );
+    expect(
+      fakeS3.calls,
+      s3Calls,
+      reason: 'degrade window must not contact S3 for the next note',
+    );
+  });
+
+  test('createWithFallback keeps one id when the S3 put lands but the '
+      'response is lost', () async {
+    await session.setPreferredMode(StorageMode.s3);
+    await prefs.setS3Config(
+      S3Config(
+        endpoint: kDefaultS3Endpoint,
+        region: kDefaultS3Region,
+        bucket: kDefaultS3Bucket,
+        accessKeyId: 'AKIA_TEST',
+        secretAccessKey: 'secret_test',
+      ),
+    );
+    fakeS3.putSucceedsButThrows = Exception('response lost');
+
+    final result = await active.createWithFallback(
+      'maybe both',
+      now: DateTime(2026, 9, 8, 15, 0, 0),
+    );
+
+    // One note, one id, in both backends: the browser renders a single
+    // "both" row and the user can drop the local copy (or move it back).
+    expect(result.wentLocal, isTrue);
+    expect(result.entry.id, 'ql-260908-150000.md');
+    expect(
+      File(p.join(tmp.path, 'ql-260908-150000.md')).readAsStringSync(),
+      'maybe both',
+    );
+    expect(fakeS3.objects.containsKey('ql-260908-150000.md'), isTrue);
+    expect(session.isDegraded, isTrue);
+  });
+
+  test('createWithFallback rethrows ArgumentError without a local copy',
+      () async {
+    await session.setPreferredMode(StorageMode.s3);
+    await prefs.setS3Config(
+      S3Config(
+        endpoint: kDefaultS3Endpoint,
+        region: kDefaultS3Region,
+        bucket: kDefaultS3Bucket,
+        accessKeyId: 'AKIA_TEST',
+        secretAccessKey: 'secret_test',
+      ),
+    );
+    fakeS3.alwaysFail = ArgumentError('bad key');
+
+    await expectLater(
+      active.createWithFallback('nope', now: DateTime(2026, 9, 8, 16, 0, 0)),
+      throwsA(isA<ArgumentError>()),
+    );
+    // Bad input must not leave a local copy and must not arm the window.
+    expect(Directory(tmp.path).listSync(), isEmpty);
+    expect(session.isDegraded, isFalse);
+  });
+
+  test('createWithFallback rethrows when the local fallback write fails',
+      () async {
+    // Put the log directory under a regular file so it cannot be created.
+    await File(p.join(tmp.path, 'blocked')).writeAsString('not a directory');
+    SharedPreferences.setMockInitialValues(<String, Object>{
+      'flutter.Directory': p.join(tmp.path, 'blocked', 'sub'),
+      'flutter.StorageMode': 's3',
+      'flutter.S3AccessKeyId': 'AKIA_TEST',
+      'flutter.S3SecretAccessKey': 'secret_test',
+    });
+    final prefs2 = PreferencesService();
+    final session2 = S3SessionController(preferences: prefs2);
+    await session2.load();
+    await session2.setPreferredMode(StorageMode.s3);
+    addTearDown(session2.dispose);
+    final active2 = ActiveNoteStore(
+      preferences: prefs2,
+      session: session2,
+      s3ClientFactory: (_) => fakeS3,
+    );
+    fakeS3.alwaysFail = Exception('network down');
+
+    await expectLater(
+      active2.createWithFallback('lost', now: DateTime(2026, 9, 8, 17, 0, 0)),
+      throwsA(isA<FileSystemException>()),
+    );
+    expect(
+      Directory(tmp.path)
+          .listSync()
+          .where((e) => p.basename(e.path).endsWith('.md')),
+      isEmpty,
+    );
+  });
+
+  test('createWithFallback with local preferred is not a fallback', () async {
+    final result = await active.createWithFallback(
+      'local preferred',
+      now: DateTime(2026, 9, 8, 13, 0, 0),
+    );
+
+    expect(result.wentLocal, isFalse);
+    expect(
+      File(p.join(tmp.path, 'ql-260908-130000.md')).readAsStringSync(),
+      'local preferred',
+    );
+    expect(fakeS3.objects, isEmpty);
+  });
+
+  test('createWithFallback with S3 preferred but no credentials saves local',
+      () async {
+    SharedPreferences.setMockInitialValues(<String, Object>{
+      'flutter.Directory': tmp.path,
+      // No access/secret keys.
+    });
+    final prefs2 = PreferencesService();
+    final session2 = S3SessionController(preferences: prefs2);
+    await session2.load();
+    await session2.setPreferredMode(StorageMode.s3);
+    addTearDown(session2.dispose);
+    final active2 = ActiveNoteStore(
+      preferences: prefs2,
+      session: session2,
+      s3ClientFactory: (_) => fakeS3,
+    );
+
+    final result = await active2.createWithFallback(
+      'no creds',
+      now: DateTime(2026, 9, 8, 14, 0, 0),
+    );
+
+    expect(result.wentLocal, isTrue);
+    expect(result.entry.id, 'ql-260908-140000.md');
+    expect(
+      File(p.join(tmp.path, 'ql-260908-140000.md')).readAsStringSync(),
+      'no creds',
+    );
+    expect(fakeS3.objects, isEmpty);
+    expect(session2.isDegraded, isTrue);
+  });
+
   test('preferred S3 with empty credentials falls back to local + degrades',
       () async {
     SharedPreferences.setMockInitialValues(<String, Object>{

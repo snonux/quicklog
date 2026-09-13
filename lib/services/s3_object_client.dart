@@ -102,13 +102,22 @@ class MinioS3ObjectClient implements S3ObjectClient {
 class MemoryS3ObjectClient implements S3ObjectClient {
   final Map<String, List<int>> objects = {};
 
+  /// Total calls made against any method; lets tests assert a backend was
+  /// never contacted at all (e.g. while the degrade window is active).
+  int calls = 0;
+
   /// When non-null, the next call to any method throws this error then clears.
   Object? failNext;
 
   /// When set, every call throws this error.
   Object? alwaysFail;
 
+  /// When non-null, the next [putObject] records the object and *then* throws
+  /// this error — an upload that landed but whose response was lost.
+  Object? putSucceedsButThrows;
+
   void _maybeFail() {
+    calls++;
     final always = alwaysFail;
     if (always != null) throw always;
     final once = failNext;
@@ -126,6 +135,11 @@ class MemoryS3ObjectClient implements S3ObjectClient {
   }) async {
     _maybeFail();
     objects[key] = List<int>.from(bytes);
+    final lost = putSucceedsButThrows;
+    if (lost != null) {
+      putSucceedsButThrows = null;
+      throw lost;
+    }
   }
 
   @override

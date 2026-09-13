@@ -3,7 +3,6 @@ import 'dart:io';
 import 'package:flutter/material.dart';
 
 import '../services/active_note_store.dart';
-import '../services/log_service.dart';
 import '../services/preferences.dart';
 import '../services/s3_session_controller.dart';
 import '../services/share_service.dart';
@@ -39,8 +38,6 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
 
   ActiveNoteStore get _active =>
       widget.activeStore ?? ActiveNoteStore.instance;
-
-  Future<NoteStore> _store() => _active.resolve();
 
   @override
   void initState() {
@@ -109,9 +106,19 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
   }
 
   Future<void> _logText() async {
+    final text = _controller.text;
     try {
-      await (await _store()).create(_controller.text);
+      // S3 failures fall back to the local store inside
+      // createWithFallback, so a note is saved on the first try and the
+      // input can be cleared unconditionally.
+      final result = await _active.createWithFallback(text);
       _resetInput();
+      if (result.wentLocal) {
+        _showInfo(
+          'Saved locally',
+          'S3 unavailable — the note was saved on this device.',
+        );
+      }
     } catch (e) {
       _showError(e);
     }
@@ -146,9 +153,10 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
       focus: () => _focusNode.requestFocus(),
       resetInput: _resetInput,
       clearCache: ShareService.clearSharedTextCache,
-      logFn: (_, t) async {
-        await (await _store()).create(t);
-      },
+      logFn: (_, t) async =>
+          // Same immediate local fallback as the main Log text button; the
+          // returned flag lets the handler say where the note landed.
+          (await _active.createWithFallback(t)).wentLocal,
       showInfo: _showInfo,
       showError: _showError,
     );
