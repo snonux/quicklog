@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:io';
 
 import 'package:flutter/material.dart';
@@ -5,6 +6,7 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:path/path.dart' as p;
 import 'package:quicklog/screens/home_screen.dart';
 import 'package:quicklog/services/active_note_store.dart';
+import 'package:quicklog/services/log_service.dart';
 import 'package:quicklog/services/preferences.dart';
 import 'package:quicklog/services/s3_object_client.dart';
 import 'package:quicklog/services/s3_session_controller.dart';
@@ -58,6 +60,108 @@ void main() {
     final btn = find.widgetWithText(FilledButton, 'Log text');
     expect(btn, findsOneWidget);
     expect(tester.widget<FilledButton>(btn).enabled, isTrue);
+  });
+
+  testWidgets('repeated taps while an S3 save is pending create one note', (
+    tester,
+  ) async {
+    SharedPreferences.setMockInitialValues(<String, Object>{
+      'flutter.StorageMode': 's3',
+      'flutter.S3AccessKeyId': 'AKIA_TEST',
+      'flutter.S3SecretAccessKey': 'secret_test',
+    });
+    final prefs = PreferencesService();
+    final s3Session = S3SessionController(preferences: prefs);
+    await s3Session.load();
+    final s3 = _DelayedPutS3ObjectClient();
+    final active = ActiveNoteStore(
+      preferences: prefs,
+      session: s3Session,
+      s3ClientFactory: (_) => s3,
+    );
+    addTearDown(s3Session.dispose);
+
+    await tester.pumpWidget(
+      MaterialApp(
+        home: HomeScreen(session: s3Session, activeStore: active),
+      ),
+    );
+    await tester.pumpAndSettle();
+
+    await tester.enterText(find.byType(TextField), 'only once');
+    final button = find.widgetWithText(FilledButton, 'Log text');
+    await tester.tap(button);
+    // Tap again before a frame rebuilds the disabled button. The handler's
+    // synchronous guard must reject this invocation as well.
+    await tester.tap(button);
+    // Simulate an IME edit that was already queued before the field became
+    // disabled. It was not part of the submitted snapshot and must survive.
+    tester.widget<TextField>(find.byType(TextField)).controller!.text =
+        'typed after tap';
+    await tester.pump();
+
+    expect(s3.putCalls, 1);
+    expect(tester.widget<FilledButton>(button).enabled, isFalse);
+
+    s3.finishPut();
+    await tester.pumpAndSettle();
+
+    expect(s3.objects, hasLength(1));
+    expect(tester.widget<FilledButton>(button).enabled, isTrue);
+    expect(
+      tester.widget<TextField>(find.byType(TextField)).controller!.text,
+      'typed after tap',
+    );
+  });
+
+  testWidgets('a failed pending save unlocks controls and allows retry', (
+    tester,
+  ) async {
+    final active = _DelayedFailingActiveNoteStore(session);
+    await tester.pumpWidget(
+      MaterialApp(
+        home: HomeScreen(session: session, activeStore: active),
+      ),
+    );
+    await tester.pumpAndSettle();
+
+    await tester.enterText(find.byType(TextField), 'keep for retry');
+    final logButton = find.widgetWithText(FilledButton, 'Log text');
+    final clearButton = find.widgetWithText(OutlinedButton, 'Clear');
+    await tester.tap(logButton);
+    await tester.tap(logButton);
+    await tester.pump();
+
+    expect(active.createCalls, 1);
+    expect(tester.widget<FilledButton>(logButton).enabled, isFalse);
+    expect(tester.widget<OutlinedButton>(clearButton).enabled, isFalse);
+    expect(tester.widget<TextField>(find.byType(TextField)).enabled, isFalse);
+
+    active.fail(0);
+    await tester.pumpAndSettle();
+
+    expect(tester.widget<FilledButton>(logButton).enabled, isTrue);
+    expect(tester.widget<OutlinedButton>(clearButton).enabled, isTrue);
+    expect(tester.widget<TextField>(find.byType(TextField)).enabled, isTrue);
+    expect(
+      tester.widget<TextField>(find.byType(TextField)).controller!.text,
+      'keep for retry',
+    );
+    expect(find.textContaining('Error:'), findsOneWidget);
+
+    // Let the error snackbar clear so it no longer covers the bottom action.
+    await tester.pump(const Duration(seconds: 5));
+    await tester.pumpAndSettle();
+    await tester.tap(logButton);
+    await tester.pump();
+    expect(active.createCalls, 2);
+    active.succeed(1);
+    await tester.pumpAndSettle();
+    expect(tester.widget<FilledButton>(logButton).enabled, isTrue);
+    expect(
+      tester.widget<TextField>(find.byType(TextField)).controller!.text,
+      isEmpty,
+    );
   });
 
   testWidgets('S3 down: first Log text saves locally without an error',
@@ -338,4 +442,46 @@ void main() {
     // Drain the pending degrade expiry Timer (see above).
     await tester.pump(const Duration(hours: 1));
   });
+}
+
+class _DelayedPutS3ObjectClient extends MemoryS3ObjectClient {
+  final Completer<void> _putCompleter = Completer<void>();
+  int putCalls = 0;
+
+  @override
+  Future<void> putObject(
+    String key,
+    List<int> bytes, {
+    String contentType = 'text/markdown',
+  }) async {
+    putCalls++;
+    await _putCompleter.future;
+    await super.putObject(key, bytes, contentType: contentType);
+  }
+
+  void finishPut() => _putCompleter.complete();
+}
+
+class _DelayedFailingActiveNoteStore extends ActiveNoteStore {
+  _DelayedFailingActiveNoteStore(S3SessionController session)
+    : super(session: session);
+
+  final List<Completer<NoteCreateResult>> _requests = [];
+
+  int get createCalls => _requests.length;
+
+  @override
+  Future<NoteCreateResult> createNote(String text, {DateTime? now}) {
+    final request = Completer<NoteCreateResult>();
+    _requests.add(request);
+    return request.future;
+  }
+
+  void fail(int index) =>
+      _requests[index].completeError(Exception('save failed'));
+
+  void succeed(int index) => _requests[index].complete((
+    entry: LogEntry(id: 'ql-260101-000000.md', timestamp: DateTime(2026, 1, 1)),
+    outcome: NoteCreateOutcome.saved,
+  ));
 }

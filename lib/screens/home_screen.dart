@@ -32,6 +32,7 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
   final PreferencesService _prefs = PreferencesService();
   bool _warnShown = false;
   bool _loadingShared = false;
+  bool _logging = false;
 
   S3SessionController get _session =>
       widget.session ?? S3SessionController.instance;
@@ -106,19 +107,25 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
   }
 
   Future<void> _logText() async {
+    if (_logging) return;
+    setState(() => _logging = true);
     final text = _controller.text;
     try {
       // S3 (and local, in dual mode) failures are handled inside createNote,
-      // so the note is saved on the first try and the input can be cleared
-      // unconditionally.
+      // so the note is saved on the first try and the submitted input can be
+      // cleared without asking the user to retry.
       final result = await _active.createNote(text);
-      _resetInput();
+      // A queued IME edit can arrive after the tap but before the disabled
+      // field rebuilds. Never erase text that was not part of this save.
+      if (_controller.text == text) _resetInput();
       final message = _outcomeMessage(result.outcome);
       if (message != null) {
         _showInfo('Saved', message);
       }
     } catch (e) {
       _showError(e);
+    } finally {
+      if (mounted) setState(() => _logging = false);
     }
   }
 
@@ -269,6 +276,7 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
                     child: TextField(
                       controller: _controller,
                       focusNode: _focusNode,
+                      enabled: !_logging,
                       maxLines: null,
                       expands: true,
                       textAlignVertical: TextAlignVertical.top,
@@ -282,16 +290,18 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
                   Row(
                     children: [
                       FilledButton.icon(
-                        onPressed: _logText,
+                        onPressed: _logging ? null : _logText,
                         icon: const Icon(Icons.save),
                         label: const Text('Log text'),
                       ),
                       const SizedBox(width: 8),
                       OutlinedButton(
-                        onPressed: () {
-                          _resetInput();
-                          _focusNode.requestFocus();
-                        },
+                        onPressed: _logging
+                            ? null
+                            : () {
+                                _resetInput();
+                                _focusNode.requestFocus();
+                              },
                         child: const Text('Clear'),
                       ),
                       const Spacer(),
