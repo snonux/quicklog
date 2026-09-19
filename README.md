@@ -54,7 +54,7 @@ build recipe reads it, so bump it whenever the toolchain moves.
 
 Note that split APKs do not carry that number verbatim. `android/app/build.gradle.kts`
 turns it into `buildNumber * 10 + abi`, with 1, 2 and 3 for armeabi-v7a, arm64-v8a
-and x86_64, so `0.2.0+11` ships as 111 / 112 / 113. This is F-Droid's convention
+and x86_64, so `0.2.1+12` ships as 121 / 122 / 123. This is F-Droid's convention
 and it replaces Flutter's own `abi * 1000 + buildNumber`, which would collide two
 releases once the counter reached 1000.
 

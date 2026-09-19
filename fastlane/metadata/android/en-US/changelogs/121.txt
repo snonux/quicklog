@@ -1,0 +1,5 @@
+Reliable local and S3 logging.
+
+* Add Local + S3 mode to write every note to both destinations.
+* Save locally on the first try when S3 is unavailable.
+* Prevent rapid repeated taps from submitting the same note twice.
