@@ -2,7 +2,13 @@
 
 ## Installing the APK
 
-Build a release APK (see the main [README](../README.md#android) for
+The easiest way is F-Droid: add snonux's repository from
+[snonux/fdroid](https://github.com/snonux/fdroid) (one-tap link and QR code
+there) and install Quicklog from it; F-Droid then keeps it updated. See the
+main [README](../README.md#install-on-android) for the address and
+fingerprint.
+
+To build it yourself instead, build a release APK (see the main [README](../README.md#android) for
 cross-compile options), then install it over adb:
 
 ```sh

@@ -42,6 +42,20 @@ home computer.
   either prefills the editor or logs it immediately, depending on the
   preference.
 
+## Install on Android
+
+Install Quicklog from snonux's own F-Droid repository,
+[snonux/fdroid](https://github.com/snonux/fdroid), and F-Droid keeps it
+updated. That page has a one-tap link and a QR code to add the repository;
+or in F-Droid go to *Settings → Repositories → +* and enter
+
+- Address: `https://snonux.github.io/fdroid/repo`
+- Fingerprint: `04B05FB0565543E058372B867B3D3A699D9D668388CE670478EDD4116D736DF7`
+
+then search for Quicklog and install it. To build and install the APK
+yourself instead, see [Build and Run](#android) and
+[docs/installation.md](./docs/installation.md).
+
 ## Releases
 
 Versions live in a single place: the `version:` line of `pubspec.yaml`, written
