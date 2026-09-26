@@ -84,6 +84,13 @@ offline backup if that happens.
 
 ### The release build, start to finish
 
+Pushing the `vX.Y.Z` tag is all it takes: `.github/workflows/release.yml`
+does the build below on GitHub Actions (JDK 17, Flutter from
+`.flutter-version`, source in `/tmp/build`, the runner's SDK linked to
+`/opt/android-sdk`), signs with the key from the `ANDROID_*` secrets and
+attaches the APKs to the release. Keep the workflow and this recipe in step:
+a change to one reproducibility condition belongs in both. By hand:
+
 ```sh
 # 1. one-time on a new machine: F-Droid's builder path
 sudo ln -sfn "$HOME/Android/Sdk" /opt/android-sdk
