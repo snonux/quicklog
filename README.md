@@ -23,6 +23,9 @@ home computer.
 - **Preferences**: configurable log directory, Local vs S3 storage mode, and
   an "Auto-log shared text" toggle. S3 mode stores endpoint/region/bucket/keys
   on-device only (paste from `~/.config/garage/quicklog.env` on a laptop).
+- **Settings backup**: Export settings / Import settings in Preferences write
+  every setting to one JSON file you choose and restore it later, e.g. across
+  an uninstall. See [Back up and restore settings](#back-up-and-restore-settings).
 - **Optional S3**: same `ql-*.md` object keys against a path-style S3 endpoint
   (defaults aimed at Garage), either **S3 only** or **Local + S3** (dual
   write: every note lands in the local directory *and* the bucket). On S3
@@ -193,6 +196,37 @@ After drain, ordinary `ql-*.md` files sit on disk for whatever imports them
 next (for example Taskwarrior's quicklogger). Dotfiles may wrap the CLI
 (`taskwarrior::quicklog_drain` before `quicklogger` in `ti` / `invoke`); that
 wrapper is not part of this repository.
+
+## Back up and restore settings
+
+Preferences → **Backup** has **Export settings** and **Import settings**, for
+moving to another device or surviving an uninstall (switching from a
+self-built debug APK to the F-Droid build requires one, and that wipes app
+data).
+
+- **Export** first saves what the screen shows, then writes one JSON file to
+  a place you pick: the system *Save to* dialog on Android, a typed path on
+  Linux (default `~/quicklog-settings-YYMMDD.json`).
+- **Import** reads such a file, asks before replacing anything, applies it and
+  the screen and the running app pick the values up at once.
+
+The file holds every setting: the log directory (an untouched default stays
+"default", so the new install resolves its own), the storage mode, the S3
+endpoint, region, bucket, **access key ID and secret access key**, and
+"Auto-log shared text". The credentials are in plain text, so keep the file
+private and delete it once restored. The transient "S3 degraded for an hour"
+state is not exported.
+
+Notes are **not** in the file: they are the `ql-*.md` files in the log
+directory or objects in the bucket. The default Android directory
+(`/Android/data/org.buetow.quicklog/files/`) is removed on uninstall, so copy
+or sync those files somewhere else first.
+
+The file is versioned (`"app": "org.buetow.quicklog"`, `"format":
+"quicklog-settings"`, `"formatVersion": 1`). Import refuses files from another
+app, other formats and newer format versions with a message saying why, and
+ignores keys it does not know, so a file from a newer Quicklog that only adds
+settings still imports. Settings missing from a file are left as they are.
 
 ## Storage on Android
 
