@@ -61,7 +61,10 @@ class _PreferencesScreenState extends State<PreferencesScreen>
   late final SettingsFileGateway _files = widget.settingsFiles ??
       (Platform.isAndroid
           ? const AndroidSettingsFileGateway()
-          : PathPromptSettingsFileGateway(_promptForPath));
+          : PathPromptSettingsFileGateway(
+              _promptForPath,
+              confirmOverwrite: _confirmOverwrite,
+            ));
 
   S3SessionController get _session =>
       widget.session ?? S3SessionController.instance;
@@ -258,6 +261,27 @@ class _PreferencesScreenState extends State<PreferencesScreen>
         ],
       ),
     );
+  }
+
+  Future<bool> _confirmOverwrite(String path) async {
+    final replace = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Text('Replace existing file?'),
+        content: Text('$path already exists. Replace it with this export?'),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(ctx).pop(false),
+            child: const Text('Cancel'),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.of(ctx).pop(true),
+            child: const Text('Replace'),
+          ),
+        ],
+      ),
+    );
+    return replace ?? false;
   }
 
   Future<String?> _promptForPath({

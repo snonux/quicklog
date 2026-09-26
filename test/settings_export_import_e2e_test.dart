@@ -114,6 +114,18 @@ void main() {
     await pumpWithIo(tester);
   }
 
+  /// Pumps until [finder] shows up. The export and import finish on real
+  /// I/O (and a chmod subprocess), which can take longer than a fixed number
+  /// of pumps when the whole suite runs in parallel.
+  Future<void> pumpUntil(WidgetTester tester, Finder finder) async {
+    for (var i = 0; i < 200 && finder.evaluate().isEmpty; i++) {
+      await pumpWithIo(tester, rounds: 1);
+      await tester.runAsync(
+        () => Future<void>.delayed(const Duration(milliseconds: 20)),
+      );
+    }
+  }
+
   Future<void> typePathAndConfirm(
     WidgetTester tester,
     String path,
@@ -152,6 +164,7 @@ void main() {
     await pumpWithIo(tester);
     expect(find.text('Export settings to file'), findsOneWidget);
     await typePathAndConfirm(tester, exportPath, 'Save');
+    await pumpUntil(tester, find.text('Settings exported to $exportPath'));
     expect(find.text('Settings exported to $exportPath'), findsOneWidget);
 
     // Export also saved the on-screen values, like the Save button.
@@ -161,6 +174,9 @@ void main() {
 
     final exported = File(exportPath);
     expect(await fileExists(tester, exported), isTrue);
+    // Holds the S3 secret: readable by the owner only.
+    final mode = (await tester.runAsync(exported.stat))!.mode;
+    expect(mode & 0x1FF, 0x180, reason: 'mode ${mode.toRadixString(8)}');
     final json =
         jsonDecode((await tester.runAsync(exported.readAsString))!)
             as Map<String, Object?>;
@@ -199,6 +215,7 @@ void main() {
     expect(find.textContaining('Replace the current settings'), findsOneWidget);
     await tester.tap(find.widgetWithText(FilledButton, 'Import'));
     await pumpWithIo(tester, rounds: 20);
+    await pumpUntil(tester, find.text('Settings imported.'));
     expect(find.text('Settings imported.'), findsOneWidget);
 
     // 5. The screen reflects every value immediately...
@@ -249,6 +266,7 @@ void main() {
       await tapScrolled(tester, find.text('Import settings'));
       await typePathAndConfirm(tester, exportPath, 'Open');
 
+      await pumpUntil(tester, find.text('Import failed'));
       expect(find.text('Import failed'), findsOneWidget);
       expect(find.textContaining('org.buetow.someotherapp'), findsOneWidget);
       expect((await SharedPreferences.getInstance()).getKeys(), isEmpty);
@@ -256,12 +274,52 @@ void main() {
     },
   );
 
+  testWidgets('export asks before replacing an existing file', (tester) async {
+    final existing = File(exportPath);
+    await tester.runAsync(() async {
+      await existing.parent.create(recursive: true);
+      await existing.writeAsString('keep me');
+      // World-readable to start with, so the test sees the export tighten it.
+      await Process.run('chmod', ['644', existing.path]);
+    });
+    await pumpApp(tester);
+    await openPreferences(tester);
+
+    Future<void> exportTo(String path) async {
+      await tapScrolled(tester, find.text('Export settings'));
+      await tester.tap(find.widgetWithText(FilledButton, 'Export'));
+      await pumpWithIo(tester);
+      await typePathAndConfirm(tester, path, 'Save');
+      await pumpUntil(tester, find.text('Replace existing file?'));
+      expect(find.text('Replace existing file?'), findsOneWidget);
+    }
+
+    // Declining leaves the file exactly as it was.
+    await exportTo(exportPath);
+    await tester.tap(find.text('Cancel'));
+    await pumpWithIo(tester);
+    expect(await tester.runAsync(existing.readAsString), 'keep me');
+    expect(find.textContaining('Settings exported'), findsNothing);
+
+    // Replacing writes the export and makes the file owner-only.
+    await exportTo(exportPath);
+    await tester.tap(find.widgetWithText(FilledButton, 'Replace'));
+    await pumpWithIo(tester, rounds: 20);
+    await pumpUntil(tester, find.text('Settings exported to $exportPath'));
+    expect(find.text('Settings exported to $exportPath'), findsOneWidget);
+    final text = (await tester.runAsync(existing.readAsString))!;
+    expect(jsonDecode(text), containsPair('app', 'org.buetow.quicklog'));
+    final mode = (await tester.runAsync(existing.stat))!.mode;
+    expect(mode & 0x1FF, 0x180, reason: 'mode ${mode.toRadixString(8)}');
+  });
+
   testWidgets('a missing file reports a read error', (tester) async {
     await pumpApp(tester);
     await openPreferences(tester);
     await tapScrolled(tester, find.text('Import settings'));
     await typePathAndConfirm(tester, p.join(tmp.path, 'nope.json'), 'Open');
 
+    await pumpUntil(tester, find.text('Import failed'));
     expect(find.text('Import failed'), findsOneWidget);
     expect(find.textContaining('Cannot read'), findsOneWidget);
   });

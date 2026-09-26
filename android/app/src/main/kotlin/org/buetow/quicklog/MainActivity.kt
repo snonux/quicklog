@@ -7,6 +7,7 @@ import android.net.Uri
 import android.os.Build
 import android.os.Bundle
 import android.os.Environment
+import android.provider.DocumentsContract
 import android.provider.OpenableColumns
 import android.provider.Settings
 import io.flutter.embedding.android.FlutterActivity
@@ -101,7 +102,17 @@ class MainActivity : FlutterActivity() {
     override fun onActivityResult(requestCode: Int, resultCode: Int, data: Intent?) {
         super.onActivityResult(requestCode, resultCode, data)
         if (requestCode != requestExportSettings && requestCode != requestImportSettings) return
-        val result = pendingSettingsResult ?: return
+        // No pending result means Android killed the process while the file
+        // dialog was open: the Dart call that asked for it, and the export
+        // text, died with it. Nothing is restored (the user just taps Export
+        // again), but an export would otherwise leave the empty document the
+        // dialog created behind, so remove it.
+        val result = pendingSettingsResult ?: run {
+            if (requestCode == requestExportSettings && resultCode == Activity.RESULT_OK) {
+                data?.data?.let { deleteQuietly(it) }
+            }
+            return
+        }
         val content = pendingExportContent
         pendingSettingsResult = null
         pendingExportContent = null
@@ -122,6 +133,15 @@ class MainActivity : FlutterActivity() {
             }
         } catch (e: Exception) {
             result.error("io", e.message ?: e.toString(), null)
+        }
+    }
+
+    private fun deleteQuietly(uri: Uri) {
+        try {
+            DocumentsContract.deleteDocument(contentResolver, uri)
+        } catch (e: Exception) {
+            // Provider without delete support, or already gone: an empty
+            // file is harmless, so leave it.
         }
     }
 

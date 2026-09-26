@@ -206,7 +206,8 @@ data).
 
 - **Export** first saves what the screen shows, then writes one JSON file to
   a place you pick: the system *Save to* dialog on Android, a typed path on
-  Linux (default `~/quicklog-settings-YYMMDD.json`).
+  Linux (default `~/quicklog-settings-YYMMDD.json`; an existing file is only
+  replaced after asking, and the file is made owner-only, mode 600).
 - **Import** reads such a file, asks before replacing anything, applies it and
   the screen and the running app pick the values up at once.
 
