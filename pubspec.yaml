@@ -6,7 +6,7 @@ publish_to: 'none'
 # for every release, never reuse or lower it. android/app/build.gradle.kts turns
 # it into a per-ABI version code of `buildNumber * 10 + abi`, so it has no upper
 # bound. v0.2.2 is release 13.
-version: 0.2.2+13
+version: 0.2.3+14
 
 environment:
   sdk: ^3.11.5

@@ -1,0 +1,3 @@
+Maintenance release.
+
+* Documentation: how to install Quicklog from the snonux F-Droid repository.
