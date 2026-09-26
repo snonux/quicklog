@@ -47,7 +47,26 @@ Do this before every submission, and before every update afterwards.
 4. `flutter analyze && flutter test`
 5. Commit, then tag with a leading `v`: `git tag -a v0.2.0 -m 'v0.2.0'`, and
    `git push && git push --tags`
-6. Build the release **from `/tmp/build`** and publish it. The path matters: the
+6. Pushing the tag starts `.github/workflows/release.yml`, which builds the
+   three APKs under F-Droid's conditions (below), signs them with the release
+   key and attaches them to the GitHub release of the tag, where official
+   F-Droid and the [snonux F-Droid repo](https://github.com/snonux/fdroid) pick
+   them up. Watch it with `gh run watch`. It needs these repository secrets
+   once:
+
+   ```sh
+   base64 -w0 keys/quicklog-release.jks | gh secret set ANDROID_KEYSTORE
+   gh secret set ANDROID_KEY_ALIAS          # keyAlias from android/key.properties
+   gh secret set ANDROID_KEYSTORE_PASSWORD  # storePassword
+   gh secret set ANDROID_KEY_PASSWORD       # keyPassword
+   ```
+
+   `FDROID_DISPATCH_TOKEN` (optional, a fine-grained token with *Contents: read
+   and write* on snonux/fdroid) makes the snonux F-Droid repo pick the release
+   up at once instead of within six hours. To rebuild a tag, e.g. after fixing
+   a secret: `gh workflow run release.yml -f tag=vX.Y.Z`.
+
+   To build and publish by hand instead, build the release **from `/tmp/build`**. The path matters: the
    Dart AOT snapshot embeds absolute source paths, so a build from anywhere else
    will not reproduce and F-Droid will reject it.
 
