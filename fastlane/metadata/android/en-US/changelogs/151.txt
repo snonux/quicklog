@@ -1,0 +1,4 @@
+Back up and restore your settings.
+
+* Preferences > Backup: Export settings saves every setting, including the S3 keys, to a file you choose; Import settings restores it after a reinstall.
+* The export file contains your S3 secret, so keep it safe.
