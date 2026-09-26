@@ -1,16 +1,7 @@
-# Installing Quicklog and setting up a custom log directory
+# Setting up a custom log directory
 
-## Installing the APK
-
-Build a release APK (see the main [README](../README.md#android) for
-cross-compile options), then install it over adb:
-
-```sh
-adb install -r build/app/outputs/flutter-apk/app-release.apk
-```
-
-Or copy the APK to the phone and install it from a file manager (you'll need
-to allow "Install unknown apps" for that file manager once).
+This page is about where Quicklog stores notes on Android. To install the app,
+see the [README](../README.md#installation).
 
 ## Do you need any of this?
 

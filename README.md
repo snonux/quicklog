@@ -42,6 +42,24 @@ home computer.
   either prefills the editor or logs it immediately, depending on the
   preference.
 
+## Installation
+
+### Android
+
+Install Quicklog from the F-Droid repository at
+**<https://github.com/snonux/fdroid>**. Add the repository to the F-Droid app
+once (the README there has a one-tap link and a QR code), search for Quicklog
+and install it. F-Droid then keeps it updated.
+
+Prefer not to use F-Droid? [docs/install-android.md](./docs/install-android.md)
+explains how to download and install the APK by hand.
+
+### Linux
+
+Quicklog runs as a desktop app on Linux too; there are no prebuilt packages, so
+[docs/install-linux.md](./docs/install-linux.md) walks through building and
+installing it from source.
+
 ## Releases
 
 Versions live in a single place: the `version:` line of `pubspec.yaml`, written
@@ -189,6 +207,6 @@ required; point Syncthing at that folder to sync to your home computer.
 You can instead point **Preferences → Directory** at any other folder (e.g.
 an existing notes vault) — doing so needs "All files access" or, on
 GrapheneOS, Storage Scopes. See
-[docs/installation.md](./docs/installation.md) for how to install the APK
-and set that up, including a GrapheneOS Storage Scopes trick that avoids
+[docs/installation.md](./docs/installation.md) for how to set that up,
+including a GrapheneOS Storage Scopes trick that avoids
 granting broad filesystem access.
