@@ -47,6 +47,19 @@ class PreferencesService {
     return defaultLogDirectory();
   }
 
+  /// The directory exactly as stored, or null when the user never picked one
+  /// (so the platform default from [defaultLogDirectory] applies).
+  ///
+  /// Settings export uses this rather than [directory]: the default is an
+  /// app-specific path that is resolved per install, so it must stay "default"
+  /// on restore instead of being pinned to the old install's resolved path.
+  Future<String?> storedDirectory() async {
+    final prefs = await SharedPreferences.getInstance();
+    final stored = prefs.getString(_kDirectory);
+    if (stored == null || stored.isEmpty) return null;
+    return stored;
+  }
+
   Future<bool> autoLogSharedText() async {
     final prefs = await SharedPreferences.getInstance();
     return prefs.getBool(_kAutoLogSharedText) ?? false;
@@ -68,6 +81,12 @@ class PreferencesService {
   Future<void> setDirectory(String value) async {
     final prefs = await SharedPreferences.getInstance();
     await prefs.setString(_kDirectory, value);
+  }
+
+  /// Forget the chosen directory so [directory] falls back to the default.
+  Future<void> clearDirectory() async {
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.remove(_kDirectory);
   }
 
   Future<void> setAutoLogSharedText(bool value) async {
