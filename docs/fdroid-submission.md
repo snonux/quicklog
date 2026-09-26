@@ -18,7 +18,7 @@ F-Droid (done, see below), and opening a merge request against F-Droid's
 | FOSS licence | [`LICENSE`](../LICENSE) — MIT |
 | No proprietary dependencies | `pubspec.yaml` — Flutter, `shared_preferences`, `path_provider`, `path`, `intl`, optional FOSS S3 client (`minio`/`http`). No Firebase, no Google Mobile Services, no analytics, no telemetry. Default storage is local-only; `INTERNET` is present for optional user-configured S3. |
 | Release tag matching `versionName` | tag `vX.Y.Z` ↔ `version: X.Y.Z+<code>` in `pubspec.yaml` |
-| Monotonic `versionCode` | plain counter in `pubspec.yaml`; `0.2.1` is release `12` |
+| Monotonic `versionCode` | plain counter in `pubspec.yaml`; `0.2.2` is release `13` |
 | Release build works without a keystore | `android/app/build.gradle.kts` — falls back to the debug keys, and F-Droid re-signs anyway |
 | Pinned Flutter SDK | [`.flutter-version`](../.flutter-version), read by the F-Droid build recipe |
 | Store description, icon, screenshots | `fastlane/metadata/android/en-US/` |
@@ -181,11 +181,11 @@ rather than a single universal one, which takes the download from 50.5 MB to
 15.5-19.5 MB. That means three build blocks, and three version codes derived from
 the build number in `pubspec.yaml` by `VercodeOperation`:
 
-| ABI | `VercodeOperation` | versionCode at `0.2.1+12` |
+| ABI | `VercodeOperation` | versionCode at `0.2.2+13` |
 | --- | --- | --- |
-| `armeabi-v7a` | `%c * 10 + 1` | 121 |
-| `arm64-v8a` | `%c * 10 + 2` | 122 |
-| `x86_64` | `%c * 10 + 3` | 123 |
+| `armeabi-v7a` | `%c * 10 + 1` | 131 |
+| `arm64-v8a` | `%c * 10 + 2` | 132 |
+| `x86_64` | `%c * 10 + 3` | 133 |
 
 These are not Flutter's own numbers. Flutter's Gradle plugin would stamp
 `abiVersionCode * 1000 + versionCode`, which collides two releases as soon as
@@ -213,7 +213,7 @@ Two more consequences:
   code, and F-Droid would then reject the APK for not matching its declared
   version code.
 
-`CurrentVersionCode` must be the *highest* of the three (123), not the build
+`CurrentVersionCode` must be the *highest* of the three (133), not the build
 number in `pubspec.yaml`.
 
 **Where the Dart packages get fetched.** `prebuild:` sets

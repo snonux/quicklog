@@ -1,0 +1,3 @@
+Maintenance release.
+
+* Built and signed by the automated release pipeline, published to the snonux F-Droid repository.
