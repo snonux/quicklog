@@ -9,6 +9,7 @@ import '../services/preferences.dart';
 import '../services/s3_session_controller.dart';
 import '../services/shared_text_handler.dart';
 import '../widgets/s3_degraded_banner.dart';
+import '../widgets/s3_retry.dart';
 import 'entry_browser_screen.dart';
 import 'preferences_screen.dart';
 
@@ -251,32 +252,7 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
     );
   }
 
-  Future<void> _retryS3() async {
-    try {
-      final result = await _session.retryS3();
-      if (!mounted) return;
-      final message = switch (result) {
-        S3RetryResult.reachable => 'S3 reachable again.',
-        S3RetryResult.armedWithoutProbe =>
-          _session.probe == null
-              ? 'S3 retry armed (no connectivity check yet).'
-              : 'S3 reachable again.',
-        S3RetryResult.unavailable => 'S3 still unavailable.',
-        S3RetryResult.ignored => 'S3 retry not applicable.',
-      };
-      ScaffoldMessenger.of(
-        context,
-      ).showSnackBar(SnackBar(content: Text(message)));
-    } catch (e) {
-      if (!mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(
-          content: Text('Retry failed: $e'),
-          backgroundColor: Colors.red,
-        ),
-      );
-    }
-  }
+  Future<void> _retryS3() => retryS3WithFeedback(context, _session);
 
   Future<void> _showAbout() async {
     // The version comes from the bundled pubspec.yaml, never a literal here:

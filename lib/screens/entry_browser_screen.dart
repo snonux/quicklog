@@ -8,6 +8,7 @@ import '../services/merged_note_listing.dart';
 import '../services/preferences.dart';
 import '../services/s3_session_controller.dart';
 import '../widgets/s3_degraded_banner.dart';
+import '../widgets/s3_retry.dart';
 import 'delete_confirmation_screen.dart';
 import 'entry_edit_screen.dart';
 import 'first_line_memo.dart';
@@ -128,25 +129,11 @@ class _EntryBrowserScreenState extends State<EntryBrowserScreen> {
   }
 
   Future<void> _retryS3() async {
-    try {
-      final result = await _session.retryS3();
-      if (!mounted) return;
-      final message = switch (result) {
-        S3RetryResult.reachable => 'S3 reachable again.',
-        S3RetryResult.armedWithoutProbe => _session.probe == null
-            ? 'S3 retry armed (no connectivity check yet).'
-            : 'S3 reachable again.',
-        S3RetryResult.unavailable => 'S3 still unavailable.',
-        S3RetryResult.ignored => 'S3 retry not applicable.',
-      };
-      _showSnack(message);
-      if (result == S3RetryResult.reachable ||
-          result == S3RetryResult.armedWithoutProbe) {
-        _refresh();
-      }
-    } catch (e) {
-      if (!mounted) return;
-      _showSnack('Retry failed: $e', isError: true);
+    final result = await retryS3WithFeedback(context, _session);
+    if (!mounted) return;
+    if (result == S3RetryResult.reachable ||
+        result == S3RetryResult.armedWithoutProbe) {
+      _refresh();
     }
   }
 
