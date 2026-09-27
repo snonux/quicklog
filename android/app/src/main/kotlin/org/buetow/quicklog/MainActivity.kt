@@ -1,12 +1,13 @@
 package org.buetow.quicklog
 
 import android.app.Activity
+import android.Manifest
 import android.content.ActivityNotFoundException
 import android.content.Intent
+import android.content.pm.PackageManager
 import android.net.Uri
 import android.os.Build
 import android.os.Bundle
-import android.os.Environment
 import android.provider.DocumentsContract
 import android.provider.OpenableColumns
 import android.provider.Settings
@@ -22,6 +23,8 @@ class MainActivity : FlutterActivity() {
     private val settingsChannelName = "org.buetow.quicklog/settings"
     private val requestExportSettings = 4201
     private val requestImportSettings = 4202
+    private val requestLegacyStorage = 4203
+    private var pendingStorageResult: MethodChannel.Result? = null
 
     // Settings export/import goes through the system file dialogs (Storage
     // Access Framework): no storage permission and no picker library needed.
@@ -52,10 +55,9 @@ class MainActivity : FlutterActivity() {
                             }
                         }
                     }
-                    "hasAllFilesAccess" -> result.success(hasAllFilesAccess())
-                    "requestAllFilesAccess" -> {
-                        requestAllFilesAccess()
-                        result.success(null)
+                    "storageApiLevel" -> result.success(Build.VERSION.SDK_INT)
+                    "requestStorageAccess" -> {
+                        requestStorageAccess(result)
                     }
                     else -> result.notImplemented()
                 }
@@ -185,21 +187,53 @@ class MainActivity : FlutterActivity() {
         return uri.lastPathSegment ?: uri.toString()
     }
 
-    // "All files access" (MANAGE_EXTERNAL_STORAGE) is required on Android 11+
-    // to read/write directories outside the app sandbox, e.g. a synced notes
-    // vault the user points Quicklog at. Below API 30 no such gate exists.
-    private fun hasAllFilesAccess(): Boolean =
-        Build.VERSION.SDK_INT < Build.VERSION_CODES.R || Environment.isExternalStorageManager()
+    // Android 7-10 uses a runtime permission for direct paths in shared storage.
+    private fun hasLegacyStoragePermission(): Boolean =
+        checkSelfPermission(Manifest.permission.READ_EXTERNAL_STORAGE) == PackageManager.PERMISSION_GRANTED &&
+            checkSelfPermission(Manifest.permission.WRITE_EXTERNAL_STORAGE) == PackageManager.PERMISSION_GRANTED
 
-    // Android has no runtime-permission dialog for this; the user must flip
-    // it in Settings, so we deep-link straight to this app's toggle there.
-    private fun requestAllFilesAccess() {
-        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.R) return
-        val intent = Intent(
-            Settings.ACTION_MANAGE_APP_ALL_FILES_ACCESS_PERMISSION,
-            Uri.parse("package:$packageName"),
-        )
-        startActivity(intent)
+    private fun requestStorageAccess(result: MethodChannel.Result) {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.R) {
+            if (hasLegacyStoragePermission()) {
+                result.success(null)
+            } else if (pendingStorageResult != null) {
+                result.error("busy", "A storage permission request is already open.", null)
+            } else {
+                pendingStorageResult = result
+                requestPermissions(
+                    arrayOf(
+                        Manifest.permission.READ_EXTERNAL_STORAGE,
+                        Manifest.permission.WRITE_EXTERNAL_STORAGE,
+                    ),
+                    requestLegacyStorage,
+                )
+            }
+            return
+        }
+        // Android has no runtime dialog for MANAGE_EXTERNAL_STORAGE.
+        try {
+            startActivity(
+                Intent(
+                    Settings.ACTION_MANAGE_APP_ALL_FILES_ACCESS_PERMISSION,
+                    Uri.parse("package:$packageName"),
+                ),
+            )
+            result.success(null)
+        } catch (e: ActivityNotFoundException) {
+            result.error("no_settings", "Storage settings are unavailable.", null)
+        }
+    }
+
+    override fun onRequestPermissionsResult(
+        requestCode: Int,
+        permissions: Array<out String>,
+        grantResults: IntArray,
+    ) {
+        super.onRequestPermissionsResult(requestCode, permissions, grantResults)
+        if (requestCode == requestLegacyStorage) {
+            pendingStorageResult?.success(null)
+            pendingStorageResult = null
+        }
     }
 
     override fun onCreate(savedInstanceState: Bundle?) {

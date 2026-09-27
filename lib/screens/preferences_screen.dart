@@ -63,6 +63,7 @@ class _PreferencesScreenState extends State<PreferencesScreen>
   // Whether the configured directory is actually writable -- not whether the
   // All files access permission is held. See canWriteToDirectory().
   bool _directoryWritable = true;
+  int? _androidStorageApiLevel;
   bool _transferring = false;
   late final SettingsFileGateway _files = widget.settingsFiles ??
       (Platform.isAndroid
@@ -106,6 +107,7 @@ class _PreferencesScreenState extends State<PreferencesScreen>
     _bucketController.text = s3.bucket;
     _accessKeyController.text = s3.accessKeyId;
     _secretController.text = s3.secretAccessKey;
+    _androidStorageApiLevel = await StorageAccessService.storageApiLevel();
     _directoryWritable = await canWriteToDirectory(_dirController.text);
     if (!mounted) return;
     setState(() => _loaded = true);
@@ -121,8 +123,17 @@ class _PreferencesScreenState extends State<PreferencesScreen>
     );
   }
 
-  Future<void> _requestAllFilesAccess() async {
-    await StorageAccessService.requestAllFilesAccess();
+  Future<void> _requestStorageAccess() async {
+    try {
+      await StorageAccessService.requestStorageAccess();
+      final writable = await canWriteToDirectory(_dirController.text);
+      if (mounted) setState(() => _directoryWritable = writable);
+    } on PlatformException catch (error) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text(error.message ?? 'Cannot open storage permissions.')),
+      );
+    }
   }
 
   Future<void> _resetToDefault() async {
@@ -383,11 +394,10 @@ class _PreferencesScreenState extends State<PreferencesScreen>
               child: ListTile(
                 leading: const Icon(Icons.folder_off),
                 title: const Text('Cannot write to this folder'),
-                subtitle: const Text(
-                  'Quicklog needs "All files access" to write outside its own app '
-                  'folder (e.g. a synced notes vault). Tap to grant it in Settings.',
-                ),
-                onTap: _requestAllFilesAccess,
+                subtitle: Text(storageAccessWarning(_androidStorageApiLevel)),
+                onTap: _androidStorageApiLevel == null
+                    ? null
+                    : _requestStorageAccess,
               ),
             ),
             const SizedBox(height: 12),

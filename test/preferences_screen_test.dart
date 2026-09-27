@@ -75,6 +75,86 @@ void main() {
     expect(find.byIcon(Icons.folder_off), findsOneWidget);
   });
 
+  testWidgets('Android 10 warning requests the runtime storage permission', (
+    tester,
+  ) async {
+    const channel = MethodChannel('org.buetow.quicklog/share');
+    final calls = <String>[];
+    tester.binding.defaultBinaryMessenger.setMockMethodCallHandler(channel, (
+      call,
+    ) async {
+      calls.add(call.method);
+      if (call.method == 'storageApiLevel') return 29;
+      return null;
+    });
+    addTearDown(
+      () => tester.binding.defaultBinaryMessenger.setMockMethodCallHandler(
+        channel,
+        null,
+      ),
+    );
+
+    await pumpPrefs(tester, unwritableDir);
+    expect(
+      find.textContaining('Storage permission for this folder on Android 7–10'),
+      findsOneWidget,
+    );
+    await tester.tap(find.text('Cannot write to this folder'));
+    await pumpWithIo(tester);
+    expect(calls, contains('requestStorageAccess'));
+    expect(
+      find.text('Cannot write to this folder'),
+      findsOneWidget,
+      reason: 'a denied grant must leave the real write warning visible',
+    );
+  });
+
+  testWidgets('Android 11 warning links to All files access', (tester) async {
+    const channel = MethodChannel('org.buetow.quicklog/share');
+    tester.binding.defaultBinaryMessenger.setMockMethodCallHandler(
+      channel,
+      (call) async => call.method == 'storageApiLevel' ? 30 : null,
+    );
+    addTearDown(
+      () => tester.binding.defaultBinaryMessenger.setMockMethodCallHandler(
+        channel,
+        null,
+      ),
+    );
+
+    await pumpPrefs(tester, unwritableDir);
+    expect(
+      find.textContaining('All files access for this folder on Android 11+'),
+      findsOneWidget,
+    );
+  });
+
+  testWidgets('storage settings failure is explained to the user', (
+    tester,
+  ) async {
+    const channel = MethodChannel('org.buetow.quicklog/share');
+    tester.binding.defaultBinaryMessenger.setMockMethodCallHandler(channel, (
+      call,
+    ) async {
+      if (call.method == 'storageApiLevel') return 30;
+      throw PlatformException(
+        code: 'no_settings',
+        message: 'Storage settings are unavailable.',
+      );
+    });
+    addTearDown(
+      () => tester.binding.defaultBinaryMessenger.setMockMethodCallHandler(
+        channel,
+        null,
+      ),
+    );
+
+    await pumpPrefs(tester, unwritableDir);
+    await tester.tap(find.text('Cannot write to this folder'));
+    await tester.pump();
+    expect(find.text('Storage settings are unavailable.'), findsOneWidget);
+  });
+
   testWidgets('the directory field and auto-log toggle still load',
       (tester) async {
     await pumpPrefs(tester, tmp.path);

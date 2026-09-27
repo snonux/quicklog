@@ -36,10 +36,25 @@ folder), skip the rest of this document.
 You only need the steps below if you set **Preferences → Directory** to a
 folder Quicklog doesn't own, such as an existing Obsidian/Syncthing vault.
 
-## Stock Android / GrapheneOS: "All files access"
+## Android 7–10: Storage permission
+
+For a custom directory on Android 7, 8, 9, or 10, save the directory and reopen
+Preferences. Tap the red **Cannot write to this folder** card, if shown, and
+allow the Storage permission prompt.
+Quicklog only asks when the selected directory fails a real write check; its
+default app-specific folder needs no permission. Android 10 also needs the
+app's legacy storage mode to use typed paths in shared folders such as
+`Documents` and `Download`.
+
+If no prompt appears, open **Settings → Apps → Quicklog → Permissions** and
+allow Storage there. Return to Quicklog and recheck the directory. If the card
+remains, check that the path exists or can be created and is writable; the
+default app-specific directory is available from the reset button.
+
+## Android 11 and later: "All files access"
 
 Open **Preferences**. If the directory you've chosen isn't writable, a red
-"No storage access" card appears — tap it. This deep-links to the system
+"Cannot write to this folder" card appears — tap it. This opens the system
 "All files access" toggle for Quicklog; enable it there and come back.
 
 On GrapheneOS you'll instead see a three-way choice: **Allow (in Settings)**,
