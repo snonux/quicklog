@@ -103,16 +103,25 @@ internal class SafNoteWorkflow(private val gateway: SafDocumentGateway) {
 
     fun read(name: String): String {
         requireName(name)
+        // Editors and delete previews must see a fresh provider snapshot.
+        // A sync peer may have added a second document with this display name
+        // since list() populated the subtitle cache.
+        val current = scan().firstOrNull { it.name == name } ?: throw NoteMissingException()
+        return gateway.read(current)
+    }
+
+    fun firstLine(name: String): String {
+        requireName(name)
         val cached = listedNotes?.get(name)
         if (cached != null) {
             try {
-                return gateway.read(cached)
+                return gateway.read(cached).substringBefore('\n')
             } catch (_: IOException) {
                 listedNotes = null
             }
         }
         val current = scan().firstOrNull { it.name == name } ?: throw NoteMissingException()
-        return gateway.read(current)
+        return gateway.read(current).substringBefore('\n')
     }
 
     private fun stage(name: String, text: String): SafDocument {

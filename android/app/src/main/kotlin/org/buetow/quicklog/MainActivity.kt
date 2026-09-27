@@ -114,7 +114,7 @@ class MainActivity : FlutterActivity() {
         val saf = SafTreeDocuments(contentResolver)
         MethodChannel(flutterEngine.dartExecutor.binaryMessenger, safChannelName)
             .setMethodCallHandler { call, result ->
-                if (call.method !in setOf("list", "read", "create", "update", "delete")) {
+                if (call.method !in setOf("list", "read", "firstLine", "create", "update", "delete")) {
                     result.notImplemented()
                 } else {
                     try {
@@ -124,6 +124,7 @@ class MainActivity : FlutterActivity() {
                                 val value = when (call.method) {
                                     "list" -> saf.list(treeUri)
                                     "read" -> saf.read(treeUri, call.requireString("id"))
+                                    "firstLine" -> saf.firstLine(treeUri, call.requireString("id"))
                                     "create" -> {
                                         saf.create(treeUri, call.requireString("id"), call.requireString("text"))
                                         null

@@ -86,7 +86,15 @@ class SafNoteStore implements NoteStore {
   @override
   Future<String> firstLine(String id) async {
     try {
-      return firstLineOf(await read(id));
+      _requireId(id);
+      final line = await _channel.invokeMethod<String>(
+        'firstLine',
+        _args(id: id),
+      );
+      if (line == null) {
+        throw StateError('The document provider returned no note.');
+      }
+      return line;
     } catch (_) {
       return '';
     }

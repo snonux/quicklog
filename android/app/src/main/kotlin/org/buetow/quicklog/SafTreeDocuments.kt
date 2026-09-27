@@ -29,6 +29,7 @@ internal class SafTreeDocuments(private val resolver: ContentResolver) {
 
     fun list(raw: String): List<String> = workflow(raw, write = false).list()
     fun read(raw: String, name: String): String = workflow(raw, write = false).read(name)
+    fun firstLine(raw: String, name: String): String = workflow(raw, write = false).firstLine(name)
     fun create(raw: String, name: String, text: String) = workflow(raw, write = true).create(name, text)
     fun update(raw: String, name: String, text: String) = workflow(raw, write = true).update(name, text)
     fun delete(raw: String, name: String) = workflow(raw, write = true).delete(name)

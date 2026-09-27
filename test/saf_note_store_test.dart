@@ -12,6 +12,7 @@ void main() {
   late bool listingIncomplete;
   late bool duplicateListing;
   late int calls;
+  late List<String> methods;
 
   setUp(() {
     notes = {};
@@ -19,10 +20,12 @@ void main() {
     listingIncomplete = false;
     duplicateListing = false;
     calls = 0;
+    methods = [];
     store = SafNoteStore(uri, channel: channel);
     TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
         .setMockMethodCallHandler(channel, (call) async {
           calls++;
+          methods.add(call.method);
           final args = Map<String, String>.from(call.arguments as Map);
           expect(args['treeUri'], uri);
           if (!granted) {
@@ -57,6 +60,11 @@ void main() {
                 throw PlatformException(code: 'not_found', message: 'Missing');
               }
               return notes[id];
+            case 'firstLine':
+              if (!notes.containsKey(id)) {
+                throw PlatformException(code: 'not_found', message: 'Missing');
+              }
+              return notes[id]!.split('\n').first;
             case 'update':
               if (!notes.containsKey(id)) {
                 throw PlatformException(code: 'not_found', message: 'Missing');
@@ -108,6 +116,15 @@ void main() {
       ]);
     },
   );
+
+  test('subtitles use the native firstLine path; previews use read', () async {
+    notes['ql-260101-000000.md'] = 'heading\nbody';
+    expect(await store.firstLine('ql-260101-000000.md'), 'heading');
+    expect(methods, ['firstLine']);
+    methods.clear();
+    expect(await store.preview('ql-260101-000000.md'), 'heading\nbody');
+    expect(methods, ['read']);
+  });
 
   test('rejects unsafe ids before calling Android', () async {
     for (final id in [

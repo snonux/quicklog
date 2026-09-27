@@ -187,11 +187,11 @@ class SafNoteWorkflowTest {
     @Test
     fun incompleteListingFailsAndCachedReadsAvoidRepeatedDirectoryQueries() {
         val provider = FakeGateway()
-        provider.add(note, "content")
+        provider.add(note, "heading\nbody")
         val workflow = SafNoteWorkflow(provider)
         assertEquals(listOf(note), workflow.list())
         val listed = provider.listCalls
-        repeat(5) { assertEquals("content", workflow.read(note)) }
+        repeat(5) { assertEquals("heading", workflow.firstLine(note)) }
         assertEquals(listed, provider.listCalls)
         provider.loading = true
         expectIo { workflow.list() }
@@ -208,8 +208,19 @@ class SafNoteWorkflowTest {
         workflow.list()
         provider.records[old.id]!!.name = "renamed.md"
         provider.add(note, "replacement")
-        assertEquals("replacement", workflow.read(note))
+        assertEquals("replacement", workflow.firstLine(note))
         assertTrue(provider.listCalls >= 2)
+    }
+
+    @Test
+    fun fullReadRejectsDuplicateAddedAfterListing() {
+        val provider = FakeGateway()
+        provider.add(note, "first")
+        val workflow = SafNoteWorkflow(provider)
+        assertEquals(listOf(note), workflow.list())
+        provider.add(note, "second")
+        expectIo { workflow.read(note) }
+        assertEquals(listOf("first", "second"), provider.records.values.map { it.text })
     }
 
     @Test
