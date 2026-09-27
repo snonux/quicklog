@@ -21,7 +21,7 @@ class BrowserNoteSources {
     this.pendingRepairs,
   });
 
-  final LocalNoteStore local;
+  final NoteStore local;
   final S3NoteStore? s3;
 
   /// Why [s3] is null although S3 is preferred because the saved settings
@@ -56,8 +56,8 @@ class BrowserNoteSources {
   /// not apply; otherwise the local copy.
   NoteStore storeFor(LocatedLogEntry located) {
     final remote = s3;
-    final deviceCopy = preferLocalReads &&
-        (located.hasLocal || _deviceFileExists(located.id));
+    final deviceCopy =
+        preferLocalReads && (located.hasLocal || _deviceFileExists(located.id));
     if (located.hasS3 && remote != null && !deviceCopy) {
       return remote;
     }
@@ -69,7 +69,9 @@ class BrowserNoteSources {
   /// bucket text and save it over the device copy.
   bool _deviceFileExists(String id) {
     if (parseLogEntryId(id) == null) return false;
-    return File(p.join(local.directory, id)).existsSync();
+    final store = local;
+    return store is LocalNoteStore &&
+        File(p.join(store.directory, id)).existsSync();
   }
 
   /// Handle for view/edit/delete. Reads use [storeFor]. Update and delete
@@ -163,8 +165,8 @@ class BrowserNoteSources {
         localError = e;
       }
     }
-    var s3Gone = s3Attempted &&
-        (s3Error == null || isMissingObjectError(s3Error));
+    var s3Gone =
+        s3Attempted && (s3Error == null || isMissingObjectError(s3Error));
     // Only a dual-write repair needs to know whether a thrown delete still
     // removed the object. S3-only keeps the raw error and does not re-read.
     if (pendingRepairs != null &&
@@ -218,7 +220,7 @@ class BrowserNoteSources {
   Future<LocatedLogEntry> _includingLocalFile(LocatedLogEntry located) async {
     if (pendingRepairs == null || located.hasLocal) return located;
     if (parseLogEntryId(located.id) == null) return located;
-    if (!await File(p.join(local.directory, located.id)).exists()) {
+    if (!(await local.list()).any((entry) => entry.id == located.id)) {
       return located;
     }
     return LocatedLogEntry(
@@ -237,9 +239,7 @@ class BrowserNoteSources {
     final repairs = pendingRepairs;
     if (repairs == null) return null;
     final localLanded = located.hasLocal && localError == null;
-    if (s3Attempted &&
-        s3Error == null &&
-        (localLanded || !located.hasLocal)) {
+    if (s3Attempted && s3Error == null && (localLanded || !located.hasLocal)) {
       // Both copies match, or this row is only on S3 (a leftover after a
       // queued delete). Either way the bucket has the text just written,
       // so a pending delete must not run and remove it.

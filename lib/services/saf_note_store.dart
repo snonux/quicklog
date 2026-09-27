@@ -1,3 +1,5 @@
+import 'dart:io';
+
 import 'package:flutter/services.dart';
 
 import 'log_service.dart';
@@ -64,7 +66,15 @@ class SafNoteStore implements NoteStore {
   @override
   Future<String> read(String id) async {
     _requireId(id);
-    final text = await _channel.invokeMethod<String>('read', _args(id: id));
+    final String? text;
+    try {
+      text = await _channel.invokeMethod<String>('read', _args(id: id));
+    } on PlatformException catch (e) {
+      if (e.code == 'not_found') {
+        throw PathNotFoundException(id, const OSError('Note not found'));
+      }
+      rethrow;
+    }
     if (text == null) {
       throw StateError('The document provider returned no note.');
     }

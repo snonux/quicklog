@@ -6,6 +6,8 @@ import 's3_config.dart';
 import 'storage.dart';
 
 const _kDirectory = 'Directory';
+const _kScopedTreeUri = 'ScopedTreeUri';
+const _kScopedTreeName = 'ScopedTreeName';
 const _kAutoLogSharedText = 'AutoLogSharedText';
 const _kStorageMode = 'StorageMode';
 const _kDegradedUntil = 'S3DegradedUntil';
@@ -45,6 +47,34 @@ enum StorageMode {
 }
 
 class PreferencesService {
+  Future<({String uri, String name})?> scopedFolder() async {
+    final prefs = await SharedPreferences.getInstance();
+    final uri = prefs.getString(_kScopedTreeUri);
+    if (uri == null || uri.isEmpty) return null;
+    return (
+      uri: uri,
+      name: prefs.getString(_kScopedTreeName) ?? 'Selected folder',
+    );
+  }
+
+  Future<void> setScopedFolder(String uri, String name) async {
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setString(_kScopedTreeUri, uri);
+    await prefs.setString(_kScopedTreeName, name);
+  }
+
+  Future<void> clearScopedFolder() async {
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.remove(_kScopedTreeUri);
+    await prefs.remove(_kScopedTreeName);
+  }
+
+  /// A repair queue belongs to one local destination, never another.
+  Future<String> localStoreKey() async {
+    final folder = await scopedFolder();
+    return folder == null ? directory() : 'saf:${folder.uri}';
+  }
+
   Future<String> directory() async {
     final prefs = await SharedPreferences.getInstance();
     final stored = prefs.getString(_kDirectory);
@@ -117,18 +147,14 @@ class PreferencesService {
   /// Transient, like [degradedUntil]: not part of a settings export.
   Future<List<String>> dualWritePendingUploads() async {
     final folders = await dualWritePendingFolders();
-    final ids = <String>{
-      for (final queue in folders.values) ...queue.uploads,
-    };
+    final ids = <String>{for (final queue in folders.values) ...queue.uploads};
     return _sortedIds(ids);
   }
 
   /// Dual-write note ids removed on device whose S3 object is still there.
   Future<List<String>> dualWritePendingDeletes() async {
     final folders = await dualWritePendingFolders();
-    final ids = <String>{
-      for (final queue in folders.values) ...queue.deletes,
-    };
+    final ids = <String>{for (final queue in folders.values) ...queue.deletes};
     return _sortedIds(ids);
   }
 
@@ -148,9 +174,7 @@ class PreferencesService {
       prefs.getStringList(_kPendingDeletes) ?? const <String>[],
     );
     if (uploads.isEmpty && deletes.isEmpty) return {};
-    return {
-      await directory(): (uploads: uploads, deletes: deletes),
-    };
+    return {await directory(): (uploads: uploads, deletes: deletes)};
   }
 
   Future<void> setDualWritePendingFolders(
@@ -170,9 +194,10 @@ class PreferencesService {
     if (kept.isEmpty) {
       await prefs.remove(_kPending);
     } else {
-      await prefs.setString(_kPending, jsonEncode(<String, Object>{
-        'folders': kept,
-      }));
+      await prefs.setString(
+        _kPending,
+        jsonEncode(<String, Object>{'folders': kept}),
+      );
     }
     await prefs.remove(_kPendingUploads);
     await prefs.remove(_kPendingDeletes);

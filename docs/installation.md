@@ -33,8 +33,23 @@ permission at all** — Android grants every app write access to its own
 folder. If that's good enough (e.g. you point Syncthing at that exact
 folder), skip the rest of this document.
 
-You only need the steps below if you set **Preferences → Directory** to a
-folder Quicklog doesn't own, such as an existing Obsidian/Syncthing vault.
+For an existing vault, tap **Preferences → Choose folder with Android picker**
+and select the folder. Android grants Quicklog access to that folder alone;
+no broad storage permission is needed. The selected folder is used for local
+notes, Local + S3, and S3 failure copies. It also appears in the entry browser.
+If Android revokes access, Preferences shows a warning; select it again there.
+Selecting a typed path or resetting to default switches away from the picked
+folder. Notes are not moved when you switch.
+
+The steps below are for the **typed Directory path** option, which remains
+useful for paths the Android picker cannot expose and for automatic creation
+of a new folder. On Android 11+, an existing shared folder reached by a typed
+path may require All files access.
+
+Settings exports do not include the selected folder URI or its Android grant.
+After importing an export made with a scoped folder, select that folder again;
+until then Quicklog uses its app-specific default folder. Notes themselves are
+never included in settings exports.
 
 ## Android 7–10: Storage permission
 

@@ -54,6 +54,15 @@ void main() {
   TestWidgetsFlutterBinding.ensureInitialized();
 
   group('encode / decode', () {
+    test('rejects a malformed scoped-folder marker', () {
+      final doc = validDoc();
+      (doc['settings'] as Map<String, Object?>)['scopedFolderNeedsSelection'] =
+          'yes';
+      expect(
+        () => decodeSettingsBackup(jsonEncode(doc)),
+        throwsA(isA<SettingsImportException>()),
+      );
+    });
     test('round-trips every setting with non-default values', () {
       final text = encodeSettingsBackup(
         nonDefaults,

@@ -3,6 +3,7 @@ import 'dart:io';
 
 import 'log_service.dart';
 import 'preferences.dart';
+import 'saf_note_store.dart';
 import 's3_object_client.dart';
 
 /// A dual-write change reached the device and missed S3.
@@ -140,8 +141,7 @@ class DualWriteS3Repair {
     if (_persistBlocked) return;
     final prefs = _prefs;
     if (prefs == null) return;
-    final folders =
-        <String, ({List<String> uploads, List<String> deletes})>{};
+    final folders = <String, ({List<String> uploads, List<String> deletes})>{};
     for (final entry in _queues.entries) {
       if (entry.value.isEmpty) continue;
       folders[entry.key] = (
@@ -156,7 +156,7 @@ class DualWriteS3Repair {
   Future<String> _folderKey() async {
     final prefs = _prefs;
     if (prefs == null) return '';
-    return prefs.directory();
+    return prefs.localStoreKey();
   }
 
   /// Folder [local] is replaying. In-memory repairs (no preferences) share
@@ -165,13 +165,20 @@ class DualWriteS3Repair {
   String _replayKey(NoteStore local) {
     if (_prefs == null) return '';
     if (local is LocalNoteStore) return local.directory;
+    if (local is SafNoteStore) return 'saf:${local.treeUri}';
     return _active;
   }
 
   Future<bool> _folderMissing(NoteStore local) async {
-    if (_prefs == null || local is! LocalNoteStore) return false;
+    if (_prefs == null) return false;
     try {
-      return !await Directory(local.directory).exists();
+      if (local is LocalNoteStore) {
+        return !await Directory(local.directory).exists();
+      }
+      if (local is SafNoteStore) {
+        await local.list();
+      }
+      return false;
     } catch (_) {
       // A stat failure is not proof the notes were deleted.
       return true;
@@ -335,10 +342,7 @@ class DualWriteS3Repair {
     );
   }
 
-  Future<int> _replay({
-    required NoteStore local,
-    required NoteStore s3,
-  }) async {
+  Future<int> _replay({required NoteStore local, required NoteStore s3}) async {
     await _ensureLoaded();
     _active = _replayKey(local);
     final queue = _queues[_active];
@@ -367,12 +371,7 @@ class DualWriteS3Repair {
           continue;
         }
         // A save during the put leaves the newer device text queued.
-        if (await _confirmPut(
-          local: local,
-          s3: s3,
-          id: id,
-          written: text,
-        )) {
+        if (await _confirmPut(local: local, s3: s3, id: id, written: text)) {
           done++;
         }
       }

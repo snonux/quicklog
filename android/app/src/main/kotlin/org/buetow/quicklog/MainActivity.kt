@@ -36,7 +36,9 @@ class MainActivity : FlutterActivity() {
     private val requestExportSettings = 4201
     private val requestImportSettings = 4202
     private val requestLegacyStorage = 4203
+    private val requestNoteTree = 4204
     private var pendingStorageResult: MethodChannel.Result? = null
+    private var pendingTreeResult: MethodChannel.Result? = null
     private val mainHandler = Handler(Looper.getMainLooper())
     // A single worker preserves call order (create followed by read, for
     // example). Bound the queue so a stalled cloud provider cannot retain an
@@ -114,7 +116,41 @@ class MainActivity : FlutterActivity() {
         val saf = SafTreeDocuments(contentResolver)
         MethodChannel(flutterEngine.dartExecutor.binaryMessenger, safChannelName)
             .setMethodCallHandler { call, result ->
-                if (call.method !in setOf("list", "read", "firstLine", "create", "update", "delete")) {
+                if (call.method == "pickTree") {
+                    if (pendingTreeResult != null || pendingSettingsResult != null) {
+                        result.error("busy", "Another file dialog is already open.", null)
+                    } else {
+                        pendingTreeResult = result
+                        try {
+                            startActivityForResult(Intent(Intent.ACTION_OPEN_DOCUMENT_TREE).apply {
+                                addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION or
+                                    Intent.FLAG_GRANT_WRITE_URI_PERMISSION or
+                                    Intent.FLAG_GRANT_PERSISTABLE_URI_PERMISSION)
+                            }, requestNoteTree)
+                        } catch (e: ActivityNotFoundException) {
+                            pendingTreeResult = null
+                            result.error("no_picker", "No folder picker is available.", null)
+                        }
+                    }
+                } else if (call.method == "releaseTree") {
+                    val raw = call.argument<String>("uri")
+                    if (raw == null) {
+                        result.error("bad_args", "A folder URI is required.", null)
+                    } else {
+                        try {
+                            val uri = Uri.parse(raw)
+                            val grant = contentResolver.persistedUriPermissions.firstOrNull { it.uri == uri }
+                            if (grant != null) {
+                                val flags = (if (grant.isReadPermission) Intent.FLAG_GRANT_READ_URI_PERMISSION else 0) or
+                                    (if (grant.isWritePermission) Intent.FLAG_GRANT_WRITE_URI_PERMISSION else 0)
+                                contentResolver.releasePersistableUriPermission(uri, flags)
+                            }
+                            result.success(null)
+                        } catch (e: Exception) {
+                            result.error("access_denied", e.message ?: e.toString(), null)
+                        }
+                    }
+                } else if (call.method !in setOf("list", "read", "firstLine", "create", "update", "delete")) {
                     result.notImplemented()
                 } else {
                     try {
@@ -162,7 +198,7 @@ class MainActivity : FlutterActivity() {
         result: MethodChannel.Result,
         exportContent: String?,
     ) {
-        if (pendingSettingsResult != null) {
+        if (pendingSettingsResult != null || pendingTreeResult != null) {
             result.error("busy", "Another file dialog is already open.", null)
             return
         }
@@ -179,6 +215,38 @@ class MainActivity : FlutterActivity() {
 
     override fun onActivityResult(requestCode: Int, resultCode: Int, data: Intent?) {
         super.onActivityResult(requestCode, resultCode, data)
+        if (requestCode == requestNoteTree) {
+            val result = pendingTreeResult ?: return
+            pendingTreeResult = null
+            val uri = data?.data
+            if (resultCode != Activity.RESULT_OK || uri == null) {
+                result.success(null)
+                return
+            }
+            try {
+                val flags = data.flags and (Intent.FLAG_GRANT_READ_URI_PERMISSION or
+                    Intent.FLAG_GRANT_WRITE_URI_PERMISSION)
+                if (flags != (Intent.FLAG_GRANT_READ_URI_PERMISSION or
+                    Intent.FLAG_GRANT_WRITE_URI_PERMISSION)) {
+                    throw SecurityException("The selected folder needs read and write access.")
+                }
+                val alreadyGranted = contentResolver.persistedUriPermissions.any {
+                    it.uri == uri && it.isReadPermission && it.isWritePermission
+                }
+                contentResolver.takePersistableUriPermission(uri, flags)
+                try {
+                    val treeDocument = DocumentsContract.buildDocumentUriUsingTree(
+                        uri, DocumentsContract.getTreeDocumentId(uri))
+                    result.success(mapOf("uri" to uri.toString(), "name" to displayName(treeDocument)))
+                } catch (e: Exception) {
+                    if (!alreadyGranted) contentResolver.releasePersistableUriPermission(uri, flags)
+                    throw e
+                }
+            } catch (e: Exception) {
+                result.error("access_denied", e.message ?: e.toString(), null)
+            }
+            return
+        }
         if (requestCode != requestExportSettings && requestCode != requestImportSettings) return
         // No pending result means Android killed the process while the file
         // dialog was open: the Dart call that asked for it, and the export

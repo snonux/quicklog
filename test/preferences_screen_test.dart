@@ -8,6 +8,7 @@ import 'package:shared_preferences/shared_preferences.dart';
 import 'package:quicklog/screens/preferences_screen.dart';
 import 'package:quicklog/services/preferences.dart';
 import 'package:quicklog/services/s3_session_controller.dart';
+import 'package:quicklog/services/scoped_folder_service.dart';
 import 'package:quicklog/services/settings_backup.dart';
 import 'package:quicklog/services/settings_file_service.dart';
 
@@ -46,8 +47,9 @@ void main() {
     await pumpWithIo(tester);
   }
 
-  testWidgets('no warning when the configured directory is writable',
-      (tester) async {
+  testWidgets('no warning when the configured directory is writable', (
+    tester,
+  ) async {
     // The bug this guards: the warning used to be driven by the All files
     // access permission, so a default install -- whose directory is the
     // app-owned folder that needs no permission at all -- always showed an
@@ -58,8 +60,58 @@ void main() {
     expect(find.byIcon(Icons.folder_off), findsNothing);
   });
 
-  testWidgets('no warning for a directory that does not exist yet',
-      (tester) async {
+  testWidgets('revoked scoped folder shows recovery and picker replaces it', (
+    tester,
+  ) async {
+    const channel = MethodChannel('org.buetow.quicklog/saf');
+    const oldUri = 'content://notes/tree/old';
+    const newUri = 'content://notes/tree/new';
+    SharedPreferences.setMockInitialValues(<String, Object>{
+      'flutter.Directory': unwritableDir,
+      'flutter.ScopedTreeUri': oldUri,
+      'flutter.ScopedTreeName': 'Old vault',
+    });
+    tester.binding.defaultBinaryMessenger.setMockMethodCallHandler(channel, (
+      call,
+    ) async {
+      if (call.method == 'pickTree') {
+        return <String, String>{'uri': newUri, 'name': 'New vault'};
+      }
+      if (call.method == 'list') {
+        final uri = (call.arguments as Map)['treeUri'];
+        if (uri == oldUri) {
+          throw PlatformException(code: 'access_denied', message: 'Revoked');
+        }
+        return <String>[];
+      }
+      throw MissingPluginException();
+    });
+    addTearDown(
+      () => tester.binding.defaultBinaryMessenger.setMockMethodCallHandler(
+        channel,
+        null,
+      ),
+    );
+    await tester.pumpWidget(
+      MaterialApp(
+        home: PreferencesScreen(
+          session: session,
+          scopedFolderService: const ScopedFolderService(channel: channel),
+        ),
+      ),
+    );
+    await pumpWithIo(tester);
+    expect(find.text('Selected folder is unavailable'), findsOneWidget);
+    expect(find.text('Cannot write to this folder'), findsNothing);
+    await tester.tap(find.text('Selected folder is unavailable'));
+    await pumpWithIo(tester);
+    expect(find.text('Selected folder is unavailable'), findsNothing);
+    expect(find.textContaining('Selected folder: New vault'), findsOneWidget);
+  });
+
+  testWidgets('no warning for a directory that does not exist yet', (
+    tester,
+  ) async {
     // The GrapheneOS Storage Scopes flow in docs/installation.md: point at a
     // folder that is not there yet and let Quicklog create it on first write.
     await pumpPrefs(tester, p.join(tmp.path, 'Vault', 'Quicklog'));
@@ -67,8 +119,9 @@ void main() {
     expect(find.text('Cannot write to this folder'), findsNothing);
   });
 
-  testWidgets('warns when the configured directory cannot be written to',
-      (tester) async {
+  testWidgets('warns when the configured directory cannot be written to', (
+    tester,
+  ) async {
     await pumpPrefs(tester, unwritableDir);
 
     expect(find.text('Cannot write to this folder'), findsOneWidget);
@@ -112,13 +165,12 @@ void main() {
   testWidgets('Android 11 warning links to All files access', (tester) async {
     const channel = MethodChannel('org.buetow.quicklog/share');
     final calls = <String>[];
-    tester.binding.defaultBinaryMessenger.setMockMethodCallHandler(
-      channel,
-      (call) async {
-        calls.add(call.method);
-        return call.method == 'storageApiLevel' ? 30 : null;
-      },
-    );
+    tester.binding.defaultBinaryMessenger.setMockMethodCallHandler(channel, (
+      call,
+    ) async {
+      calls.add(call.method);
+      return call.method == 'storageApiLevel' ? 30 : null;
+    });
     addTearDown(
       () => tester.binding.defaultBinaryMessenger.setMockMethodCallHandler(
         channel,
@@ -162,8 +214,9 @@ void main() {
     expect(find.text('Storage settings are unavailable.'), findsOneWidget);
   });
 
-  testWidgets('the directory field and auto-log toggle still load',
-      (tester) async {
+  testWidgets('the directory field and auto-log toggle still load', (
+    tester,
+  ) async {
     await pumpPrefs(tester, tmp.path);
 
     expect(find.text('Preferences'), findsOneWidget);
@@ -184,22 +237,28 @@ void main() {
       SharedPreferences.setMockInitialValues(<String, Object>{
         'flutter.Directory': tmp.path,
       });
-      await tester.pumpWidget(MaterialApp(
-        home: PreferencesScreen(session: session, settingsFiles: files),
-      ));
+      await tester.pumpWidget(
+        MaterialApp(
+          home: PreferencesScreen(session: session, settingsFiles: files),
+        ),
+      );
       await pumpWithIo(tester);
     }
 
     Future<void> tapButton(WidgetTester tester, String label) async {
       final finder = find.text(label);
-      await tester.scrollUntilVisible(finder, 200,
-          scrollable: find.byType(Scrollable).first);
+      await tester.scrollUntilVisible(
+        finder,
+        200,
+        scrollable: find.byType(Scrollable).first,
+      );
       await tester.tap(finder);
       await pumpWithIo(tester);
     }
 
-    testWidgets('shows the secrets warning next to the backup buttons',
-        (tester) async {
+    testWidgets('shows the secrets warning next to the backup buttons', (
+      tester,
+    ) async {
       await pumpWithFiles(tester);
       expect(find.text('The export file contains secrets'), findsOneWidget);
       expect(find.text('Export settings'), findsOneWidget);
@@ -214,18 +273,24 @@ void main() {
       expect(files.saved, isNull);
     });
 
-    testWidgets('export hands the dialog a dated name and valid JSON',
-        (tester) async {
+    testWidgets('export hands the dialog a dated name and valid JSON', (
+      tester,
+    ) async {
       await pumpWithFiles(tester);
       await tapButton(tester, 'Export settings');
       await tester.tap(find.widgetWithText(FilledButton, 'Export'));
       await pumpWithIo(tester);
-      expect(files.suggestedName, matches(RegExp(r'^quicklog-settings-\d{6}\.json$')));
+      expect(
+        files.suggestedName,
+        matches(RegExp(r'^quicklog-settings-\d{6}\.json$')),
+      );
       final backup = decodeSettingsBackup(files.saved!);
       expect(backup.settings.storageMode, StorageMode.local);
       expect(backup.settings.directory, tmp.path);
-      expect(find.text('Settings exported to content://picked.json'),
-          findsOneWidget);
+      expect(
+        find.text('Settings exported to content://picked.json'),
+        findsOneWidget,
+      );
     });
 
     testWidgets('cancelling the file dialog is silent', (tester) async {
@@ -236,10 +301,12 @@ void main() {
       expect(find.text('Import settings'), findsOneWidget);
     });
 
-    testWidgets('a newer format version is refused with a clear message',
-        (tester) async {
+    testWidgets('a newer format version is refused with a clear message', (
+      tester,
+    ) async {
       await pumpWithFiles(tester);
-      files.toOpen = '{"app":"org.buetow.quicklog","format":"quicklog-settings",'
+      files.toOpen =
+          '{"app":"org.buetow.quicklog","format":"quicklog-settings",'
           '"formatVersion":99,"settings":{}}';
       await tapButton(tester, 'Import settings');
       expect(find.text('Import failed'), findsOneWidget);
@@ -249,20 +316,26 @@ void main() {
     testWidgets('a picker error is shown, not swallowed', (tester) async {
       await pumpWithFiles(tester);
       files.error = PlatformException(
-          code: 'no_picker', message: 'No file manager app is available.');
+        code: 'no_picker',
+        message: 'No file manager app is available.',
+      );
       await tapButton(tester, 'Import settings');
       expect(find.text('No file manager app is available.'), findsOneWidget);
     });
 
-    testWidgets('declining the import confirmation keeps settings',
-        (tester) async {
+    testWidgets('declining the import confirmation keeps settings', (
+      tester,
+    ) async {
       await pumpWithFiles(tester);
       files.toOpen = encodeSettingsBackup(
         const QuicklogSettings(storageMode: StorageMode.s3),
         exportedAt: DateTime.utc(2026),
       );
       await tapButton(tester, 'Import settings');
-      expect(find.textContaining('Replace the current settings'), findsOneWidget);
+      expect(
+        find.textContaining('Replace the current settings'),
+        findsOneWidget,
+      );
       await tester.tap(find.text('Cancel'));
       await pumpWithIo(tester);
       expect(session.preferredMode, StorageMode.local);

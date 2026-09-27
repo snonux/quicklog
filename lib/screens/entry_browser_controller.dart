@@ -76,7 +76,8 @@ class EntryBrowserController extends ChangeNotifier {
 
   /// Wording for [BrowserNoteSources.uploadLocalToS3]: dual-write mode keeps
   /// the local copy (Copy), s3-only mode drops it (Move).
-  ({String verb, String past}) get upload => (_sources?.keepLocalCopies ?? false)
+  ({String verb, String past}) get upload =>
+      (_sources?.keepLocalCopies ?? false)
       ? (verb: 'Copy', past: 'Copied')
       : (verb: 'Move', past: 'Moved');
 
@@ -141,7 +142,8 @@ class EntryBrowserController extends ChangeNotifier {
   }
 
   Future<List<LocatedLogEntry>> _load(int generation) async {
-    final dir = await _prefs.directory();
+    final folder = await _prefs.scopedFolder();
+    final dir = folder?.name ?? await _prefs.directory();
     final sources = await _active.resolveBrowserSources();
     // Dual-write only, and not while the degrade window is open: one replay
     // per refresh, so a note edited while S3 was down catches up when it
@@ -359,10 +361,7 @@ class EntryBrowserController extends ChangeNotifier {
     refresh();
   }
 
-  Future<void> uploadToS3(
-    BuildContext context,
-    LocatedLogEntry located,
-  ) async {
+  Future<void> uploadToS3(BuildContext context, LocatedLogEntry located) async {
     final sources = _sources;
     if (sources == null) return;
     final labels = upload;
@@ -450,7 +449,11 @@ class EntryBrowserController extends ChangeNotifier {
         '${labels.past} $done local note${done == 1 ? '' : 's'} to S3',
       );
     } else {
-      _showSnack(context, '${labels.past} $done, failed $failed', isError: true);
+      _showSnack(
+        context,
+        '${labels.past} $done, failed $failed',
+        isError: true,
+      );
     }
     refresh();
   }

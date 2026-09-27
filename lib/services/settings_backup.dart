@@ -29,7 +29,8 @@ class SettingsImportException implements Exception {
   String toString() => message;
 }
 
-/// Every user setting Quicklog persists, in export form.
+/// Transferable user settings, in export form. A scoped folder is represented
+/// only by [scopedFolderNeedsSelection]; its URI and grant stay on this device.
 ///
 /// A null field means "not in the file": importing leaves the current value
 /// alone. That keeps an older, smaller export importable after new settings
@@ -42,6 +43,7 @@ class SettingsImportException implements Exception {
 class QuicklogSettings {
   const QuicklogSettings({
     this.directory,
+    this.scopedFolderNeedsSelection,
     this.autoLogSharedText,
     this.storageMode,
     this.s3Endpoint,
@@ -53,6 +55,9 @@ class QuicklogSettings {
 
   /// Log directory, or '' for the platform default.
   final String? directory;
+
+  /// A scoped folder was active at export. Its grant cannot travel in JSON.
+  final bool? scopedFolderNeedsSelection;
   final bool? autoLogSharedText;
   final StorageMode? storageMode;
   final String? s3Endpoint;
@@ -75,6 +80,7 @@ class QuicklogSettings {
     };
     return <String, Object?>{
       'directory': ?directory,
+      'scopedFolderNeedsSelection': ?scopedFolderNeedsSelection,
       'autoLogSharedText': ?autoLogSharedText,
       'storageMode': ?storageMode?.wireName,
       if (s3.isNotEmpty) 's3': s3,
@@ -96,6 +102,7 @@ class QuicklogSettings {
         : Map<String, Object?>.from(s3Raw as Map);
     return QuicklogSettings(
       directory: _optString(json, 'directory'),
+      scopedFolderNeedsSelection: _optBool(json, 'scopedFolderNeedsSelection'),
       autoLogSharedText: _optBool(json, 'autoLogSharedText'),
       storageMode: _optStorageMode(json, 'storageMode'),
       s3Endpoint: _optString(s3, 'endpoint', prefix: 's3.'),
@@ -240,7 +247,8 @@ class SettingsBackupService {
   final S3SessionController _session;
   final DateTime Function() _clock;
 
-  /// Every persisted setting, with the directory left as '' when defaulted.
+  /// Transferable settings, with the directory left as '' when defaulted or
+  /// when a scoped folder is selected (the grant must be selected again).
   ///
   /// Saving Preferences stores whatever the Directory field shows, so an
   /// untouched default ends up stored as its resolved path. That path is
@@ -248,12 +256,14 @@ class SettingsBackupService {
   /// its own default instead of pinning this one.
   Future<QuicklogSettings> collect() async {
     final s3 = await _prefs.s3Config();
-    var directory = await _prefs.storedDirectory() ?? '';
+    final scoped = await _prefs.scopedFolder();
+    var directory = scoped == null ? await _prefs.storedDirectory() ?? '' : '';
     if (directory.isNotEmpty && directory == await defaultLogDirectory()) {
       directory = '';
     }
     return QuicklogSettings(
       directory: directory,
+      scopedFolderNeedsSelection: scoped == null ? null : true,
       autoLogSharedText: await _prefs.autoLogSharedText(),
       storageMode: await _prefs.storageMode(),
       s3Endpoint: s3.endpoint,
@@ -293,7 +303,14 @@ class SettingsBackupService {
       throw SettingsImportException('Invalid S3 settings: $problem');
     }
 
-    final dir = settings.directory;
+    final dir = settings.scopedFolderNeedsSelection == true
+        ? ''
+        : settings.directory;
+    // A URI string cannot transfer its Android grant. Even importing back
+    // into this install must never silently retain a different active tree.
+    if (dir != null || settings.scopedFolderNeedsSelection == true) {
+      await _prefs.clearScopedFolder();
+    }
     if (dir != null) {
       if (dir.trim().isEmpty) {
         await _prefs.clearDirectory();
