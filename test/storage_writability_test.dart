@@ -52,6 +52,25 @@ void main() {
     expect(await tmp.list().isEmpty, isTrue);
   });
 
+  test('checking a nested path removes only its newly created directories',
+      () async {
+    final existing = await Directory(p.join(tmp.path, 'existing')).create();
+    final keep = File(p.join(existing.path, 'keep.txt'));
+    await keep.writeAsString('keep');
+    final firstNew = p.join(existing.path, 'Notes');
+    final secondNew = p.join(firstNew, 'Vault');
+    final fresh = p.join(secondNew, 'Quicklog');
+
+    expect(await canWriteToDirectory(fresh), isTrue);
+    expect(await Directory(fresh).exists(), isFalse);
+    expect(await Directory(secondNew).exists(), isFalse);
+    expect(await Directory(firstNew).exists(), isFalse);
+    expect(await existing.exists(), isTrue);
+    expect(await keep.readAsString(), 'keep');
+    expect(await existing.list().map((entry) => p.basename(entry.path)).toList(),
+        ['keep.txt']);
+  });
+
   test('a read-only directory is not writable', () async {
     final locked = await Directory(p.join(tmp.path, 'locked')).create();
     await Process.run('chmod', ['500', locked.path]);

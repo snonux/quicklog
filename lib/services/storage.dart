@@ -1,4 +1,11 @@
-import 'dart:io' show Directory, File, FileSystemException, Platform;
+import 'dart:io'
+    show
+        Directory,
+        File,
+        FileSystemEntity,
+        FileSystemEntityType,
+        FileSystemException,
+        Platform;
 import 'dart:math' show Random;
 
 import 'package:path/path.dart' as p;
@@ -43,8 +50,8 @@ Future<String> defaultLogDirectory() async {
 /// deliberately told it has no access while writes to folders it created still
 /// succeed -- exactly the setup docs/installation.md recommends.
 ///
-/// Checking leaves the filesystem as it found it: a directory created only to
-/// run the probe is removed again.
+/// Checking normally leaves the filesystem as it found it. Missing directories
+/// are removed if they are still empty after the probe.
 Future<bool> canWriteToDirectory(String path) async {
   if (path.trim().isEmpty) return false;
   final dir = Directory(path);
@@ -53,10 +60,20 @@ Future<bool> canWriteToDirectory(String path) async {
     '.quicklog-write-probe-${DateTime.now().microsecondsSinceEpoch}'
         '-${Random.secure().nextInt(1 << 32)}',
   ));
-  var created = false;
+  // These paths are absent before create(). Dart does not report which
+  // directories create(recursive: true) actually made, so another process
+  // creating the same empty path concurrently cannot be distinguished here.
+  final missingDirs = <Directory>[];
   var probeCreated = false;
   try {
-    created = !await dir.exists();
+    var ancestor = dir;
+    while (await FileSystemEntity.type(ancestor.path) ==
+        FileSystemEntityType.notFound) {
+      missingDirs.add(ancestor);
+      final parent = ancestor.parent;
+      if (parent.path == ancestor.path) break;
+      ancestor = parent;
+    }
     await dir.create(recursive: true);
     await probe.create(exclusive: true);
     probeCreated = true;
@@ -67,10 +84,17 @@ Future<bool> canWriteToDirectory(String path) async {
   } finally {
     try {
       if (probeCreated) await probe.delete();
-      if (created && await dir.exists()) await dir.delete();
     } on FileSystemException {
-      // Best effort. Failing to tidy up does not change the answer, and the
-      // directory would be reused by the next log entry anyway.
+      // A failed cleanup does not change whether the write succeeded.
+    }
+    for (final missingDir in missingDirs) {
+      try {
+        // The list runs deepest first. Non-recursive deletion leaves a
+        // directory alone if another writer populated it meanwhile.
+        await missingDir.delete();
+      } on FileSystemException {
+        // A directory now in use stays untouched.
+      }
     }
   }
 }
