@@ -36,6 +36,10 @@ class _EntryBrowserScreenState extends State<EntryBrowserScreen> {
   bool _wasDegraded = false;
   int _loadGeneration = 0;
 
+  /// True while a [_refresh] is in flight; [_sources] may then describe a
+  /// mode that no longer applies, so the upload-all action is hidden.
+  bool _reloading = false;
+
   S3SessionController get _session =>
       widget.session ?? S3SessionController.instance;
 
@@ -75,7 +79,7 @@ class _EntryBrowserScreenState extends State<EntryBrowserScreen> {
     final usingLocal = _session.usesLocalFallback;
     final mode = _session.preferredMode;
     // Degrade flips matter even when usesLocalFallback cannot change
-    // (dual-write mode): the list-failure banner and Move-all visibility
+    // (dual-write mode): the list-failure banner and upload-all visibility
     // track S3 reachability.
     final degraded = _session.isDegraded;
     if (usingLocal == _wasUsingLocalFallback &&
@@ -92,11 +96,13 @@ class _EntryBrowserScreenState extends State<EntryBrowserScreen> {
   void _refresh() {
     final generation = ++_loadGeneration;
     setState(() {
-      _future = _load(generation).then((entries) {
+      _reloading = true;
+      _future = _load(generation).whenComplete(() {
         // FutureBuilder rebuilds its child only; setState so AppBar actions
-        // (Move all) see the resolved sources / list-failure flag.
-        if (mounted && generation == _loadGeneration) setState(() {});
-        return entries;
+        // (upload all) see the resolved sources / list-failure flag.
+        if (mounted && generation == _loadGeneration) {
+          setState(() => _reloading = false);
+        }
       });
     });
   }
@@ -304,14 +310,16 @@ class _EntryBrowserScreenState extends State<EntryBrowserScreen> {
   Widget build(BuildContext context) {
     // Show whenever S3 merge mode is active, S3 is reachable, and LIST worked;
     // a failed LIST means we cannot tell local-only from both — hide it.
-    final canMoveAll =
-        _showLocation && _sources?.s3 != null && !_s3ListFailed;
+    // Also hidden mid-reload, so a mode flip cannot run the old mode's
+    // action (e.g. a Move in dual-write mode) on stale sources.
+    final canUploadAll =
+        !_reloading && _showLocation && _sources?.s3 != null && !_s3ListFailed;
 
     return Scaffold(
       appBar: AppBar(
         title: const Text('Entries'),
         actions: [
-          if (canMoveAll)
+          if (canUploadAll)
             IconButton(
               tooltip: '${_upload.verb} all local to S3',
               icon: const Icon(Icons.cloud_upload_outlined),
@@ -395,7 +403,7 @@ class _EntryBrowserScreenState extends State<EntryBrowserScreen> {
             secondaryTooltip = '${_upload.verb} to S3';
             secondaryIcon = Icons.cloud_upload_outlined;
           } else if (located.location == NoteStorageLocation.both &&
-              _session.preferredMode != StorageMode.both) {
+              !sources.keepLocalCopies) {
             // Dual-write users keep local copies on purpose; dropping the
             // local side is a durability downgrade, so it is not offered.
             // (Outage leftovers stay local-only and use 'Copy to S3' instead.)

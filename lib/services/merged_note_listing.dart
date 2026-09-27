@@ -8,8 +8,8 @@ enum NoteStorageLocation {
   /// Present only in the S3 bucket.
   s3,
 
-  /// Same id exists in both places (e.g. after a prior local write and an
-  /// independent S3 create, or a failed move).
+  /// Same id exists in both places (e.g. a dual-write note, a local note
+  /// copied to S3 in dual-write mode, or a failed move).
   both,
 }
 
