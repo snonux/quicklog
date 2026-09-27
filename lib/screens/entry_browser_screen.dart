@@ -340,12 +340,17 @@ class _EntryBrowserScreenState extends State<EntryBrowserScreen> {
               color: Theme.of(context).colorScheme.errorContainer,
               child: ListTile(
                 dense: true,
-                title: Text(
+                textColor: Theme.of(context).colorScheme.onErrorContainer,
+                title: const Text(
                   'Could not list S3 notes; showing local entries only.',
-                  style: TextStyle(
-                    color: Theme.of(context).colorScheme.onErrorContainer,
-                  ),
                 ),
+                // Invalid saved settings (e.g. endpoint) say what to fix.
+                subtitle: switch (_sources?.s3SetupError) {
+                  final String reason => Text(
+                    'Check the S3 settings in Preferences: $reason',
+                  ),
+                  null => null,
+                },
                 trailing: TextButton(
                   onPressed: _refresh,
                   child: const Text('Retry'),

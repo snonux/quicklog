@@ -144,6 +144,20 @@ class _PreferencesScreenState extends State<PreferencesScreen>
   }
 
   Future<void> _save() async {
+    // Reject an endpoint no client can be built from while S3 is in use;
+    // saving it would only surface later as a broken S3 listing.
+    final endpointError = _storageMode.writesToS3
+        ? MinioS3ObjectClient.configError(_readS3Config())
+        : null;
+    if (endpointError != null) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text('Invalid S3 settings: $endpointError'),
+          backgroundColor: Colors.red,
+        ),
+      );
+      return;
+    }
     await _persist();
     if (!mounted) return;
     Navigator.of(context).pop();

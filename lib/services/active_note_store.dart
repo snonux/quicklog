@@ -16,10 +16,16 @@ class BrowserNoteSources {
     required this.mergeWhenS3Preferred,
     this.preferLocalReads = false,
     this.keepLocalCopies = false,
+    this.s3SetupError,
   });
 
   final LocalNoteStore local;
   final S3NoteStore? s3;
+
+  /// Why [s3] is null although S3 is preferred because the saved settings
+  /// cannot build a client (e.g. an invalid endpoint); null otherwise.
+  /// The browser shows it next to the list-failure banner.
+  final String? s3SetupError;
 
   /// True when S3 is part of the write target (s3-only or dual): merged
   /// listing + location badges.
@@ -149,7 +155,8 @@ class BrowserNoteSources {
         s3Entries = const [];
       }
     } else if (mergeWhenS3Preferred) {
-      // Preferred S3 but no client (e.g. missing credentials): treat as list miss.
+      // Preferred S3 but no client (missing credentials or an invalid
+      // endpoint, see [s3SetupError]): treat as a list miss.
       s3ListFailed = true;
     }
     return mergeNoteLists(local: localEntries, s3: s3Entries);
@@ -408,7 +415,19 @@ class ActiveNoteStore {
         mergeWhenS3Preferred: true,
       );
     }
-    final s3 = await _buildS3Store(markFailures: false);
+    final S3NoteStore s3;
+    try {
+      s3 = await _buildS3Store(markFailures: false);
+    } on Exception catch (e) {
+      // A saved endpoint that cannot build a client (malformed URL, host
+      // Minio rejects) must not blank the browser: list local notes only
+      // and report why S3 is missing ([BrowserNoteSources.list] flags it).
+      return BrowserNoteSources(
+        local: local,
+        mergeWhenS3Preferred: true,
+        s3SetupError: describeS3ConfigError(e),
+      );
+    }
     final dualWrite = _session.preferredMode == StorageMode.both;
     return BrowserNoteSources(
       local: local,

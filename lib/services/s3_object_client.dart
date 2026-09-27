@@ -34,6 +34,14 @@ bool isMissingObjectError(Object error) {
   return error.toString().contains('NoSuchKey');
 }
 
+/// User-facing text for an error raised while building an S3 client from an
+/// [S3Config] (e.g. a malformed endpoint), without the exception type prefix.
+String describeS3ConfigError(Object error) {
+  if (error is FormatException) return error.message;
+  if (error is MinioError) return error.message ?? error.toString();
+  return error.toString();
+}
+
 /// Minio client forced to path-style against [S3Config] (Garage-friendly).
 class MinioS3ObjectClient implements S3ObjectClient {
   MinioS3ObjectClient(this.config, {Minio? minio})
@@ -52,6 +60,20 @@ class MinioS3ObjectClient implements S3ObjectClient {
   final S3Config config;
   final Minio _minio;
   final String _bucket;
+
+  /// Why [config] cannot back a client, or null when it can.
+  ///
+  /// Runs the same checks as the constructor ([S3Config.host] and Minio's
+  /// endpoint/port validation) without any network I/O, so a bad endpoint
+  /// can be rejected before it is saved.
+  static String? configError(S3Config config) {
+    try {
+      MinioS3ObjectClient(config);
+      return null;
+    } on Exception catch (e) {
+      return describeS3ConfigError(e);
+    }
+  }
 
   @override
   Future<void> putObject(
