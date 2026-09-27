@@ -151,10 +151,11 @@ class _EntryBrowserScreenState extends State<EntryBrowserScreen> {
   }
 
   /// Opens the viewer. The viewer cannot delete by itself; it pops with
-  /// `true` to request deletion, so all deletions run through [_delete] here
-  /// and the list is refreshed exactly once. It can edit in place, though,
-  /// which changes the subtitle previews, so any other return re-lists the
-  /// directory -- cheap, and simpler than plumbing an "edited" flag back.
+  /// `true` to request deletion, so all deletions run through [_delete].
+  /// A successful delete refreshes the list once. A failed delete re-reads
+  /// just that row, which also shows an edit made in the viewer before the
+  /// delete failed. Any other return refreshes as well: the viewer can edit
+  /// in place, and a new load is simpler than plumbing an "edited" flag.
   Future<void> _open(LocatedLogEntry located) async {
     final sources = _sources;
     if (sources == null) return;
@@ -168,8 +169,6 @@ class _EntryBrowserScreenState extends State<EntryBrowserScreen> {
         ),
       ),
     );
-    // The viewer may have edited the note even if the delete below fails.
-    _firstLines.invalidate(located.id);
     if (!mounted) return;
     if (deleteRequested == true) {
       await _delete(located);
@@ -450,6 +449,7 @@ class _EntryBrowserScreenState extends State<EntryBrowserScreen> {
               sources.storeFor(located),
               generation: _loadGeneration,
             ),
+            initialLine: _firstLines.peek(located, generation: _loadGeneration),
             entry: located.entry,
             location: _showLocation ? located.location : null,
             onTap: () => _open(located),
@@ -474,6 +474,7 @@ class _EntryTile extends StatelessWidget {
     required this.onTap,
     required this.onEdit,
     required this.onDelete,
+    this.initialLine,
     this.location,
     this.onSecondary,
     this.secondaryTooltip,
@@ -482,6 +483,11 @@ class _EntryTile extends StatelessWidget {
 
   /// Remembered by the browser, so rebuilding the tile does not re-read.
   final Future<String> firstLine;
+
+  /// Line already resolved for this load. Null while the read is in flight,
+  /// so a new row stays blank until [firstLine] completes; a row that scrolls
+  /// back paints [initialLine] on the first frame.
+  final String? initialLine;
   final LogEntry entry;
   final NoteStorageLocation? location;
   final VoidCallback onTap;
@@ -499,6 +505,7 @@ class _EntryTile extends StatelessWidget {
       title: Text(_displayFormat.format(entry.timestamp)),
       subtitle: FutureBuilder<String>(
         future: firstLine,
+        initialData: initialLine,
         builder: (_, snap) {
           final line = snap.data ?? '';
           final label = location == null ? null : _locationLabel(location!);

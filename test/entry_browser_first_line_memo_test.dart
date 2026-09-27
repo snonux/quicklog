@@ -1,3 +1,5 @@
+import 'dart:async';
+import 'dart:convert';
 import 'dart:io';
 
 import 'package:flutter/material.dart';
@@ -23,6 +25,10 @@ class _CountingS3 extends MemoryS3ObjectClient {
   final Set<String> failNextPut = {};
   final Set<String> failNextDelete = {};
 
+  /// Awaited when a delete is about to fail, so a test can let a frame paint
+  /// while that delete is still in flight.
+  Future<void> Function()? onFailingDelete;
+
   @override
   Future<List<int>> getObject(String key) {
     gets.update(key, (n) => n + 1, ifAbsent: () => 1);
@@ -45,9 +51,11 @@ class _CountingS3 extends MemoryS3ObjectClient {
   }
 
   @override
-  Future<void> deleteObject(String key) {
+  Future<void> deleteObject(String key) async {
     if (failNextDelete.remove(key)) {
-      return Future.error(Exception('DELETE $key failed'));
+      final hook = onFailingDelete;
+      if (hook != null) await hook();
+      throw Exception('DELETE $key failed');
     }
     return super.deleteObject(key);
   }
@@ -64,6 +72,24 @@ class _CountingStore implements NoteStore {
   Future<String> firstLine(String id) async {
     calls.update(id, (n) => n + 1, ifAbsent: () => 1);
     return lines[id] ?? '';
+  }
+
+  @override
+  dynamic noSuchMethod(Invocation invocation) => super.noSuchMethod(invocation);
+}
+
+/// [NoteStore] that hands out a fresh completer per [firstLine], so a test
+/// can finish an invalidated read after its replacement has already landed.
+class _QueuedStore implements NoteStore {
+  final List<Completer<String>> pending = [];
+  int calls = 0;
+
+  @override
+  Future<String> firstLine(String id) {
+    calls++;
+    final completer = Completer<String>();
+    pending.add(completer);
+    return completer.future;
   }
 
   @override
@@ -138,6 +164,94 @@ void main() {
 
       expect(store.calls, {a: 2, b: 1});
     });
+
+    test('invalidate drops the note in every location', () async {
+      for (final location in NoteStorageLocation.values) {
+        await memo.firstLine(_located(a, location), store, generation: 1);
+      }
+      await memo.firstLine(
+        _located(b, NoteStorageLocation.s3),
+        store,
+        generation: 1,
+      );
+
+      memo.invalidate(a);
+
+      for (final location in NoteStorageLocation.values) {
+        await memo.firstLine(_located(a, location), store, generation: 1);
+      }
+      await memo.firstLine(
+        _located(b, NoteStorageLocation.s3),
+        store,
+        generation: 1,
+      );
+
+      expect(store.calls[a], NoteStorageLocation.values.length * 2);
+      expect(store.calls[b], 1);
+    });
+
+    test('an empty read is reused until the next generation', () async {
+      // firstLine collapses a failed read to ''. The memo keeps that future
+      // for the load; the next generation is what retries it.
+      final empty = _CountingStore({});
+      final row = _located(a, NoteStorageLocation.s3);
+      expect(await memo.firstLine(row, empty, generation: 1), '');
+      expect(await memo.firstLine(row, empty, generation: 1), '');
+      expect(empty.calls[a], 1);
+
+      await memo.firstLine(row, empty, generation: 2);
+      expect(empty.calls[a], 2);
+    });
+
+    test(
+      'a cached key keeps the first future across store instances',
+      () async {
+        final row = _located(a, NoteStorageLocation.s3);
+        await memo.firstLine(row, store, generation: 1);
+        final other = _CountingStore({a: 'replaced'});
+        await memo.firstLine(row, other, generation: 1);
+
+        expect(other.calls.containsKey(a), isFalse);
+      },
+    );
+
+    test('peek returns a finished line and does not read', () async {
+      final row = _located(a, NoteStorageLocation.s3);
+      expect(memo.peek(row, generation: 1), isNull);
+
+      final pending = memo.firstLine(row, store, generation: 1);
+      expect(memo.peek(row, generation: 1), isNull);
+      expect(await pending, 'alpha');
+      expect(memo.peek(row, generation: 1), 'alpha');
+      expect(store.calls[a], 1);
+
+      memo.invalidate(a);
+      expect(memo.peek(row, generation: 1), isNull);
+
+      await memo.firstLine(row, store, generation: 2);
+      expect(memo.peek(row, generation: 1), isNull);
+      expect(memo.peek(row, generation: 2), 'alpha');
+    });
+
+    test(
+      'a late completion after invalidate does not refill the line',
+      () async {
+        final queued = _QueuedStore();
+        final row = _located(a, NoteStorageLocation.s3);
+        final first = memo.firstLine(row, queued, generation: 1);
+        memo.invalidate(a);
+        final second = memo.firstLine(row, queued, generation: 1);
+
+        queued.pending[1].complete('new');
+        expect(await second, 'new');
+        expect(memo.peek(row, generation: 1), 'new');
+
+        queued.pending[0].complete('old');
+        expect(await first, 'old');
+        expect(memo.peek(row, generation: 1), 'new');
+        expect(queued.calls, 2);
+      },
+    );
   });
 
   group('entry browser subtitles', () {
@@ -160,7 +274,11 @@ void main() {
 
     tearDown(() async {
       session.dispose();
-      if (await tmp.exists()) await tmp.delete(recursive: true);
+      if (await tmp.exists()) {
+        // The local-write-failure test clears a note's write bit.
+        await Process.run('chmod', ['-R', 'u+rwx', tmp.path]);
+        await tmp.delete(recursive: true);
+      }
     });
 
     void writeLocal(String id, String text) =>
@@ -287,13 +405,61 @@ void main() {
       await saveEdit(tester, 'alpha edited');
       expect(find.textContaining('Could not save'), findsOneWidget);
 
+      final newerBefore = s3.gets[newer];
+      final olderBefore = s3.gets[older];
       await tester.pageBack();
       await pumpWithIo(tester);
       await tapAndSettle(tester, find.text('Discard'));
 
       expect(find.text('Entries'), findsOneWidget);
       expect(find.text('Local + S3 · alpha edited'), findsOneWidget);
+      // Re-read just this row (the local copy, so no S3 GET for it). A full
+      // refresh would GET the other visible row again.
+      expect(s3.gets[newer], newerBefore);
+      expect(s3.gets[older], olderBefore);
     });
+
+    testWidgets(
+      'a local write that fails after the S3 put keeps the local subtitle',
+      (tester) async {
+        // Opposite of the partial save above: the S3 put lands, the local
+        // write does not. Dual-write reads local (preferLocalReads), so the
+        // list shows the read-primary — the same text opening the note would
+        // show.
+        writeLocal(older, 'alpha');
+        await start(tester, mode: 'both');
+        expect(find.text('Local + S3 · alpha'), findsOneWidget);
+
+        await tapAndSettle(tester, find.byIcon(Icons.edit_outlined).last);
+        final locked = await tester.runAsync(
+          () => Process.run('chmod', ['a-w', p.join(tmp.path, older)]),
+        );
+        expect(locked?.exitCode, 0);
+        await saveEdit(tester, 'alpha from s3');
+        expect(find.textContaining('Could not save'), findsOneWidget);
+
+        final newerBefore = s3.gets[newer];
+        final olderBefore = s3.gets[older];
+        await tester.pageBack();
+        await pumpWithIo(tester);
+        await tapAndSettle(tester, find.text('Discard'));
+
+        expect(find.text('Entries'), findsOneWidget);
+        expect(find.text('Local + S3 · alpha'), findsOneWidget);
+        expect(find.text('Local + S3 · alpha from s3'), findsNothing);
+        // The subtitle is the local file, not an S3 GET. The other row's
+        // GET count staying put is what shows this was not a full refresh.
+        expect(s3.gets[newer], newerBefore);
+        expect(s3.gets[older], olderBefore);
+        expect(
+          await tester.runAsync(
+            () => File(p.join(tmp.path, older)).readAsString(),
+          ),
+          'alpha',
+        );
+        expect(utf8.decode(s3.objects[older]!), 'alpha from s3');
+      },
+    );
 
     testWidgets('a failed delete after a viewer edit re-reads the row', (
       tester,
@@ -304,12 +470,28 @@ void main() {
       await tapAndSettle(tester, find.byIcon(Icons.edit_outlined));
       await saveEdit(tester, 'alpha edited');
       s3.failNextDelete.add(older);
+      // Rebuild the list while the delete is in flight, the same window the
+      // route pop paints in. That frame reuses the cached line; the failure
+      // then re-reads this row once.
+      s3.onFailingDelete = () async {
+        tester
+            .element(find.byType(EntryBrowserScreen, skipOffstage: false))
+            .markNeedsBuild();
+        await Future<void>.delayed(const Duration(milliseconds: 80));
+      };
       await tapAndSettle(tester, find.byIcon(Icons.delete_outline));
+      final olderBefore = s3.gets[older]!;
+      final newerBefore = s3.gets[newer]!;
       await tapAndSettle(tester, find.widgetWithText(FilledButton, 'Delete'));
 
       expect(find.textContaining('Could not delete'), findsOneWidget);
+      expect(find.textContaining('DELETE $older failed'), findsOneWidget);
       expect(find.text('Entries'), findsOneWidget);
       expect(find.text('S3 · alpha edited'), findsOneWidget);
+      // One extra GET of this row. A second invalidate while the delete is
+      // in flight reads it twice; a full refresh also reads the other row.
+      expect(s3.gets[older], olderBefore + 1);
+      expect(s3.gets[newer], newerBefore);
     });
 
     testWidgets('delete drops the row and re-reads the others once', (
