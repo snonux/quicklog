@@ -141,7 +141,11 @@ class _FakeShareCache implements SharedTextCache {
   Future<String?> read() async => content;
 
   @override
-  Future<void> clear() async => content = null;
+  Future<bool> clearIfEquals(String expected) async {
+    if (content != expected) return false;
+    content = null;
+    return true;
+  }
 }
 
 /// Note store whose saves block until the test completes or fails them.

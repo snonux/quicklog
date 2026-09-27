@@ -76,7 +76,7 @@ Future<void> handleSharedTextLoad({
 /// by MainActivity whenever text is shared to the app).
 abstract interface class SharedTextCache {
   Future<String?> read();
-  Future<void> clear();
+  Future<bool> clearIfEquals(String expected);
 }
 
 /// [SharedTextCache] backed by the Android share channel ([ShareService]).
@@ -87,7 +87,8 @@ class NativeSharedTextCache implements SharedTextCache {
   Future<String?> read() => ShareService.readSharedTextFromCache();
 
   @override
-  Future<void> clear() => ShareService.clearSharedTextCache();
+  Future<bool> clearIfEquals(String expected) =>
+      ShareService.clearSharedTextCacheIfEquals(expected);
 }
 
 /// Handles one non-empty cached share. [clearHandled] removes it from the
@@ -108,13 +109,10 @@ typedef SharedTextHandle =
 /// text (compare-and-clear), so a newer share that overwrote the cache during
 /// a slow save is left for the follow-up load and logged after the first.
 ///
-/// Residual race: the compare and the clear are two separate platform calls
-/// (read, then delete). A share written by MainActivity between those two
-/// calls is still deleted unseen. This narrows the window from "the whole
-/// save" to two back-to-back channel round trips, but does not eliminate it;
-/// that needs an atomic compare-and-delete on the native side. Also, two
-/// consecutive shares of identical text cannot be told apart in the single
-/// slot and are logged once.
+/// The native compare-and-delete runs on the same thread that captures new
+/// shares, so a different share cannot arrive between checking and clearing.
+/// Two consecutive shares of identical text still cannot be told apart in
+/// the single slot and are logged once.
 class SharedTextIntake {
   SharedTextIntake({
     required SharedTextCache cache,
@@ -182,7 +180,7 @@ class SharedTextIntake {
 
   Future<void> _clearIfUnchanged(String handled) async {
     try {
-      if (await _cache.read() == handled) await _cache.clear();
+      await _cache.clearIfEquals(handled);
       _handledNotCleared = null;
     } catch (e) {
       // The share is already handled; a failed clear is not a failed load.

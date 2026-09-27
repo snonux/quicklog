@@ -14,12 +14,15 @@ class ShareService {
     }
   }
 
-  static Future<void> clearSharedTextCache() async {
-    if (!Platform.isAndroid) return;
+  static Future<bool> clearSharedTextCacheIfEquals(String expected) async {
+    if (!Platform.isAndroid) return false;
     try {
-      await _channel.invokeMethod<void>('clearSharedTextCache');
+      return await _channel.invokeMethod<bool>('clearSharedTextCacheIfEquals', {
+            'expected': expected,
+          }) ??
+          false;
     } on MissingPluginException {
-      // No-op: channel not registered (e.g. running on a non-Android target).
+      return false;
     }
   }
 }

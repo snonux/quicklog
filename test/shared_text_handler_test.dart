@@ -221,6 +221,28 @@ void main() {
       expect(errors, isEmpty);
     });
 
+    test('a share arriving just before compare-and-clear is kept', () async {
+      cache.share('first');
+      final start = intake.load();
+      await store.started(1);
+
+      // Deliver a new share as the native clear operation starts. The
+      // comparison must see it and leave it for the queued follow-up load.
+      cache.beforeClear = () {
+        cache.share('second');
+        unawaited(intake.load());
+      };
+      store.completeNext();
+      await store.started(2);
+      expect(cache.content, 'second');
+
+      store.completeNext();
+      await start;
+      expect(store.saved, ['first', 'second']);
+      expect(cache.content, isNull);
+      expect(errors, isEmpty);
+    });
+
     test('a failed save does not wedge the intake', () async {
       cache.share('first');
       final start = intake.load();
@@ -290,26 +312,18 @@ void main() {
       expect(store.saved, ['first', 'second']);
     });
 
-    test(
-      'a failed re-read after a save does not log the share twice',
-      () async {
-        cache.share('first');
-        final start = intake.load();
-        await store.started(1);
+    test('clearing after a save does not need another read', () async {
+      cache.share('first');
+      final start = intake.load();
+      await store.started(1);
 
-        cache.failReads = true;
-        store.completeNext();
-        await start;
-        expect(store.saved, ['first']);
-        expect(errors, isEmpty);
-
-        cache.failReads = false;
-        await intake.load();
-        expect(store.attempts, ['first']);
-        expect(cache.content, isNull);
-        expect(errors, isEmpty);
-      },
-    );
+      cache.failReads = true;
+      store.completeNext();
+      await start;
+      expect(store.saved, ['first']);
+      expect(cache.content, isNull);
+      expect(errors, isEmpty);
+    });
 
     test('an Error is reported to FlutterError, not onError', () async {
       final reported = <FlutterErrorDetails>[];
@@ -376,6 +390,7 @@ class _FakeShareCache implements SharedTextCache {
   int clears = 0;
   bool failReads = false;
   bool failClears = false;
+  void Function()? beforeClear;
   Object readError = Exception('channel down');
 
   void share(String text) => content = text;
@@ -387,10 +402,15 @@ class _FakeShareCache implements SharedTextCache {
   }
 
   @override
-  Future<void> clear() async {
+  Future<bool> clearIfEquals(String expected) async {
     if (failClears) throw Exception('delete failed');
+    final callback = beforeClear;
+    beforeClear = null;
+    callback?.call();
+    if (content != expected) return false;
     clears++;
     content = null;
+    return true;
   }
 }
 

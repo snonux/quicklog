@@ -35,9 +35,17 @@ class MainActivity : FlutterActivity() {
             .setMethodCallHandler { call, result ->
                 when (call.method) {
                     "readSharedTextFromCache" -> result.success(readCache())
-                    "clearSharedTextCache" -> {
-                        clearCache()
-                        result.success(null)
+                    "clearSharedTextCacheIfEquals" -> {
+                        val expected = call.argument<String>("expected")
+                        if (expected == null) {
+                            result.error("bad_args", "Expected shared text is required.", null)
+                        } else {
+                            try {
+                                result.success(clearCacheIfEquals(expected))
+                            } catch (e: IOException) {
+                                result.error("io", e.message ?: e.toString(), null)
+                            }
+                        }
                     }
                     "hasAllFilesAccess" -> result.success(hasAllFilesAccess())
                     "requestAllFilesAccess" -> {
@@ -212,8 +220,12 @@ class MainActivity : FlutterActivity() {
         return if (f.exists()) f.readText() else null
     }
 
-    private fun clearCache() {
+    // Both this channel handler and captureSendIntent run on the main thread,
+    // so a new share cannot overwrite the file between this check and delete.
+    private fun clearCacheIfEquals(expected: String): Boolean {
         val f = File(cacheDir, cacheFilename)
-        if (f.exists()) f.delete()
+        if (!f.exists() || f.readText() != expected) return false
+        if (!f.delete()) throw IOException("Could not clear the shared-text cache.")
+        return true
     }
 }
