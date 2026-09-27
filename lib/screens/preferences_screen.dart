@@ -19,6 +19,7 @@ class PreferencesScreen extends StatefulWidget {
     super.key,
     this.session,
     this.activeStore,
+    this.preferences,
     this.s3ClientFactory,
     this.settingsFiles,
   });
@@ -28,6 +29,10 @@ class PreferencesScreen extends StatefulWidget {
 
   /// Optional override for tests (inject fake S3 factory).
   final ActiveNoteStore? activeStore;
+
+  /// Optional override for tests; defaults to a fresh [PreferencesService].
+  /// The running app passes the instance created in `main`.
+  final PreferencesService? preferences;
 
   /// Optional client factory for "Test connection" (defaults to Minio).
   /// Injected in tests so the probe never hits the network or prefs.
@@ -43,7 +48,8 @@ class PreferencesScreen extends StatefulWidget {
 
 class _PreferencesScreenState extends State<PreferencesScreen>
     with WidgetsBindingObserver {
-  final PreferencesService _prefs = PreferencesService();
+  late final PreferencesService _prefs =
+      widget.preferences ?? PreferencesService();
   final TextEditingController _dirController = TextEditingController();
   final TextEditingController _endpointController = TextEditingController();
   final TextEditingController _regionController = TextEditingController();

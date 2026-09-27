@@ -17,7 +17,12 @@ import 'first_line_memo.dart';
 final _displayFormat = DateFormat('yyyy-MM-dd HH:mm:ss');
 
 class EntryBrowserScreen extends StatefulWidget {
-  const EntryBrowserScreen({super.key, this.session, this.activeStore});
+  const EntryBrowserScreen({
+    super.key,
+    this.session,
+    this.activeStore,
+    this.preferences,
+  });
 
   /// Optional override for tests; defaults to the process-wide session.
   final S3SessionController? session;
@@ -25,12 +30,17 @@ class EntryBrowserScreen extends StatefulWidget {
   /// Optional override for tests (inject fake S3).
   final ActiveNoteStore? activeStore;
 
+  /// Optional override for tests; defaults to a fresh [PreferencesService].
+  /// The running app passes the instance created in `main`.
+  final PreferencesService? preferences;
+
   @override
   State<EntryBrowserScreen> createState() => _EntryBrowserScreenState();
 }
 
 class _EntryBrowserScreenState extends State<EntryBrowserScreen> {
-  final PreferencesService _prefs = PreferencesService();
+  late final PreferencesService _prefs =
+      widget.preferences ?? PreferencesService();
   Future<List<LocatedLogEntry>>? _future;
   BrowserNoteSources? _sources;
   String _dir = '';

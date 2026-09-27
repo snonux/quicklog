@@ -20,6 +20,7 @@ class HomeScreen extends StatefulWidget {
     super.key,
     this.session,
     this.activeStore,
+    this.preferences,
     this.sharedTextCache,
   });
 
@@ -28,6 +29,10 @@ class HomeScreen extends StatefulWidget {
 
   /// Optional override for tests (inject fake S3).
   final ActiveNoteStore? activeStore;
+
+  /// Optional override for tests; defaults to a fresh [PreferencesService].
+  /// The running app passes the instance created in `main`.
+  final PreferencesService? preferences;
 
   /// Optional override for tests: the share cache to drain on start-up and
   /// resume. Defaults to the native cache, which exists on Android only.
@@ -40,7 +45,8 @@ class HomeScreen extends StatefulWidget {
 class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
   final TextEditingController _controller = TextEditingController();
   final FocusNode _focusNode = FocusNode();
-  final PreferencesService _prefs = PreferencesService();
+  late final PreferencesService _prefs =
+      widget.preferences ?? PreferencesService();
   bool _warnShown = false;
   bool _loadingShared = false;
   bool _logging = false;
@@ -237,8 +243,11 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
   Future<void> _openPreferences() async {
     await Navigator.of(context).push(
       MaterialPageRoute(
-        builder: (_) =>
-            PreferencesScreen(session: _session, activeStore: _active),
+        builder: (_) => PreferencesScreen(
+          session: _session,
+          activeStore: _active,
+          preferences: _prefs,
+        ),
       ),
     );
   }
@@ -246,8 +255,11 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
   Future<void> _openEntryBrowser() async {
     await Navigator.of(context).push(
       MaterialPageRoute(
-        builder: (_) =>
-            EntryBrowserScreen(session: _session, activeStore: _active),
+        builder: (_) => EntryBrowserScreen(
+          session: _session,
+          activeStore: _active,
+          preferences: _prefs,
+        ),
       ),
     );
   }
