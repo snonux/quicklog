@@ -26,6 +26,16 @@ void main() {
     expect(await tmp.list().isEmpty, isTrue);
   });
 
+  test('does not alter an existing file with the old probe name', () async {
+    final existing = File(p.join(tmp.path, '.quicklog-write-probe'));
+    await existing.writeAsString('user data');
+
+    expect(await canWriteToDirectory(tmp.path), isTrue);
+    expect(await existing.readAsString(), 'user data');
+    expect(await tmp.list().map((entry) => p.basename(entry.path)).toList(),
+        ['.quicklog-write-probe']);
+  });
+
   test('a directory that does not exist yet is writable if it can be created',
       () async {
     // The Storage Scopes flow in docs/installation.md depends on this: the user

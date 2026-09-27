@@ -111,9 +111,13 @@ void main() {
 
   testWidgets('Android 11 warning links to All files access', (tester) async {
     const channel = MethodChannel('org.buetow.quicklog/share');
+    final calls = <String>[];
     tester.binding.defaultBinaryMessenger.setMockMethodCallHandler(
       channel,
-      (call) async => call.method == 'storageApiLevel' ? 30 : null,
+      (call) async {
+        calls.add(call.method);
+        return call.method == 'storageApiLevel' ? 30 : null;
+      },
     );
     addTearDown(
       () => tester.binding.defaultBinaryMessenger.setMockMethodCallHandler(
@@ -127,6 +131,9 @@ void main() {
       find.textContaining('All files access for this folder on Android 11+'),
       findsOneWidget,
     );
+    await tester.tap(find.text('Cannot write to this folder'));
+    await pumpWithIo(tester);
+    expect(calls, contains('requestStorageAccess'));
   });
 
   testWidgets('storage settings failure is explained to the user', (

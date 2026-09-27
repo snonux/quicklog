@@ -1,4 +1,5 @@
 import 'dart:io' show Directory, File, FileSystemException, Platform;
+import 'dart:math' show Random;
 
 import 'package:path/path.dart' as p;
 import 'package:path_provider/path_provider.dart';
@@ -47,18 +48,25 @@ Future<String> defaultLogDirectory() async {
 Future<bool> canWriteToDirectory(String path) async {
   if (path.trim().isEmpty) return false;
   final dir = Directory(path);
-  final probe = File(p.join(path, '.quicklog-write-probe'));
+  final probe = File(p.join(
+    path,
+    '.quicklog-write-probe-${DateTime.now().microsecondsSinceEpoch}'
+        '-${Random.secure().nextInt(1 << 32)}',
+  ));
   var created = false;
+  var probeCreated = false;
   try {
     created = !await dir.exists();
     await dir.create(recursive: true);
+    await probe.create(exclusive: true);
+    probeCreated = true;
     await probe.writeAsString('');
     return true;
   } on FileSystemException {
     return false;
   } finally {
     try {
-      if (await probe.exists()) await probe.delete();
+      if (probeCreated) await probe.delete();
       if (created && await dir.exists()) await dir.delete();
     } on FileSystemException {
       // Best effort. Failing to tidy up does not change the answer, and the
