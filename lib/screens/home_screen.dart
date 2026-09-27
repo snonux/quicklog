@@ -33,12 +33,17 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
   bool _warnShown = false;
   bool _loadingShared = false;
   bool _logging = false;
+  late final SharedTextIntake _sharedIntake = SharedTextIntake(
+    readCache: ShareService.readSharedTextFromCache,
+    clearCache: ShareService.clearSharedTextCache,
+    handle: _handleSharedText,
+    onError: _showError,
+  );
 
   S3SessionController get _session =>
       widget.session ?? S3SessionController.instance;
 
-  ActiveNoteStore get _active =>
-      widget.activeStore ?? ActiveNoteStore.instance;
+  ActiveNoteStore get _active => widget.activeStore ?? ActiveNoteStore.instance;
 
   @override
   void initState() {
@@ -48,7 +53,7 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
     // Session is loaded once in main(); do not re-load here — a racing
     // unawaited load can resurrect a degrade window cleared by retry/mode.
     if (Platform.isAndroid) {
-      WidgetsBinding.instance.addPostFrameCallback((_) => _loadSharedText());
+      WidgetsBinding.instance.addPostFrameCallback((_) => _sharedIntake.load());
     }
   }
 
@@ -64,7 +69,7 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
   @override
   void didChangeAppLifecycleState(AppLifecycleState state) {
     if (state == AppLifecycleState.resumed && Platform.isAndroid) {
-      _loadSharedText();
+      _sharedIntake.load();
     }
   }
 
@@ -94,7 +99,10 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
           'performance issues.',
         ),
         actions: [
-          TextButton(onPressed: () => Navigator.of(ctx).pop(), child: const Text('OK')),
+          TextButton(
+            onPressed: () => Navigator.of(ctx).pop(),
+            child: const Text('OK'),
+          ),
         ],
       ),
     );
@@ -131,12 +139,13 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
 
   /// User-visible note for a save that succeeded but did not reach every
   /// backend the mode targets; null when everything landed where expected.
-  static String? _outcomeMessage(NoteCreateOutcome outcome) => switch (outcome) {
+  static String? _outcomeMessage(NoteCreateOutcome outcome) =>
+      switch (outcome) {
         NoteCreateOutcome.saved => null,
         NoteCreateOutcome.savedLocalOnly =>
-            'S3 unavailable — the note was saved on this device.',
+          'S3 unavailable — the note was saved on this device.',
         NoteCreateOutcome.savedS3Only =>
-            'The local write failed — the note is in the S3 bucket only.',
+          'The local write failed — the note is in the S3 bucket only.',
       };
 
   void _showError(Object error) {
@@ -148,44 +157,55 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
 
   void _showInfo(String title, String message) {
     if (!mounted) return;
-    ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(message)));
+    ScaffoldMessenger.of(
+      context,
+    ).showSnackBar(SnackBar(content: Text(message)));
   }
 
-  Future<void> _loadSharedText() async {
-    final txt = await ShareService.readSharedTextFromCache();
-    if (txt == null || txt.isEmpty) return;
+  /// Handles one cached share; serialized by [_sharedIntake], so a resume
+  /// during a slow auto-log save never logs the same share twice.
+  Future<void> _handleSharedText(
+    String txt,
+    Future<void> Function() clearHandled,
+  ) async {
+    // A follow-up load can outlive the screen; leave the share cached.
+    if (!mounted) return;
     _loadingShared = true;
-    final dir = await _prefs.directory();
-    final autoLog = await _prefs.autoLogSharedText();
-    await handleSharedTextLoad(
-      text: txt,
-      autoLog: autoLog,
-      dir: dir,
-      prefill: (s) {
-        _controller.text = s;
-        _controller.selection = TextSelection.collapsed(offset: s.length);
-      },
-      focus: () => _focusNode.requestFocus(),
-      resetInput: _resetInput,
-      clearCache: ShareService.clearSharedTextCache,
-      logFn: (_, t) async =>
-          // Same save path as the main Log text button; an optional custom
-          // message tells the handler where the note landed.
-          _outcomeMessage((await _active.createNote(t)).outcome),
-      showInfo: _showInfo,
-      showError: _showError,
-    );
-    _loadingShared = false;
-    if (mounted) setState(() {});
+    try {
+      final dir = await _prefs.directory();
+      final autoLog = await _prefs.autoLogSharedText();
+      if (!mounted) return;
+      await handleSharedTextLoad(
+        text: txt,
+        autoLog: autoLog,
+        dir: dir,
+        prefill: (s) {
+          _controller.text = s;
+          _controller.selection = TextSelection.collapsed(offset: s.length);
+        },
+        focus: () => _focusNode.requestFocus(),
+        resetInput: () {
+          if (mounted) _resetInput();
+        },
+        clearCache: clearHandled,
+        logFn: (_, t) async =>
+            // Same save path as the main Log text button; an optional custom
+            // message tells the handler where the note landed.
+            _outcomeMessage((await _active.createNote(t)).outcome),
+        showInfo: _showInfo,
+        showError: _showError,
+      );
+    } finally {
+      _loadingShared = false;
+      if (mounted) setState(() {});
+    }
   }
 
   Future<void> _openPreferences() async {
     await Navigator.of(context).push(
       MaterialPageRoute(
-        builder: (_) => PreferencesScreen(
-          session: _session,
-          activeStore: _active,
-        ),
+        builder: (_) =>
+            PreferencesScreen(session: _session, activeStore: _active),
       ),
     );
   }
@@ -193,10 +213,8 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
   Future<void> _openEntryBrowser() async {
     await Navigator.of(context).push(
       MaterialPageRoute(
-        builder: (_) => EntryBrowserScreen(
-          session: _session,
-          activeStore: _active,
-        ),
+        builder: (_) =>
+            EntryBrowserScreen(session: _session, activeStore: _active),
       ),
     );
   }
@@ -207,15 +225,16 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
       if (!mounted) return;
       final message = switch (result) {
         S3RetryResult.reachable => 'S3 reachable again.',
-        S3RetryResult.armedWithoutProbe => _session.probe == null
-            ? 'S3 retry armed (no connectivity check yet).'
-            : 'S3 reachable again.',
+        S3RetryResult.armedWithoutProbe =>
+          _session.probe == null
+              ? 'S3 retry armed (no connectivity check yet).'
+              : 'S3 reachable again.',
         S3RetryResult.unavailable => 'S3 still unavailable.',
         S3RetryResult.ignored => 'S3 retry not applicable.',
       };
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text(message)),
-      );
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(SnackBar(content: Text(message)));
     } catch (e) {
       if (!mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(
