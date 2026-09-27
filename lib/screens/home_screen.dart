@@ -174,6 +174,9 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
           'S3 unavailable — the note was saved on this device.',
         NoteCreateOutcome.savedS3Only =>
           'The local write failed — the note is in the S3 bucket only.',
+        NoteCreateOutcome.savedLocalS3SettingsInvalid =>
+          'S3 settings invalid — the note was saved on this device. '
+              'Check Preferences.',
       };
 
   void _showError(Object error) {

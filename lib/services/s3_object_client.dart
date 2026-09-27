@@ -34,28 +34,30 @@ bool isMissingObjectError(Object error) {
   return error.toString().contains('NoSuchKey');
 }
 
-/// User-facing text for an error raised while building an S3 client from an
-/// [S3Config] (e.g. a malformed endpoint), without the exception type prefix.
-String describeS3ConfigError(Object error) {
-  if (error is FormatException) return error.message;
-  if (error is MinioError) return error.message ?? error.toString();
-  return error.toString();
+/// Saved [S3Config] values no client can be built from (malformed endpoint,
+/// host or port Minio rejects, invalid bucket name). Raised only while
+/// constructing [MinioS3ObjectClient], never by network I/O, so callers can
+/// tell a settings mistake from an outage.
+class S3ConfigException implements Exception {
+  const S3ConfigException(this.message);
+
+  /// User-facing reason, without an exception type prefix.
+  final String message;
+
+  @override
+  String toString() => message;
 }
 
 /// Minio client forced to path-style against [S3Config] (Garage-friendly).
+///
+/// Throws [S3ConfigException] when [config] cannot back a client.
 class MinioS3ObjectClient implements S3ObjectClient {
   MinioS3ObjectClient(this.config, {Minio? minio})
-      : _minio = minio ??
-            Minio(
-              endPoint: config.host,
-              port: config.port,
-              useSSL: config.useSSL,
-              accessKey: config.accessKeyId,
-              secretKey: config.secretAccessKey,
-              region: config.region,
-              pathStyle: true,
-            ),
-        _bucket = config.bucket;
+    : _minio = minio ?? _validated(() => _minioFor(config)),
+      _bucket = _validated(() {
+        MinioInvalidBucketNameError.check(config.bucket);
+        return config.bucket;
+      });
 
   final S3Config config;
   final Minio _minio;
@@ -63,15 +65,37 @@ class MinioS3ObjectClient implements S3ObjectClient {
 
   /// Why [config] cannot back a client, or null when it can.
   ///
-  /// Runs the same checks as the constructor ([S3Config.host] and Minio's
-  /// endpoint/port validation) without any network I/O, so a bad endpoint
-  /// can be rejected before it is saved.
+  /// Runs the constructor's own checks ([S3Config.host], Minio's
+  /// endpoint/port validation, the bucket name) without any network I/O,
+  /// so bad settings can be rejected before they are saved or used.
   static String? configError(S3Config config) {
     try {
       MinioS3ObjectClient(config);
       return null;
-    } on Exception catch (e) {
-      return describeS3ConfigError(e);
+    } on S3ConfigException catch (e) {
+      return e.message;
+    }
+  }
+
+  static Minio _minioFor(S3Config config) => Minio(
+    endPoint: config.host,
+    port: config.port,
+    useSSL: config.useSSL,
+    accessKey: config.accessKeyId,
+    secretKey: config.secretAccessKey,
+    region: config.region,
+    pathStyle: true,
+  );
+
+  /// Runs a construction-time check, mapping its validation errors (and
+  /// only those) to [S3ConfigException].
+  static T _validated<T>(T Function() build) {
+    try {
+      return build();
+    } on FormatException catch (e) {
+      throw S3ConfigException(e.message);
+    } on MinioError catch (e) {
+      throw S3ConfigException(e.message ?? e.toString());
     }
   }
 

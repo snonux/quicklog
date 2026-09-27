@@ -2,6 +2,7 @@ import 'dart:convert';
 
 import 'preferences.dart';
 import 's3_config.dart';
+import 's3_object_client.dart';
 import 's3_session_controller.dart';
 import 'storage.dart';
 
@@ -270,7 +271,27 @@ class SettingsBackupService {
   ///
   /// The storage mode goes through the session controller, like Save in
   /// Preferences, so the running app switches backends immediately.
+  ///
+  /// Like Save, refuses S3 settings no client can be built from (e.g. an
+  /// invalid endpoint) when the resulting storage mode uses S3: throws
+  /// [SettingsImportException] before anything is written.
   Future<void> apply(QuicklogSettings settings) async {
+    final current = await _prefs.s3Config();
+    final s3 = S3Config(
+      endpoint: settings.s3Endpoint ?? current.endpoint,
+      region: settings.s3Region ?? current.region,
+      bucket: settings.s3Bucket ?? current.bucket,
+      accessKeyId: settings.s3AccessKeyId ?? current.accessKeyId,
+      secretAccessKey: settings.s3SecretAccessKey ?? current.secretAccessKey,
+    );
+    final mode = settings.storageMode ?? await _prefs.storageMode();
+    final problem = mode.writesToS3
+        ? MinioS3ObjectClient.configError(s3)
+        : null;
+    if (problem != null) {
+      throw SettingsImportException('Invalid S3 settings: $problem');
+    }
+
     final dir = settings.directory;
     if (dir != null) {
       if (dir.trim().isEmpty) {
@@ -282,19 +303,10 @@ class SettingsBackupService {
     final autoLog = settings.autoLogSharedText;
     if (autoLog != null) await _prefs.setAutoLogSharedText(autoLog);
 
-    final current = await _prefs.s3Config();
-    await _prefs.setS3Config(
-      S3Config(
-        endpoint: settings.s3Endpoint ?? current.endpoint,
-        region: settings.s3Region ?? current.region,
-        bucket: settings.s3Bucket ?? current.bucket,
-        accessKeyId: settings.s3AccessKeyId ?? current.accessKeyId,
-        secretAccessKey: settings.s3SecretAccessKey ?? current.secretAccessKey,
-      ),
-    );
+    await _prefs.setS3Config(s3);
 
-    final mode = settings.storageMode;
-    if (mode != null) await _session.setPreferredMode(mode);
+    final importedMode = settings.storageMode;
+    if (importedMode != null) await _session.setPreferredMode(importedMode);
   }
 
   /// Validates [text] and applies it. Nothing is written when validation

@@ -4,6 +4,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:path/path.dart' as p;
 import 'package:quicklog/screens/entry_browser_screen.dart';
+import 'package:quicklog/screens/home_screen.dart';
 import 'package:quicklog/screens/preferences_screen.dart';
 import 'package:quicklog/services/active_note_store.dart';
 import 'package:quicklog/services/merged_note_listing.dart';
@@ -11,12 +12,16 @@ import 'package:quicklog/services/preferences.dart';
 import 'package:quicklog/services/s3_config.dart';
 import 'package:quicklog/services/s3_object_client.dart';
 import 'package:quicklog/services/s3_session_controller.dart';
+import 'package:quicklog/services/settings_backup.dart';
+import 'package:quicklog/services/settings_file_service.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
+import '../bin/quicklog_drain.dart' as drain;
 import 'io_pump.dart';
 
-/// A saved S3 endpoint that no client can be built from must not blank the
-/// entry browser: local notes still list, and the reason is shown.
+/// Saved S3 settings that no client can be built from (e.g. an invalid
+/// endpoint) must not blank the entry browser or lose a note, and every path
+/// that stores settings (Save, Export, Import) refuses them while S3 is used.
 void main() {
   TestWidgetsFlutterBinding.ensureInitialized();
 
@@ -34,13 +39,18 @@ void main() {
 
   /// Seeds prefs with S3 credentials, [mode] and [endpoint], then loads the
   /// session from them.
-  Future<void> setUpPrefs({required StorageMode mode, String? endpoint}) async {
+  Future<void> setUpPrefs({
+    required StorageMode mode,
+    String? endpoint,
+    String? bucket,
+  }) async {
     SharedPreferences.setMockInitialValues(<String, Object>{
       'flutter.Directory': tmp.path,
       'flutter.StorageMode': mode.name,
       'flutter.S3AccessKeyId': 'AKIA_TEST',
       'flutter.S3SecretAccessKey': 'secret_test',
       'flutter.S3Endpoint': ?endpoint,
+      'flutter.S3Bucket': ?bucket,
     });
     prefs = PreferencesService();
     session = S3SessionController(preferences: prefs);
@@ -85,6 +95,36 @@ void main() {
       expect(minio, contains('_bad.example'));
       expect(minio, isNot(startsWith('MinioError')));
     });
+
+    test('rejects an invalid bucket name; bucket names in use still pass', () {
+      expect(
+        MinioS3ObjectClient.configError(_config(kDefaultS3Endpoint, 'Bad_B')),
+        'Invalid bucket name: Bad_B',
+      );
+      for (final bucket in [
+        kDefaultS3Bucket,
+        'my-notes',
+        'other-bucket',
+        'ql-backup-test',
+      ]) {
+        expect(
+          MinioS3ObjectClient.configError(_config(kDefaultS3Endpoint, bucket)),
+          isNull,
+          reason: bucket,
+        );
+      }
+    });
+
+    test('the constructor throws S3ConfigException for the same cases', () {
+      expect(
+        () => MinioS3ObjectClient(_config('http://')),
+        throwsA(isA<S3ConfigException>()),
+      );
+      expect(
+        () => MinioS3ObjectClient(_config(kDefaultS3Endpoint, 'Bad_B')),
+        throwsA(isA<S3ConfigException>()),
+      );
+    });
   });
 
   group('resolveBrowserSources', () {
@@ -110,6 +150,33 @@ void main() {
         });
       }
     }
+
+    test('invalid bucket name: lists local notes and reports it', () async {
+      await setUpPrefs(mode: StorageMode.both, bucket: 'Bad_B');
+      final active = ActiveNoteStore(preferences: prefs, session: session);
+
+      final sources = await active.resolveBrowserSources();
+      final listed = await sources.list();
+
+      expect(sources.s3, isNull);
+      expect(sources.s3SetupError, 'Invalid bucket name: Bad_B');
+      expect(sources.s3ListFailed, isTrue);
+      expect(listed.single.id, localId);
+    });
+
+    test('errors that are not about the settings still propagate', () async {
+      await setUpPrefs(mode: StorageMode.s3);
+      final active = ActiveNoteStore(
+        preferences: prefs,
+        session: session,
+        s3ClientFactory: (_) => throw StateError('secure storage broke'),
+      );
+
+      await expectLater(
+        active.resolveBrowserSources(),
+        throwsA(isA<StateError>()),
+      );
+    });
 
     test('valid endpoint builds S3 as before', () async {
       await setUpPrefs(mode: StorageMode.s3);
@@ -153,6 +220,152 @@ void main() {
         expect(listed.single.id, localId);
       },
     );
+  });
+
+  group('createNote', () {
+    const stamp = '260927-101500';
+    final now = DateTime(2026, 9, 27, 10, 15);
+
+    for (final mode in [StorageMode.s3, StorageMode.both]) {
+      test('${mode.name} mode, invalid endpoint: saves locally and reports '
+          'the settings, not an outage', () async {
+        await setUpPrefs(mode: mode, endpoint: 'http://');
+        final active = ActiveNoteStore(preferences: prefs, session: session);
+
+        final result = await active.createNote('kept locally', now: now);
+
+        expect(result.outcome, NoteCreateOutcome.savedLocalS3SettingsInvalid);
+        expect(result.entry.id, 'ql-$stamp.md');
+        expect(
+          await File(p.join(tmp.path, 'ql-$stamp.md')).readAsString(),
+          'kept locally',
+        );
+        expect(session.isDegraded, isFalse);
+      });
+    }
+
+    test('valid settings save to S3 as before', () async {
+      await setUpPrefs(mode: StorageMode.s3);
+      final fake = MemoryS3ObjectClient();
+      final active = ActiveNoteStore(
+        preferences: prefs,
+        session: session,
+        s3ClientFactory: (_) => fake,
+      );
+
+      final result = await active.createNote('to bucket', now: now);
+
+      expect(result.outcome, NoteCreateOutcome.saved);
+      expect(fake.objects.keys, ['ql-$stamp.md']);
+    });
+
+    testWidgets('home screen says to check Preferences', (tester) async {
+      await setUpPrefs(mode: StorageMode.both, endpoint: 'http://');
+      await tester.pumpWidget(
+        MaterialApp(
+          home: HomeScreen(
+            session: session,
+            activeStore: ActiveNoteStore(preferences: prefs, session: session),
+          ),
+        ),
+      );
+      await pumpWithIo(tester);
+
+      await tester.enterText(find.byType(TextField), 'typed note');
+      await tester.tap(find.widgetWithText(FilledButton, 'Log text'));
+      await pumpWithIo(tester);
+
+      expect(
+        find.text(
+          'S3 settings invalid — the note was saved on this device. '
+          'Check Preferences.',
+        ),
+        findsOneWidget,
+      );
+      expect(find.textContaining('S3 unavailable'), findsNothing);
+      // Let the snackbar's display timer run out on the fake clock.
+      await tester.pump(const Duration(seconds: 5));
+    });
+  });
+
+  group('settings import', () {
+    SettingsBackupService service() =>
+        SettingsBackupService(preferences: prefs, session: session);
+
+    test(
+      'refuses an invalid endpoint for an S3 mode and writes nothing',
+      () async {
+        await setUpPrefs(mode: StorageMode.local);
+        const incoming = QuicklogSettings(
+          directory: '/elsewhere',
+          storageMode: StorageMode.both,
+          s3Endpoint: 'http://',
+        );
+
+        await expectLater(
+          service().apply(incoming),
+          throwsA(
+            isA<SettingsImportException>().having(
+              (e) => e.message,
+              'message',
+              'Invalid S3 settings: S3 endpoint has no host: http://',
+            ),
+          ),
+        );
+        expect(await prefs.directory(), tmp.path);
+        expect(await prefs.storageMode(), StorageMode.local);
+        expect(session.preferredMode, StorageMode.local);
+        expect((await prefs.s3Config()).endpoint, kDefaultS3Endpoint);
+      },
+    );
+
+    test('checks against the current mode when the file has none', () async {
+      await setUpPrefs(mode: StorageMode.s3);
+      await expectLater(
+        service().apply(const QuicklogSettings(s3Bucket: 'Bad_B')),
+        throwsA(isA<SettingsImportException>()),
+      );
+      expect((await prefs.s3Config()).bucket, kDefaultS3Bucket);
+    });
+
+    test('local mode imports an unused invalid endpoint', () async {
+      await setUpPrefs(mode: StorageMode.s3);
+      await service().apply(
+        const QuicklogSettings(
+          storageMode: StorageMode.local,
+          s3Endpoint: 'http://',
+        ),
+      );
+      expect(session.preferredMode, StorageMode.local);
+      expect((await prefs.s3Config()).endpoint, 'http://');
+    });
+  });
+
+  group('quicklog_drain', () {
+    const creds = {
+      'GARAGE_ACCESS_KEY_ID': 'AKIA_TEST',
+      'GARAGE_SECRET_ACCESS_KEY': 'secret_test',
+    };
+
+    test('reports an invalid endpoint instead of throwing', () {
+      expect(
+        drain.configProblem(
+          drain.configFromEnv({...creds, 'GARAGE_ENDPOINT': 'http://'}),
+        ),
+        'invalid S3 settings: S3 endpoint has no host: http://',
+      );
+    });
+
+    test('still reports missing credentials first', () {
+      expect(
+        drain.configProblem(drain.configFromEnv({'GARAGE_ENDPOINT': 'x://'})),
+        startsWith('missing GARAGE_ACCESS_KEY_ID'),
+      );
+    });
+
+    test('accepts valid settings', () {
+      expect(drain.configProblem(drain.configFromEnv(creds)), isNull);
+    });
   });
 
   group('entry browser', () {
@@ -225,10 +438,13 @@ void main() {
     });
   });
 
-  group('Preferences Save', () {
+  group('Preferences', () {
+    late _FakeSettingsFiles files;
+
     /// Opens Preferences on top of a host page so a successful Save (which
     /// pops) is observable.
     Future<void> openPreferences(WidgetTester tester) async {
+      files = _FakeSettingsFiles();
       final active = ActiveNoteStore(preferences: prefs, session: session);
       await tester.pumpWidget(
         MaterialApp(
@@ -236,8 +452,11 @@ void main() {
             builder: (ctx) => TextButton(
               onPressed: () => Navigator.of(ctx).push(
                 MaterialPageRoute<void>(
-                  builder: (_) =>
-                      PreferencesScreen(session: session, activeStore: active),
+                  builder: (_) => PreferencesScreen(
+                    session: session,
+                    activeStore: active,
+                    settingsFiles: files,
+                  ),
                 ),
               ),
               child: const Text('host'),
@@ -252,6 +471,22 @@ void main() {
     Future<String?> savedEndpoint(WidgetTester tester) async =>
         tester.runAsync(() async => (await prefs.s3Config()).endpoint);
 
+    Future<StorageMode?> savedMode(WidgetTester tester) async =>
+        tester.runAsync(() => prefs.storageMode());
+
+    /// Scrolls the lazily built Preferences list to [finder] and taps it.
+    Future<void> tapScrolled(WidgetTester tester, Finder finder) async {
+      await tester.scrollUntilVisible(
+        finder,
+        200,
+        scrollable: find.byType(Scrollable).first,
+      );
+      await tester.tap(finder);
+      await pumpWithIo(tester);
+    }
+
+    const rejected = 'Invalid S3 settings: S3 endpoint has no host: http://';
+
     testWidgets('rejects an invalid endpoint while S3 is in use', (
       tester,
     ) async {
@@ -265,11 +500,67 @@ void main() {
       await tester.tap(find.byTooltip('Save'));
       await pumpWithIo(tester);
 
-      expect(
-        find.text('Invalid S3 settings: S3 endpoint has no host: http://'),
-        findsOneWidget,
-      );
+      expect(find.text(rejected), findsOneWidget);
       expect(find.byType(PreferencesScreen), findsOneWidget);
+      expect(await savedEndpoint(tester), kDefaultS3Endpoint);
+      expect(await savedMode(tester), StorageMode.s3);
+    });
+
+    testWidgets('switching local to S3 checks an already-saved bad endpoint', (
+      tester,
+    ) async {
+      await setUpPrefs(mode: StorageMode.local, endpoint: 'http://');
+      await openPreferences(tester);
+
+      await tester.tap(find.text('Local + S3'));
+      await tester.pump();
+      await tester.tap(find.byTooltip('Save'));
+      await pumpWithIo(tester);
+
+      expect(find.text(rejected), findsOneWidget);
+      expect(find.byType(PreferencesScreen), findsOneWidget);
+      expect(await savedMode(tester), StorageMode.local);
+      expect(session.preferredMode, StorageMode.local);
+    });
+
+    testWidgets('Export refuses an invalid endpoint before saving anything', (
+      tester,
+    ) async {
+      await setUpPrefs(mode: StorageMode.s3, endpoint: kDefaultS3Endpoint);
+      await openPreferences(tester);
+
+      await tester.enterText(
+        find.byKey(const ValueKey('prefs.s3Endpoint')),
+        'http://',
+      );
+      await tapScrolled(tester, find.text('Export settings'));
+
+      expect(find.text(rejected), findsOneWidget);
+      expect(find.widgetWithText(FilledButton, 'Export'), findsNothing);
+      expect(files.saved, isEmpty);
+      expect(await savedEndpoint(tester), kDefaultS3Endpoint);
+    });
+
+    testWidgets('Import refuses an invalid endpoint and changes nothing', (
+      tester,
+    ) async {
+      await setUpPrefs(mode: StorageMode.local);
+      await openPreferences(tester);
+      files.toOpen = encodeSettingsBackup(
+        const QuicklogSettings(
+          storageMode: StorageMode.s3,
+          s3Endpoint: 'http://',
+        ),
+        exportedAt: DateTime.utc(2026, 9, 27),
+      );
+
+      await tapScrolled(tester, find.text('Import settings'));
+      await tester.tap(find.widgetWithText(FilledButton, 'Import'));
+      await pumpWithIo(tester);
+
+      expect(find.text('Import failed'), findsOneWidget);
+      expect(find.text(rejected), findsOneWidget);
+      expect(await savedMode(tester), StorageMode.local);
       expect(await savedEndpoint(tester), kDefaultS3Endpoint);
     });
 
@@ -303,10 +594,29 @@ void main() {
   });
 }
 
-S3Config _config(String endpoint) => S3Config(
-  endpoint: endpoint,
-  region: kDefaultS3Region,
-  bucket: kDefaultS3Bucket,
-  accessKeyId: 'AKIA_TEST',
-  secretAccessKey: 'secret_test',
-);
+S3Config _config(String endpoint, [String bucket = kDefaultS3Bucket]) =>
+    S3Config(
+      endpoint: endpoint,
+      region: kDefaultS3Region,
+      bucket: bucket,
+      accessKeyId: 'AKIA_TEST',
+      secretAccessKey: 'secret_test',
+    );
+
+/// In-memory [SettingsFileGateway]: records saves, serves [toOpen].
+class _FakeSettingsFiles implements SettingsFileGateway {
+  final List<String> saved = [];
+  String? toOpen;
+
+  @override
+  Future<String?> save({
+    required String suggestedName,
+    required String content,
+  }) async {
+    saved.add(content);
+    return suggestedName;
+  }
+
+  @override
+  Future<String?> open() async => toOpen;
+}

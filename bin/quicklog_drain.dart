@@ -22,12 +22,10 @@ void main(List<String> args) async {
     return;
   }
 
-  final config = _configFromEnv();
-  if (!config.hasCredentials) {
-    stderr.writeln(
-      'quicklog_drain: missing GARAGE_ACCESS_KEY_ID / '
-      'GARAGE_SECRET_ACCESS_KEY (and related GARAGE_* env vars)',
-    );
+  final config = configFromEnv(Platform.environment);
+  final problem = configProblem(config);
+  if (problem != null) {
+    stderr.writeln('quicklog_drain: $problem');
     exitCode = 1;
     return;
   }
@@ -49,8 +47,19 @@ void main(List<String> args) async {
   }
 }
 
-S3Config _configFromEnv() {
-  final env = Platform.environment;
+/// Why [config] cannot be drained from, or null when it can. Checked before
+/// any client is built, so bad settings exit cleanly instead of throwing.
+String? configProblem(S3Config config) {
+  if (!config.hasCredentials) {
+    return 'missing GARAGE_ACCESS_KEY_ID / '
+        'GARAGE_SECRET_ACCESS_KEY (and related GARAGE_* env vars)';
+  }
+  final invalid = MinioS3ObjectClient.configError(config);
+  return invalid == null ? null : 'invalid S3 settings: $invalid';
+}
+
+/// [S3Config] from the `GARAGE_*` variables in [env], with defaults.
+S3Config configFromEnv(Map<String, String> env) {
   return S3Config(
     endpoint: env['GARAGE_ENDPOINT']?.trim().isNotEmpty == true
         ? env['GARAGE_ENDPOINT']!.trim()

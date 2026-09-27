@@ -212,6 +212,12 @@ enum NoteCreateOutcome {
   /// Dual write: the S3 copy landed but the local write failed; the note is
   /// in the bucket only.
   savedS3Only,
+
+  /// S3 was part of the target but the saved S3 settings cannot build a
+  /// client ([S3ConfigException], e.g. an invalid endpoint); the note is on
+  /// the local device only. A settings mistake, not an outage, so no
+  /// degrade window is armed: the fix is in Preferences.
+  savedLocalS3SettingsInvalid,
 }
 
 /// The outcome of [ActiveNoteStore.createNote].
@@ -346,8 +352,21 @@ class ActiveNoteStore {
         localError = e;
       }
     }
+    // Where the note lands when S3 cannot take it: the dual-write local
+    // copy, or (s3-only) an immediate local write with the same stamp.
+    Future<NoteCreateResult> keepLocal(NoteCreateOutcome outcome) async {
+      final le = localError;
+      if (le != null) {
+        // Both backends failed: the note is nowhere.
+        throw le;
+      }
+      final le2 = localEntry;
+      if (le2 != null) return (entry: le2, outcome: outcome);
+      return (entry: await local.create(text, now: stamp), outcome: outcome);
+    }
+
     try {
-      final s3 = await _buildS3Store(markFailures: true);
+      final s3 = _s3StoreFor(config, markFailures: true);
       final s3Entry = await s3.create(text, now: stamp);
       final le = localError;
       if (le != null) {
@@ -373,24 +392,14 @@ class ActiveNoteStore {
       // Bad input (or broken config) before anything was written: surface
       // it; there is no copy to fall back to.
       rethrow;
+    } on S3ConfigException {
+      // Saved settings cannot build a client: no request was sent, so no
+      // degrade window either. Keep the note local and point at Preferences.
+      return keepLocal(NoteCreateOutcome.savedLocalS3SettingsInvalid);
     } catch (_) {
       // S3 transport / service failure: the store's onFailure hook already
       // armed the degrade window.
-      final le = localError;
-      if (le != null) {
-        // Both backends failed: the note is nowhere.
-        throw le;
-      }
-      final le2 = localEntry;
-      if (le2 != null) {
-        // Dual write: the local copy is the safe one.
-        return (entry: le2, outcome: NoteCreateOutcome.savedLocalOnly);
-      }
-      // s3-only mode: immediate local fallback with the same stamp.
-      return (
-        entry: await local.create(text, now: stamp),
-        outcome: NoteCreateOutcome.savedLocalOnly,
-      );
+      return keepLocal(NoteCreateOutcome.savedLocalOnly);
     }
   }
 
@@ -417,15 +426,15 @@ class ActiveNoteStore {
     }
     final S3NoteStore s3;
     try {
-      s3 = await _buildS3Store(markFailures: false);
-    } on Exception catch (e) {
-      // A saved endpoint that cannot build a client (malformed URL, host
-      // Minio rejects) must not blank the browser: list local notes only
+      s3 = _s3StoreFor(config, markFailures: false);
+    } on S3ConfigException catch (e) {
+      // Saved settings that cannot build a client (malformed endpoint,
+      // invalid bucket) must not blank the browser: list local notes only
       // and report why S3 is missing ([BrowserNoteSources.list] flags it).
       return BrowserNoteSources(
         local: local,
         mergeWhenS3Preferred: true,
-        s3SetupError: describeS3ConfigError(e),
+        s3SetupError: e.message,
       );
     }
     final dualWrite = _session.preferredMode == StorageMode.both;
@@ -454,9 +463,14 @@ class ActiveNoteStore {
         'S3 credentials are not configured. Set access key and secret in Preferences.',
       );
     }
-    final client = _s3ClientFactory(config);
+    return _s3StoreFor(config, markFailures: markFailures);
+  }
+
+  /// Store over a client built from the already-loaded [config]. Throws
+  /// [S3ConfigException] when the settings cannot build a client.
+  S3NoteStore _s3StoreFor(S3Config config, {required bool markFailures}) {
     return S3NoteStore(
-      client,
+      _s3ClientFactory(config),
       onFailure: markFailures ? () => _session.markS3Failed() : null,
     );
   }
