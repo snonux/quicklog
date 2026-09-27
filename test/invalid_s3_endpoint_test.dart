@@ -18,6 +18,7 @@ import 'package:shared_preferences/shared_preferences.dart';
 
 import '../bin/quicklog_drain.dart' as drain;
 import 'io_pump.dart';
+import 'support/memory_s3_object_client.dart';
 
 /// Saved S3 settings that no client can be built from (e.g. an invalid
 /// endpoint) must not blank the entry browser or lose a note, and every path

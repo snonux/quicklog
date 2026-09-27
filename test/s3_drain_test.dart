@@ -3,7 +3,8 @@ import 'dart:io';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:path/path.dart' as p;
 import 'package:quicklog/services/s3_drain.dart';
-import 'package:quicklog/services/s3_object_client.dart';
+
+import 'support/memory_s3_object_client.dart';
 
 void main() {
   late Directory dest;

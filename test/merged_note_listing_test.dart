@@ -5,7 +5,8 @@ import 'package:path/path.dart' as p;
 import 'package:quicklog/services/log_service.dart';
 import 'package:quicklog/services/merged_note_listing.dart';
 import 'package:quicklog/services/s3_note_store.dart';
-import 'package:quicklog/services/s3_object_client.dart';
+
+import 'support/memory_s3_object_client.dart';
 
 void main() {
   group('mergeNoteLists', () {

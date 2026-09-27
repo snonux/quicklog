@@ -6,7 +6,8 @@ import 'package:quicklog/services/browser_note_sources.dart';
 import 'package:quicklog/services/log_service.dart';
 import 'package:quicklog/services/merged_note_listing.dart';
 import 'package:quicklog/services/s3_note_store.dart';
-import 'package:quicklog/services/s3_object_client.dart';
+
+import 'support/memory_s3_object_client.dart';
 
 void main() {
   late Directory tmp;

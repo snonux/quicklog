@@ -8,6 +8,8 @@ import 'package:quicklog/services/s3_object_client.dart';
 import 'package:quicklog/services/s3_session_controller.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
+import 'support/memory_s3_object_client.dart';
+
 /// Pins the [ActiveNoteStore.createNote] outcome matrix per storage mode on
 /// the paths that s3_active_store_test.dart and invalid_s3_endpoint_test.dart
 /// do not cover: when S3 is skipped, and which error wins when the local

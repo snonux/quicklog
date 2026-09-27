@@ -11,11 +11,11 @@ import 'package:quicklog/services/active_note_store.dart';
 import 'package:quicklog/services/log_service.dart';
 import 'package:quicklog/services/merged_note_listing.dart';
 import 'package:quicklog/services/preferences.dart';
-import 'package:quicklog/services/s3_object_client.dart';
 import 'package:quicklog/services/s3_session_controller.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
 import 'io_pump.dart';
+import 'support/memory_s3_object_client.dart';
 
 /// Fake bucket that counts GETs per key and can fail one key's next GET,
 /// PUT or DELETE.
