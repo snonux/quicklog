@@ -77,6 +77,15 @@ class MinioS3ObjectClient implements S3ObjectClient {
     }
   }
 
+  /// Why saved or about-to-be-saved settings would be refused, or null.
+  ///
+  /// The one validation rule shared by Save/Export in Preferences, settings
+  /// import and the drain CLI: [config] is judged as it will be read back
+  /// ([S3Config.normalized]) by [configError]. Nothing is checked when
+  /// [usesS3] is false, so settings the storage mode ignores never block.
+  static String? settingsError(S3Config config, {bool usesS3 = true}) =>
+      usesS3 ? configError(config.normalized()) : null;
+
   static Minio _minioFor(S3Config config) => Minio(
     endPoint: config.host,
     port: config.port,

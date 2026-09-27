@@ -285,9 +285,10 @@ class SettingsBackupService {
       secretAccessKey: settings.s3SecretAccessKey ?? current.secretAccessKey,
     );
     final mode = settings.storageMode ?? await _prefs.storageMode();
-    final problem = mode.writesToS3
-        ? MinioS3ObjectClient.configError(_asReadBack(s3))
-        : null;
+    final problem = MinioS3ObjectClient.settingsError(
+      s3,
+      usesS3: mode.writesToS3,
+    );
     if (problem != null) {
       throw SettingsImportException('Invalid S3 settings: $problem');
     }
@@ -307,21 +308,6 @@ class SettingsBackupService {
 
     final importedMode = settings.storageMode;
     if (importedMode != null) await _session.setPreferredMode(importedMode);
-  }
-
-  /// [config] as [PreferencesService.s3Config] will read it back once
-  /// stored: a blank or space-padded bucket is trimmed, and an empty one
-  /// falls back to [kDefaultS3Bucket]. (The endpoint needs no mapping:
-  /// [S3Config] already trims it and defaults an empty one.)
-  static S3Config _asReadBack(S3Config config) {
-    final bucket = config.bucket.trim();
-    return S3Config(
-      endpoint: config.endpoint,
-      region: config.region,
-      bucket: bucket.isEmpty ? kDefaultS3Bucket : bucket,
-      accessKeyId: config.accessKeyId,
-      secretAccessKey: config.secretAccessKey,
-    );
   }
 
   /// Validates [text] and applies it. Nothing is written when validation

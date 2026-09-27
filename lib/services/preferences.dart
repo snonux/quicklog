@@ -110,18 +110,12 @@ class PreferencesService {
 
   Future<S3Config> s3Config() async {
     final prefs = await SharedPreferences.getInstance();
-    return S3Config(
-      endpoint: prefs.getString(_kS3Endpoint)?.trim().isNotEmpty == true
-          ? prefs.getString(_kS3Endpoint)!.trim()
-          : kDefaultS3Endpoint,
-      region: prefs.getString(_kS3Region)?.trim().isNotEmpty == true
-          ? prefs.getString(_kS3Region)!.trim()
-          : kDefaultS3Region,
-      bucket: prefs.getString(_kS3Bucket)?.trim().isNotEmpty == true
-          ? prefs.getString(_kS3Bucket)!.trim()
-          : kDefaultS3Bucket,
-      accessKeyId: prefs.getString(_kS3AccessKeyId) ?? '',
-      secretAccessKey: prefs.getString(_kS3SecretAccessKey) ?? '',
+    return S3Config.fromRaw(
+      endpoint: prefs.getString(_kS3Endpoint),
+      region: prefs.getString(_kS3Region),
+      bucket: prefs.getString(_kS3Bucket),
+      accessKeyId: prefs.getString(_kS3AccessKeyId),
+      secretAccessKey: prefs.getString(_kS3SecretAccessKey),
     );
   }
 

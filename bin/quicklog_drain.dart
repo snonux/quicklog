@@ -54,24 +54,18 @@ String? configProblem(S3Config config) {
     return 'missing GARAGE_ACCESS_KEY_ID / '
         'GARAGE_SECRET_ACCESS_KEY (and related GARAGE_* env vars)';
   }
-  final invalid = MinioS3ObjectClient.configError(config);
+  final invalid = MinioS3ObjectClient.settingsError(config);
   return invalid == null ? null : 'invalid S3 settings: $invalid';
 }
 
 /// [S3Config] from the `GARAGE_*` variables in [env], with defaults.
 S3Config configFromEnv(Map<String, String> env) {
-  return S3Config(
-    endpoint: env['GARAGE_ENDPOINT']?.trim().isNotEmpty == true
-        ? env['GARAGE_ENDPOINT']!.trim()
-        : kDefaultS3Endpoint,
-    region: env['GARAGE_REGION']?.trim().isNotEmpty == true
-        ? env['GARAGE_REGION']!.trim()
-        : kDefaultS3Region,
-    bucket: env['GARAGE_BUCKET']?.trim().isNotEmpty == true
-        ? env['GARAGE_BUCKET']!.trim()
-        : kDefaultS3Bucket,
-    accessKeyId: env['GARAGE_ACCESS_KEY_ID'] ?? '',
-    secretAccessKey: env['GARAGE_SECRET_ACCESS_KEY'] ?? '',
+  return S3Config.fromRaw(
+    endpoint: env['GARAGE_ENDPOINT'],
+    region: env['GARAGE_REGION'],
+    bucket: env['GARAGE_BUCKET'],
+    accessKeyId: env['GARAGE_ACCESS_KEY_ID'],
+    secretAccessKey: env['GARAGE_SECRET_ACCESS_KEY'],
   );
 }
 

@@ -106,16 +106,10 @@ class _PreferencesScreenState extends State<PreferencesScreen>
   }
 
   S3Config _readS3Config() {
-    return S3Config(
-      endpoint: _endpointController.text.trim().isEmpty
-          ? kDefaultS3Endpoint
-          : _endpointController.text.trim(),
-      region: _regionController.text.trim().isEmpty
-          ? kDefaultS3Region
-          : _regionController.text.trim(),
-      bucket: _bucketController.text.trim().isEmpty
-          ? kDefaultS3Bucket
-          : _bucketController.text.trim(),
+    return S3Config.fromRaw(
+      endpoint: _endpointController.text,
+      region: _regionController.text,
+      bucket: _bucketController.text,
       accessKeyId: _accessKeyController.text,
       secretAccessKey: _secretController.text,
     );
@@ -148,9 +142,10 @@ class _PreferencesScreenState extends State<PreferencesScreen>
   /// with a snackbar instead of surfacing later as a broken S3 listing.
   /// Returns true when the form may be persisted.
   bool _s3SettingsPersistable() {
-    final problem = _storageMode.writesToS3
-        ? MinioS3ObjectClient.configError(_readS3Config())
-        : null;
+    final problem = MinioS3ObjectClient.settingsError(
+      _readS3Config(),
+      usesS3: _storageMode.writesToS3,
+    );
     if (problem == null) return true;
     ScaffoldMessenger.of(context).showSnackBar(
       SnackBar(

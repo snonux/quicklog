@@ -13,11 +13,47 @@ class S3Config {
     required this.secretAccessKey,
   });
 
+  /// Settings as every reader sees them: [endpoint], [region] and [bucket]
+  /// are trimmed, and a missing or blank one falls back to its default
+  /// ([kDefaultS3Endpoint], [kDefaultS3Region], [kDefaultS3Bucket]). The
+  /// credentials are taken verbatim (absent means empty), never trimmed.
+  ///
+  /// The single place stored preferences, the Preferences form, imported
+  /// settings and the drain CLI's environment become an [S3Config]. The
+  /// endpoint keeps its scheme as given; [host], [port] and [useSSL] add
+  /// `https://` when it has none.
+  factory S3Config.fromRaw({
+    String? endpoint,
+    String? region,
+    String? bucket,
+    String? accessKeyId,
+    String? secretAccessKey,
+  }) {
+    return S3Config(
+      endpoint: _trimmedOr(endpoint, kDefaultS3Endpoint),
+      region: _trimmedOr(region, kDefaultS3Region),
+      bucket: _trimmedOr(bucket, kDefaultS3Bucket),
+      accessKeyId: accessKeyId ?? '',
+      secretAccessKey: secretAccessKey ?? '',
+    );
+  }
+
   final String endpoint;
   final String region;
   final String bucket;
   final String accessKeyId;
   final String secretAccessKey;
+
+  /// This config as `PreferencesService.s3Config` reads it back once stored
+  /// (see [S3Config.fromRaw]). Validate this, not the raw form input, so a
+  /// value that is only blank or space-padded is judged by what will be used.
+  S3Config normalized() => S3Config.fromRaw(
+    endpoint: endpoint,
+    region: region,
+    bucket: bucket,
+    accessKeyId: accessKeyId,
+    secretAccessKey: secretAccessKey,
+  );
 
   bool get hasCredentials =>
       accessKeyId.trim().isNotEmpty && secretAccessKey.trim().isNotEmpty;
@@ -44,10 +80,15 @@ class S3Config {
   }
 
   static String _normalizeEndpoint(String raw) {
-    final trimmed = raw.trim();
-    if (trimmed.isEmpty) return kDefaultS3Endpoint;
+    final trimmed = _trimmedOr(raw, kDefaultS3Endpoint);
     if (trimmed.contains('://')) return trimmed;
     return 'https://$trimmed';
+  }
+
+  /// [raw] trimmed, or [fallback] when it is null or blank.
+  static String _trimmedOr(String? raw, String fallback) {
+    final trimmed = raw?.trim() ?? '';
+    return trimmed.isEmpty ? fallback : trimmed;
   }
 
   factory S3Config.defaults({
