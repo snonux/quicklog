@@ -177,22 +177,26 @@ class DualWriteS3Repair {
   }) async {
     await _ensureLoaded();
     var done = 0;
-    for (final id in List<String>.of(_uploads)) {
-      try {
-        final text = await local.read(id);
-        await s3.update(id, text);
-        // A save during the put leaves the newer device text queued.
-        final current = await local.read(id);
-        if (current != text) continue;
-        await _clear(id);
-        done++;
-      } on PathNotFoundException {
-        // Nothing on device to put. Dropping the object matches the primary,
-        // unless this folder is not the one the id was queued in.
-        if (await _leaveUploads(local)) continue;
-        await _enqueueDelete(id);
-      } catch (_) {
-        // Leave the upload queued for the next recovery.
+    // Another notes folder must not supply the bytes for these ids, and
+    // must not turn a missing file there into a bucket delete.
+    if (!await _leaveUploads(local)) {
+      for (final id in List<String>.of(_uploads)) {
+        try {
+          final text = await local.read(id);
+          await s3.update(id, text);
+          // A save during the put leaves the newer device text queued.
+          final current = await local.read(id);
+          if (current != text) continue;
+          await _clear(id);
+          done++;
+        } on PathNotFoundException {
+          // Nothing on device to put. Dropping the object matches the
+          // primary, unless this folder is not the one the id was queued in.
+          if (await _leaveUploads(local)) continue;
+          await _enqueueDelete(id);
+        } catch (_) {
+          // Leave the upload queued for the next recovery.
+        }
       }
     }
     for (final id in List<String>.of(_deletes)) {

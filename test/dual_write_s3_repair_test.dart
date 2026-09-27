@@ -193,23 +193,28 @@ void main() {
       expect(utf8.decode(client.objects[id]!), 's3 old');
     });
 
-    test('replay leaves the id queued when the put still fails', () async {
+    test('replay leaves the id queued as an upload when the put still fails',
+        () async {
+      SharedPreferences.setMockInitialValues(<String, Object>{
+        'flutter.Directory': tmp.path,
+      });
+      final prefs = PreferencesService();
+      final queued = DualWriteS3Repair(preferences: prefs);
       await File(p.join(tmp.path, id)).writeAsString('edited');
       await client.putText(id, 's3 old');
-      await repairs.enqueueUpload(id);
+      await queued.enqueueUpload(id);
       client.failNext = Exception('put failed');
 
-      final repaired = await repairs.replay(local: local, s3: s3);
+      final repaired = await queued.replay(local: local, s3: s3);
 
       expect(repaired, 0);
       expect(utf8.decode(client.objects[id]!), 's3 old');
-      expect(await repairs.hasPending(), isTrue);
+      expect(await prefs.dualWritePendingUploads(), [id]);
+      expect(await prefs.dualWritePendingDeletes(), isEmpty);
 
-      // A failed put must stay an upload. Recasting it as a delete would
-      // remove the object on the next replay.
-      await repairs.replay(local: local, s3: s3);
+      await queued.replay(local: local, s3: s3);
       expect(utf8.decode(client.objects[id]!), 'edited');
-      expect(await repairs.hasPending(), isFalse);
+      expect(await prefs.dualWritePendingUploads(), isEmpty);
     });
 
     test('a failed S3 list still queues an edit of the local row', () async {
@@ -484,6 +489,95 @@ void main() {
       expect(utf8.decode(client.objects[id]!), 'edited');
     });
 
+    test('an S3-only row is read from the device file when it exists', () async {
+      await File(p.join(tmp.path, id)).writeAsString('device text');
+      await client.putText(id, 'bucket text');
+      final src = sources();
+
+      expect(await src.storeFor(_remoteOnly(id)).read(id), 'device text');
+    });
+
+    test('replay does not upload a same id from another notes folder', () async {
+      SharedPreferences.setMockInitialValues(<String, Object>{
+        'flutter.Directory': tmp.path,
+      });
+      final prefs = PreferencesService();
+      final queued = DualWriteS3Repair(preferences: prefs);
+      await File(p.join(tmp.path, id)).writeAsString('original edit');
+      await client.putText(id, 'remote');
+      await queued.enqueueUpload(id);
+      final other = await Directory.systemTemp.createTemp('ql-other-');
+      addTearDown(() async {
+        if (await other.exists()) await other.delete(recursive: true);
+      });
+      await File(p.join(other.path, id)).writeAsString('other folder');
+
+      final repaired = await queued.replay(
+        local: LocalNoteStore(other.path),
+        s3: s3,
+      );
+
+      expect(repaired, 0);
+      expect(utf8.decode(client.objects[id]!), 'remote');
+      expect(await prefs.dualWritePendingUploads(), [id]);
+    });
+
+    test('a lost delete response still re-uploads the device file', () async {
+      final failing = _FailingDeleteLocal(tmp.path);
+      final remoteClient = _DeleteThenThrow();
+      final remote = S3NoteStore(remoteClient);
+      final src = BrowserNoteSources(
+        local: failing,
+        s3: remote,
+        mergeWhenS3Preferred: true,
+        preferLocalReads: true,
+        keepLocalCopies: true,
+        pendingRepairs: repairs,
+      );
+      await File(p.join(tmp.path, id)).writeAsString('keep me');
+      await remoteClient.putText(id, 'remote');
+      failing.fail = true;
+
+      await expectLater(
+        src.delete(both(id)),
+        throwsA(predicate<Object>((e) => '$e'.contains('lost delete'))),
+      );
+
+      expect(File(p.join(tmp.path, id)).existsSync(), isTrue);
+      expect(remoteClient.objects.containsKey(id), isFalse);
+      expect(await repairs.hasPending(), isTrue);
+
+      failing.fail = false;
+      await repairs.replay(local: failing, s3: remote);
+      expect(utf8.decode(remoteClient.objects[id]!), 'keep me');
+      expect(await repairs.hasPending(), isFalse);
+    });
+
+    test('an unreadable bucket after a lost put does not delete the edit', () async {
+      final remoteClient = _PutThenUnreadable();
+      final remote = S3NoteStore(remoteClient);
+      final src = BrowserNoteSources(
+        local: local,
+        s3: remote,
+        mergeWhenS3Preferred: true,
+        preferLocalReads: true,
+        keepLocalCopies: true,
+        pendingRepairs: repairs,
+      );
+      remoteClient.objects[id] = utf8.encode('old');
+      await repairs.enqueueDelete(id);
+
+      await expectLater(
+        src.update(_remoteOnly(id), 'edited'),
+        throwsA(predicate<Object>((e) => '$e'.contains('lost response'))),
+      );
+
+      expect(utf8.decode(remoteClient.objects[id]!), 'edited');
+      expect(await repairs.hasPending(), isFalse);
+      await repairs.replay(local: local, s3: remote);
+      expect(utf8.decode(remoteClient.objects[id]!), 'edited');
+    });
+
     test('repair lists share one preference value', () async {
       SharedPreferences.setMockInitialValues(<String, Object>{
         'flutter.Directory': tmp.path,
@@ -680,6 +774,33 @@ void main() {
       expect(await prefs.dualWritePendingUploads(), isEmpty);
     });
   });
+}
+
+/// Removes the object, then throws, as a delete whose response was lost.
+class _DeleteThenThrow extends MemoryS3ObjectClient {
+  @override
+  Future<void> deleteObject(String key) async {
+    objects.remove(key);
+    throw Exception('lost delete');
+  }
+}
+
+/// Stores the object, then throws, and the following read also fails.
+class _PutThenUnreadable extends MemoryS3ObjectClient {
+  @override
+  Future<void> putObject(
+    String key,
+    List<int> bytes, {
+    String contentType = 'text/markdown',
+  }) async {
+    objects[key] = List<int>.from(bytes);
+    throw Exception('lost response');
+  }
+
+  @override
+  Future<List<int>> getObject(String key) async {
+    throw Exception('read failed');
+  }
 }
 
 class _FailingDeleteLocal extends LocalNoteStore {

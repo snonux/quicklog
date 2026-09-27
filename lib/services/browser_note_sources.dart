@@ -56,12 +56,20 @@ class BrowserNoteSources {
   /// not apply; otherwise the local copy.
   NoteStore storeFor(LocatedLogEntry located) {
     final remote = s3;
-    if (located.hasS3 &&
-        remote != null &&
-        !(preferLocalReads && located.hasLocal)) {
+    final deviceCopy = preferLocalReads &&
+        (located.hasLocal || _deviceFileExists(located.id));
+    if (located.hasS3 && remote != null && !deviceCopy) {
       return remote;
     }
     return local;
+  }
+
+  /// Dual-write reads the device file when it exists, even if a listing
+  /// error showed the row as S3-only. Otherwise the editor would load the
+  /// bucket text and save it over the device copy.
+  bool _deviceFileExists(String id) {
+    if (parseLogEntryId(id) == null) return false;
+    return File(p.join(local.directory, id)).existsSync();
   }
 
   /// Handle for view/edit/delete. Reads use [storeFor]. Update and delete
@@ -230,22 +238,36 @@ class BrowserNoteSources {
     if (s3Attempted &&
         s3Error != null &&
         !located.hasLocal &&
-        s3Error is! ArgumentError &&
-        await _bucketHasText(located.id, text)) {
-      // The response was lost after the object was stored. Clearing a
-      // queued delete keeps the next replay from removing that edit.
-      await repairs.clear(located.id);
+        s3Error is! ArgumentError) {
+      final onBucket = await _bucketText(located.id);
+      // New text, or a read that cannot show the object is unchanged:
+      // a queued delete must not remove an edit that may have landed.
+      if (onBucket == null || onBucket == text) {
+        await repairs.clear(located.id);
+      }
     }
     return null;
   }
 
-  Future<bool> _bucketHasText(String id, String text) async {
+  /// Bucket text, or null when it cannot be read.
+  Future<String?> _bucketText(String id) async {
+    final remote = s3;
+    if (remote == null) return null;
+    try {
+      return await remote.read(id);
+    } catch (_) {
+      return null;
+    }
+  }
+
+  Future<bool> _objectMissing(String id) async {
     final remote = s3;
     if (remote == null) return false;
     try {
-      return await remote.read(id) == text;
-    } catch (_) {
+      await remote.read(id);
       return false;
+    } catch (e) {
+      return isMissingObjectError(e);
     }
   }
 
@@ -258,8 +280,15 @@ class BrowserNoteSources {
     final repairs = pendingRepairs;
     if (repairs == null) return null;
     final localRemoved = located.hasLocal && localError == null;
-    final s3Gone =
+    var s3Gone =
         s3Attempted && (s3Error == null || isMissingObjectError(s3Error));
+    if (s3Attempted &&
+        !s3Gone &&
+        s3Error is! ArgumentError &&
+        await _objectMissing(located.id)) {
+      // The object is gone even though the delete call reported failure.
+      s3Gone = true;
+    }
     if (s3Gone && (localRemoved || !located.hasLocal)) {
       await repairs.clear(located.id);
       return null;
