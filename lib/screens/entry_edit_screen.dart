@@ -6,10 +6,9 @@ import '../services/log_service.dart';
 ///
 /// A whole screen rather than an inline field: notes can be long, and the
 /// editor needs the same amount of room the compose screen gets. `true` means
-/// the note was saved, `false` means the user discarded edits, and `null`
-/// means they left without discarding (a clean back). Those last two are
-/// different: a discard can follow a partial write, while leaving an
-/// untouched note changed nothing.
+/// the note was saved. `false` means the user left without a successful save
+/// after either discarding edits or attempting a save (which may have written
+/// one backend). `null` means no save was attempted.
 Future<bool?> editEntry(
   BuildContext context,
   NoteStore store,
@@ -38,12 +37,18 @@ class EntryEditScreen extends StatefulWidget {
 class _EntryEditScreenState extends State<EntryEditScreen> {
   final TextEditingController _controller = TextEditingController();
 
-  /// Text as it is stored, used to tell "nothing changed" from "unsaved
-  /// changes" for both the Save button and the discard prompt.
+  /// Text loaded for this visit, used to tell "nothing changed" from "unsaved
+  /// changes" for both the Save button and the discard prompt. A failed save
+  /// can leave different text on disk; this stays the loaded value.
   String _original = '';
   bool _loading = true;
   Object? _loadError;
   bool _saving = false;
+
+  /// Set before [NoteStore.update] is awaited. A throw after a partial write
+  /// still counts: a later back is not a clean exit, even if the field is
+  /// put back to [_original].
+  bool _saveAttempted = false;
 
   bool get _dirty => !_loading && _controller.text != _original;
 
@@ -80,7 +85,12 @@ class _EntryEditScreenState extends State<EntryEditScreen> {
 
   Future<void> _save() async {
     if (_saving) return;
-    setState(() => _saving = true);
+    setState(() {
+      _saving = true;
+      // Before the await, so a throw after one backend was written still
+      // counts as an attempt.
+      _saveAttempted = true;
+    });
     final text = _controller.text;
     try {
       await widget.store.update(widget.entry.id, text);
@@ -97,18 +107,24 @@ class _EntryEditScreenState extends State<EntryEditScreen> {
     Navigator.of(context).pop(true);
   }
 
-  /// Restores the stored text. Nothing is written, so this is the cheap way
-  /// back out of an edit without leaving the screen.
+  /// Puts the field back to the text loaded for this visit. Nothing is
+  /// written, so a partial update from a failed save stays on disk.
   void _revert() {
     _controller.text = _original;
     _controller.selection = TextSelection.collapsed(offset: _original.length);
   }
 
-  /// Back navigation while dirty. [PopScope] blocks the pop (canPop is false
-  /// exactly then), so ask first and pop manually with `false`: the entry was
-  /// not saved, and the caller must not refresh as if it had been.
+  /// Back navigation. [PopScope] lets the route pop on its own only when the
+  /// field is clean, nothing is saving, and no update was attempted — that
+  /// result is `null`. A dirty field still asks, and Discard pops `false`.
+  /// A clean field after an attempted save pops `false` with no dialog: the
+  /// field is not dirty, but the attempt may have written one backend.
   Future<void> _handlePop(bool didPop) async {
     if (didPop) return;
+    if (!_dirty) {
+      if (mounted) Navigator.of(context).pop(false);
+      return;
+    }
     final discard = await _confirmDiscard();
     if (discard && mounted) Navigator.of(context).pop(false);
   }
@@ -146,7 +162,7 @@ class _EntryEditScreenState extends State<EntryEditScreen> {
   @override
   Widget build(BuildContext context) {
     return PopScope<bool>(
-      canPop: !_dirty && !_saving,
+      canPop: !_dirty && !_saving && !_saveAttempted,
       onPopInvokedWithResult: (didPop, _) => _handlePop(didPop),
       child: Scaffold(
         appBar: AppBar(title: Text(widget.entry.id)),

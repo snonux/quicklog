@@ -180,11 +180,10 @@ class _EntryBrowserScreenState extends State<EntryBrowserScreen> {
 
   /// Edits an entry straight from the list.
   ///
-  /// A save re-lists. An explicit discard re-reads just this row: a failed
-  /// save may have written one backend ([BrowserNoteSources.update] tries
-  /// both) before the user discarded. Leaving without discarding keeps the
-  /// cached subtitle and does not read again — a failed re-read would
-  /// otherwise replace a good line with a blank.
+  /// A save (`true`) re-lists. `false` re-reads just this row: the user
+  /// discarded edits, or a save was attempted and may have written one
+  /// backend ([BrowserNoteSources.update] tries both) before they left.
+  /// `null` does not re-read, because storage was not touched.
   Future<void> _edit(LocatedLogEntry located) async {
     final sources = _sources;
     if (sources == null) return;
@@ -649,7 +648,10 @@ class _EntryDetailScreenState extends State<_EntryDetailScreen> {
 
   Future<void> _edit() async {
     final saved = await editEntry(context, widget.store, widget.entry);
-    if (saved == true && mounted) _reload();
+    // true: saved. false: discarded, or a save was attempted and may have
+    // written storage. null: no save was attempted, so the text shown is
+    // still current.
+    if (saved != null && mounted) _reload();
   }
 
   Future<void> _requestDelete() async {

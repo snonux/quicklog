@@ -439,6 +439,25 @@ void main() {
       expect(s3.gets[older], 2);
     });
 
+    testWidgets('a clean back does not read again', (tester) async {
+      await start(tester);
+      await tapAndSettle(tester, find.byIcon(Icons.edit_outlined).first);
+      expect(find.text('beta'), findsOneWidget);
+      final newerBefore = s3.gets[newer]!;
+      final olderBefore = s3.gets[older]!;
+
+      await tester.pageBack();
+      await pumpWithIo(tester);
+      await tester.pump(const Duration(seconds: 1));
+
+      expect(find.text('Entries'), findsOneWidget);
+      expect(find.text('S3 · beta'), findsOneWidget);
+      // null is "no save was attempted", so the row is not re-read. Widening
+      // `saved == false` to `else` would GET this note again.
+      expect(s3.gets[newer], newerBefore);
+      expect(s3.gets[older], olderBefore);
+    });
+
     testWidgets('a save that wrote one backend and failed re-reads the row', (
       tester,
     ) async {
@@ -466,6 +485,42 @@ void main() {
       expect(s3.gets[newer], newerBefore);
       expect(s3.gets[older], olderBefore);
     });
+
+    testWidgets(
+      'revert after a partial save shows the edited local text',
+      (tester) async {
+        // Same partial write as above: S3 put fails, the local file lands.
+        // Revert only restores the field to the pre-edit text, so leaving
+        // must not be treated as a clean back.
+        writeLocal(older, 'alpha');
+        await start(tester, mode: 'both');
+        expect(find.text('Local + S3 · alpha'), findsOneWidget);
+
+        s3.failNextPut.add(older);
+        await tapAndSettle(tester, find.byIcon(Icons.edit_outlined).last);
+        await saveEdit(tester, 'alpha edited');
+        expect(find.textContaining('Could not save'), findsOneWidget);
+
+        await tester.pump(const Duration(seconds: 4));
+        await tester.pump(const Duration(milliseconds: 500));
+        await tester.tap(find.widgetWithText(OutlinedButton, 'Revert'));
+        await pumpWithIo(tester);
+        expect(find.text('alpha'), findsOneWidget);
+
+        final newerBefore = s3.gets[newer];
+        final olderBefore = s3.gets[older];
+        await tester.pageBack();
+        await pumpWithIo(tester, rounds: 30);
+        await tester.pump(const Duration(seconds: 1));
+
+        expect(find.text('Discard changes?'), findsNothing);
+        expect(find.text('Entries'), findsOneWidget);
+        expect(find.text('Local + S3 · alpha edited'), findsOneWidget);
+        expect(find.text('Local + S3 · alpha'), findsNothing);
+        expect(s3.gets[newer], newerBefore);
+        expect(s3.gets[older], olderBefore);
+      },
+    );
 
     testWidgets(
       'a local write that fails after the S3 put keeps the local subtitle',
