@@ -1,9 +1,12 @@
 import 'dart:convert';
 import 'dart:io';
 
+import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:quicklog/screens/entry_browser_screen.dart';
 import 'package:quicklog/services/active_note_store.dart';
+import 'package:quicklog/services/merged_note_listing.dart';
 import 'package:quicklog/services/preferences.dart';
 import 'package:quicklog/services/s3_session_controller.dart';
 import 'package:quicklog/services/saf_note_store.dart';
@@ -12,6 +15,7 @@ import 'package:quicklog/services/settings_backup.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
 import 'support/memory_s3_object_client.dart';
+import 'io_pump.dart';
 
 void main() {
   TestWidgetsFlutterBinding.ensureInitialized();
@@ -151,6 +155,75 @@ void main() {
     expect(saved.outcome, NoteCreateOutcome.savedLocalOnly);
     expect(trees[treeA]![saved.entry.id], 'offline');
     expect(await path.list().toList(), isEmpty);
+  });
+
+  test(
+    'S3-only browser keeps remote CRUD when the tree grant is revoked',
+    () async {
+      await prefs.setScopedFolder(treeA, 'Vault A');
+      await prefs.setS3Config(
+        const S3Config(
+          endpoint: kDefaultS3Endpoint,
+          region: kDefaultS3Region,
+          bucket: kDefaultS3Bucket,
+          accessKeyId: 'test',
+          secretAccessKey: 'secret',
+        ),
+      );
+      await session.setPreferredMode(StorageMode.s3);
+      const id = 'ql-260928-101500.md';
+      await s3.putText(id, 'remote note');
+      grants.remove(treeA);
+
+      final sources = await active.resolveBrowserSources();
+      final rows = await sources.list();
+      expect(sources.localListFailed, isTrue);
+      expect(rows.single.location, NoteStorageLocation.s3);
+      final handle = sources.entryStore(rows.single);
+      expect(await handle.read(), 'remote note');
+      await handle.update('remote edit');
+      expect(await handle.read(), 'remote edit');
+      await handle.delete();
+      expect(s3.objects.containsKey(id), isFalse);
+
+      await session.setPreferredMode(StorageMode.both);
+      final dual = await active.resolveBrowserSources();
+      await expectLater(dual.list(), throwsA(isA<PlatformException>()));
+    },
+  );
+
+  testWidgets('S3-only browser explains the inaccessible local folder', (
+    tester,
+  ) async {
+    await prefs.setScopedFolder(treeA, 'Vault A');
+    await prefs.setS3Config(
+      const S3Config(
+        endpoint: kDefaultS3Endpoint,
+        region: kDefaultS3Region,
+        bucket: kDefaultS3Bucket,
+        accessKeyId: 'test',
+        secretAccessKey: 'secret',
+      ),
+    );
+    await session.setPreferredMode(StorageMode.s3);
+    await s3.putText('ql-260928-101501.md', 'remote visible');
+    grants.remove(treeA);
+    await tester.pumpWidget(
+      MaterialApp(
+        home: EntryBrowserScreen(
+          session: session,
+          activeStore: active,
+          preferences: prefs,
+        ),
+      ),
+    );
+    await pumpWithIo(tester);
+    expect(
+      find.textContaining('Could not list the selected local folder'),
+      findsOneWidget,
+    );
+    expect(find.textContaining('remote visible'), findsWidgets);
+    expect(find.byTooltip('Move all local to S3'), findsNothing);
   });
 
   test('dual-write S3 failure leaves a SAF copy and queues its tree', () async {

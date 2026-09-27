@@ -51,6 +51,10 @@ class BrowserNoteSources {
   /// Set by [list] when an S3 LIST fails; local rows are still returned.
   bool s3ListFailed = false;
 
+  /// S3-only can still show remote rows when the selected local folder is
+  /// unavailable. Dual-write never does this: local is its trusted primary.
+  bool localListFailed = false;
+
   /// Store used for read / firstLine of [located].
   /// Prefer S3 when the note lives only there, or when local-first reads do
   /// not apply; otherwise the local copy.
@@ -347,7 +351,17 @@ class BrowserNoteSources {
   /// Lists notes from these sources (merged when [mergeWhenS3Preferred]).
   Future<List<LocatedLogEntry>> list() async {
     s3ListFailed = false;
-    final localEntries = await local.list();
+    localListFailed = false;
+    List<LogEntry> localEntries;
+    try {
+      localEntries = await local.list();
+    } catch (_) {
+      if (!mergeWhenS3Preferred || keepLocalCopies || s3 == null) rethrow;
+      // An S3-only user can still browse remote notes. Do not report any
+      // local locations when the selected folder could not be listed.
+      localListFailed = true;
+      localEntries = const [];
+    }
     if (!mergeWhenS3Preferred) {
       return [
         for (final e in localEntries)
@@ -360,6 +374,7 @@ class BrowserNoteSources {
       try {
         s3Entries = await remote.list();
       } catch (_) {
+        if (localListFailed) rethrow;
         // Degrade hook (if any) already ran inside S3NoteStore; keep local
         // rows so a failing bucket does not blank the whole browser.
         s3ListFailed = true;

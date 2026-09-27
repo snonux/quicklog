@@ -50,6 +50,7 @@ class EntryBrowserController extends ChangeNotifier {
   bool _wasUsingLocalFallback = false;
   StorageMode _lastPreferredMode = StorageMode.local;
   bool _s3ListFailed = false;
+  bool _localListFailed = false;
   bool _wasDegraded = false;
   int _loadGeneration = 0;
 
@@ -71,6 +72,7 @@ class EntryBrowserController extends ChangeNotifier {
   String get dir => _dir;
 
   bool get s3ListFailed => _s3ListFailed;
+  bool get localListFailed => _localListFailed;
 
   bool get showLocation => _sources?.mergeWhenS3Preferred ?? false;
 
@@ -86,7 +88,12 @@ class EntryBrowserController extends ChangeNotifier {
   /// Also hidden mid-reload, so a mode flip cannot run the old mode's
   /// action (e.g. a Move in dual-write mode) on stale sources.
   bool get canUploadAll =>
-      !_reloading && showLocation && _sources?.s3 != null && !_s3ListFailed;
+      !_reloading &&
+      showLocation &&
+      _sources?.s3 != null &&
+      !_s3ListFailed &&
+      !_localListFailed &&
+      _sources?.localListFailed != true;
 
   /// Subscribes to storage-mode changes and loads the list. Call once from
   /// the screen's [State.initState], after listening to this controller.
@@ -130,6 +137,7 @@ class EntryBrowserController extends ChangeNotifier {
   void refresh() {
     final generation = ++_loadGeneration;
     _reloading = true;
+    _localListFailed = false;
     _future = _load(generation).whenComplete(() {
       // FutureBuilder rebuilds its child only; notify so AppBar actions
       // (upload all) see the resolved sources / list-failure flag.
@@ -161,6 +169,7 @@ class EntryBrowserController extends ChangeNotifier {
     _wasDegraded = _session.isDegraded;
     _lastPreferredMode = _session.preferredMode;
     _s3ListFailed = sources.s3ListFailed;
+    _localListFailed = sources.localListFailed;
     return entries;
   }
 

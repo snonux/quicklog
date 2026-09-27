@@ -104,6 +104,24 @@ class _EntryBrowserScreenState extends State<EntryBrowserScreen> {
                 ),
               ),
             ),
+          if (_browser.localListFailed)
+            ColoredBox(
+              color: Theme.of(context).colorScheme.errorContainer,
+              child: ListTile(
+                dense: true,
+                textColor: Theme.of(context).colorScheme.onErrorContainer,
+                title: const Text(
+                  'Could not list the selected local folder; showing S3 entries only.',
+                ),
+                subtitle: const Text(
+                  'Check folder access in Preferences, then refresh.',
+                ),
+                trailing: TextButton(
+                  onPressed: _browser.refresh,
+                  child: const Text('Retry'),
+                ),
+              ),
+            ),
           Expanded(
             child: FutureBuilder<List<LocatedLogEntry>>(
               future: _browser.future,
