@@ -64,7 +64,10 @@ yourself instead, see [Build and Run](#android) and
 Versions live in a single place: the `version:` line of `pubspec.yaml`, written
 as `<semver>+<buildNumber>`. The build number is a plain counter — bump it by
 one per release. Android's `versionName` and `versionCode` are derived from it,
-and every release commit gets a matching `vX.Y.Z` git tag.
+and every release commit gets a matching `vX.Y.Z` git tag. The About dialog reads
+the same line at runtime: `pubspec.yaml` is bundled as an asset and parsed by
+`lib/services/app_version.dart`, so there is no version string to update by hand
+(`test/about_dialog_test.dart` fails if the dialog ever drifts from it).
 
 `.flutter-version` pins the Flutter SDK a release was built with; the F-Droid
 build recipe reads it, so bump it whenever the toolchain moves.

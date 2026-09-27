@@ -4,6 +4,7 @@ import 'dart:io';
 import 'package:flutter/material.dart';
 
 import '../services/active_note_store.dart';
+import '../services/app_version.dart';
 import '../services/preferences.dart';
 import '../services/s3_session_controller.dart';
 import '../services/shared_text_handler.dart';
@@ -277,11 +278,20 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
     }
   }
 
-  void _showAbout() {
+  Future<void> _showAbout() async {
+    // The version comes from the bundled pubspec.yaml, never a literal here:
+    // a hard-coded string silently went stale on every release bump.
+    String? version;
+    try {
+      version = await loadAppVersion(DefaultAssetBundle.of(context));
+    } catch (_) {
+      version = null; // Omit the version rather than fail to show About.
+    }
+    if (!mounted) return;
     showAboutDialog(
       context: context,
       applicationName: 'Quicklog',
-      applicationVersion: '0.3.0',
+      applicationVersion: version,
       applicationIcon: Image.asset('logo-small.png', width: 48, height: 48),
       applicationLegalese:
           'Jot timestamped markdown notes. Optional S3; default is local-only.',
