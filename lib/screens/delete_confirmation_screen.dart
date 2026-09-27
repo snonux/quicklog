@@ -38,12 +38,20 @@ class DeleteConfirmationScreen extends StatefulWidget {
 }
 
 class _DeleteConfirmationScreenState extends State<DeleteConfirmationScreen> {
-  late final Future<String> _previewContent;
+  late Future<String> _previewContent;
 
   @override
   void initState() {
     super.initState();
     _previewContent = widget.handle.preview(maxChars: kDeletePreviewChars);
+  }
+
+  @override
+  void didUpdateWidget(DeleteConfirmationScreen oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (!identical(oldWidget.handle, widget.handle)) {
+      _previewContent = widget.handle.preview(maxChars: kDeletePreviewChars);
+    }
   }
 
   @override

@@ -92,6 +92,41 @@ void main() {
     expect(s3.gets, {id: 1});
   });
 
+  testWidgets('changing the handle reads and shows the new S3 preview', (
+    tester,
+  ) async {
+    const otherId = 'ql-260508-143045.md';
+    final otherEntry = LogEntry(
+      id: otherId,
+      timestamp: DateTime(2026, 5, 8, 14, 30, 45),
+    );
+    final s3 = _CountingS3();
+    await s3.putText(id, 'first preview');
+    await s3.putText(otherId, 'second preview');
+    final s3Store = S3NoteStore(s3);
+    final firstHandle = BoundNoteStore(s3Store, entry);
+    final secondHandle = BoundNoteStore(s3Store, otherEntry);
+
+    Future<void> show(EntryHandle handle) async {
+      await tester.pumpWidget(
+        MaterialApp(home: DeleteConfirmationScreen(handle: handle)),
+      );
+      await tester.pump();
+    }
+
+    await show(firstHandle);
+    await show(firstHandle);
+    expect(find.text('first preview'), findsOneWidget);
+    expect(s3.gets, {id: 1});
+
+    await show(secondHandle);
+    await show(secondHandle);
+    expect(find.text(otherId), findsOneWidget);
+    expect(find.text('second preview'), findsOneWidget);
+    expect(find.text('first preview'), findsNothing);
+    expect(s3.gets, {id: 1, otherId: 1});
+  });
+
   testWidgets('failed S3 preview shows an error and still permits deletion', (
     tester,
   ) async {
