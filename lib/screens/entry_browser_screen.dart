@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:intl/intl.dart';
 
 import '../services/active_note_store.dart';
+import '../services/entry_handle.dart';
 import '../services/browser_note_sources.dart';
 import '../services/log_service.dart';
 import '../services/merged_note_listing.dart';
@@ -151,8 +152,7 @@ class _EntryBrowserScreenState extends State<EntryBrowserScreen> {
     final deleteRequested = await Navigator.of(context).push<bool>(
       MaterialPageRoute(
         builder: (_) => _EntryDetailScreen(
-          store: store,
-          entry: located.entry,
+          handle: store,
           location: _showLocation ? located.location : null,
         ),
       ),
@@ -175,7 +175,7 @@ class _EntryBrowserScreenState extends State<EntryBrowserScreen> {
     final sources = _sources;
     if (sources == null) return;
     final saved =
-        await editEntry(context, sources.entryStore(located), located.entry);
+        await editEntry(context, sources.entryStore(located));
     if (!mounted) return;
     if (saved == true) {
       _refresh();
@@ -216,7 +216,6 @@ class _EntryBrowserScreenState extends State<EntryBrowserScreen> {
     final confirmed = await confirmEntryDeletion(
       context,
       sources.entryStore(located),
-      located.entry,
     );
     if (!confirmed || !mounted) return;
     await _delete(located);
@@ -602,14 +601,9 @@ String _locationLabel(NoteStorageLocation location) => switch (location) {
 /// on top of it, and the viewer re-reads afterwards so what is on screen
 /// matches what is stored.
 class _EntryDetailScreen extends StatefulWidget {
-  const _EntryDetailScreen({
-    required this.store,
-    required this.entry,
-    this.location,
-  });
+  const _EntryDetailScreen({required this.handle, this.location});
 
-  final NoteStore store;
-  final LogEntry entry;
+  final EntryHandle handle;
   final NoteStorageLocation? location;
 
   @override
@@ -629,12 +623,12 @@ class _EntryDetailScreenState extends State<_EntryDetailScreen> {
   /// the edit round-trip) does not kick off a second read.
   void _reload() {
     setState(() {
-      _content = widget.store.read(widget.entry.id);
+      _content = widget.handle.read();
     });
   }
 
   Future<void> _edit() async {
-    final saved = await editEntry(context, widget.store, widget.entry);
+    final saved = await editEntry(context, widget.handle);
     // true: saved. false: discarded, or a save was attempted and may have
     // written storage. null: no save was attempted, so the text shown is
     // still current.
@@ -643,7 +637,7 @@ class _EntryDetailScreenState extends State<_EntryDetailScreen> {
 
   Future<void> _requestDelete() async {
     final confirmed =
-        await confirmEntryDeletion(context, widget.store, widget.entry);
+        await confirmEntryDeletion(context, widget.handle);
     if (!confirmed || !mounted) return;
     Navigator.of(context).pop(true);
   }
@@ -653,7 +647,7 @@ class _EntryDetailScreenState extends State<_EntryDetailScreen> {
     final location = widget.location;
     return Scaffold(
       appBar: AppBar(
-        title: Text(widget.entry.id),
+        title: Text(widget.handle.id),
         actions: [
           if (location != null)
             Padding(

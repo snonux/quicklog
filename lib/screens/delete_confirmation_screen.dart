@@ -1,7 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:intl/intl.dart';
 
-import '../services/log_service.dart';
+import '../services/entry_handle.dart';
 
 final _displayFormat = DateFormat('yyyy-MM-dd HH:mm:ss');
 
@@ -19,26 +19,20 @@ const int kDeletePreviewChars = 800;
 /// refresh live in one place.
 Future<bool> confirmEntryDeletion(
   BuildContext context,
-  NoteStore store,
-  LogEntry entry,
+  EntryHandle handle,
 ) async {
   final confirmed = await Navigator.of(context).push<bool>(
     MaterialPageRoute(
-      builder: (_) => DeleteConfirmationScreen(store: store, entry: entry),
+      builder: (_) => DeleteConfirmationScreen(handle: handle),
     ),
   );
   return confirmed ?? false;
 }
 
 class DeleteConfirmationScreen extends StatelessWidget {
-  const DeleteConfirmationScreen({
-    super.key,
-    required this.store,
-    required this.entry,
-  });
+  const DeleteConfirmationScreen({super.key, required this.handle});
 
-  final NoteStore store;
-  final LogEntry entry;
+  final EntryHandle handle;
 
   @override
   Widget build(BuildContext context) {
@@ -74,12 +68,12 @@ class DeleteConfirmationScreen extends StatelessWidget {
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
               Text(
-                entry.id,
+                handle.id,
                 style: theme.textTheme.titleMedium,
               ),
               const SizedBox(height: 4),
               Text(
-                _displayFormat.format(entry.timestamp),
+                _displayFormat.format(handle.entry.timestamp),
                 style: theme.textTheme.bodySmall,
               ),
               const SizedBox(height: 8),
@@ -107,7 +101,7 @@ class DeleteConfirmationScreen extends StatelessWidget {
         borderRadius: BorderRadius.circular(8),
       ),
       child: FutureBuilder<String>(
-        future: store.preview(entry.id, maxChars: kDeletePreviewChars),
+        future: handle.preview(maxChars: kDeletePreviewChars),
         builder: (_, snap) {
           if (snap.connectionState != ConnectionState.done) {
             return const Center(child: CircularProgressIndicator());

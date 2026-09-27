@@ -4,6 +4,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:path/path.dart' as p;
 import 'package:quicklog/screens/delete_confirmation_screen.dart';
+import 'package:quicklog/services/entry_handle.dart';
 import 'package:quicklog/services/log_service.dart';
 
 import 'io_pump.dart';
@@ -12,8 +13,7 @@ import 'io_pump.dart';
 /// the boolean it returns, mirroring how the entry browser uses it.
 Future<List<bool>> _pumpConfirmFlow(
   WidgetTester tester,
-  NoteStore store,
-  LogEntry entry,
+  EntryHandle handle,
 ) async {
   final answers = <bool>[];
   await tester.pumpWidget(
@@ -22,7 +22,7 @@ Future<List<bool>> _pumpConfirmFlow(
         body: Builder(
           builder: (ctx) => TextButton(
             onPressed: () async =>
-                answers.add(await confirmEntryDeletion(ctx, store, entry)),
+                answers.add(await confirmEntryDeletion(ctx, handle)),
             child: const Text('open'),
           ),
         ),
@@ -55,7 +55,7 @@ void main() {
 
   testWidgets('shows filename, timestamp and a preview of the content',
       (tester) async {
-    await _pumpConfirmFlow(tester, store, entry);
+    await _pumpConfirmFlow(tester, BoundNoteStore(store, entry));
 
     expect(find.text('Delete entry?'), findsOneWidget);
     expect(find.text(id), findsOneWidget);
@@ -65,7 +65,7 @@ void main() {
 
   testWidgets('Cancel returns false and leaves the file on disk',
       (tester) async {
-    final answers = await _pumpConfirmFlow(tester, store, entry);
+    final answers = await _pumpConfirmFlow(tester, BoundNoteStore(store, entry));
 
     await tester.tap(find.text('Cancel'));
     await pumpWithIo(tester);
@@ -76,7 +76,7 @@ void main() {
 
   testWidgets('Delete returns true but does not delete by itself',
       (tester) async {
-    final answers = await _pumpConfirmFlow(tester, store, entry);
+    final answers = await _pumpConfirmFlow(tester, BoundNoteStore(store, entry));
 
     await tester.tap(find.widgetWithText(FilledButton, 'Delete'));
     await pumpWithIo(tester);
@@ -88,7 +88,7 @@ void main() {
 
   testWidgets('dismissing the screen without choosing returns false',
       (tester) async {
-    final answers = await _pumpConfirmFlow(tester, store, entry);
+    final answers = await _pumpConfirmFlow(tester, BoundNoteStore(store, entry));
 
     await tester.pageBack();
     await pumpWithIo(tester);

@@ -1,3 +1,4 @@
+import 'entry_handle.dart';
 import 'log_service.dart';
 import 'merged_note_listing.dart';
 import 's3_note_store.dart';
@@ -51,9 +52,9 @@ class BrowserNoteSources {
     return local;
   }
 
-  /// [NoteStore] for view/edit/delete that keeps [both] backends in sync on
-  /// [NoteStore.update] and deletes every backend that holds the note.
-  NoteStore entryStore(LocatedLogEntry located) =>
+  /// Handle for view/edit/delete. Reads use [storeFor]. Update and delete
+  /// keep every backend that holds the note in sync.
+  EntryHandle entryStore(LocatedLogEntry located) =>
       _BrowserEntryStore(this, located);
 
   /// Writes [text] to every backend that currently holds [located].
@@ -162,7 +163,10 @@ class BrowserNoteSources {
 
 /// Routes read to the preferred backend and write/delete through
 /// [BrowserNoteSources] so [NoteStorageLocation.both] stays consistent.
-class _BrowserEntryStore implements NoteStore {
+///
+/// Bound to [_located]: there is no id argument to apply the write to a
+/// different note, and no create.
+class _BrowserEntryStore implements EntryHandle {
   _BrowserEntryStore(this._sources, this._located);
 
   final BrowserNoteSources _sources;
@@ -171,26 +175,24 @@ class _BrowserEntryStore implements NoteStore {
   NoteStore get _primary => _sources.storeFor(_located);
 
   @override
-  Future<LogEntry> create(String text, {DateTime? now}) =>
-      throw UnsupportedError('Browser entry store does not create notes');
+  LogEntry get entry => _located.entry;
 
   @override
-  Future<List<LogEntry>> list() => _primary.list();
+  String get id => _located.id;
 
   @override
-  Future<String> read(String id) => _primary.read(id);
+  Future<String> read() => _primary.read(id);
 
   @override
-  Future<void> update(String id, String text) =>
-      _sources.update(_located, text);
+  Future<void> update(String text) => _sources.update(_located, text);
 
   @override
-  Future<void> delete(String id) => _sources.delete(_located);
+  Future<void> delete() => _sources.delete(_located);
 
   @override
-  Future<String> firstLine(String id) => _primary.firstLine(id);
+  Future<String> firstLine() => _primary.firstLine(id);
 
   @override
-  Future<String> preview(String id, {int maxChars = 200}) =>
+  Future<String> preview({int maxChars = 200}) =>
       _primary.preview(id, maxChars: maxChars);
 }

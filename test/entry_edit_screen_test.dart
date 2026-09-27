@@ -5,52 +5,58 @@ import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:path/path.dart' as p;
 import 'package:quicklog/screens/entry_edit_screen.dart';
+import 'package:quicklog/services/entry_handle.dart';
 import 'package:quicklog/services/log_service.dart';
 
 import 'io_pump.dart';
 
 /// Writes through [inner], then throws. Models a dual-write that landed on
 /// one backend and failed on the other.
-class _WriteThenThrow implements NoteStore {
-  _WriteThenThrow(this._inner);
+class _WriteThenThrow implements EntryHandle {
+  _WriteThenThrow(this._inner, this.entry);
 
   final NoteStore _inner;
 
   @override
-  Future<LogEntry> create(String text, {DateTime? now}) =>
-      _inner.create(text, now: now);
+  final LogEntry entry;
 
   @override
-  Future<void> delete(String id) => _inner.delete(id);
+  String get id => entry.id;
 
   @override
-  Future<String> firstLine(String id) => _inner.firstLine(id);
+  Future<void> delete() => _inner.delete(id);
 
   @override
-  Future<List<LogEntry>> list() => _inner.list();
+  Future<String> firstLine() => _inner.firstLine(id);
 
   @override
-  Future<String> preview(String id, {int maxChars = 200}) =>
+  Future<String> preview({int maxChars = 200}) =>
       _inner.preview(id, maxChars: maxChars);
 
   @override
-  Future<String> read(String id) => _inner.read(id);
+  Future<String> read() => _inner.read(id);
 
   @override
-  Future<void> update(String id, String text) async {
+  Future<void> update(String text) async {
     await _inner.update(id, text);
     throw Exception('write landed, then failed');
   }
 }
 
-/// Holds [NoteStore.update] until [release], so a test can press back while
+/// Holds [EntryHandle.update] until [release], so a test can press back while
 /// the save is still in flight. [error] is thrown instead of writing.
-class _HeldUpdate implements NoteStore {
-  _HeldUpdate(this._inner);
+class _HeldUpdate implements EntryHandle {
+  _HeldUpdate(this._inner, this.entry);
 
   final NoteStore _inner;
   final Completer<void> _gate = Completer<void>();
   Object? _error;
+
+  @override
+  final LogEntry entry;
+
+  @override
+  String get id => entry.id;
 
   void release({Object? error}) {
     _error = error;
@@ -58,27 +64,20 @@ class _HeldUpdate implements NoteStore {
   }
 
   @override
-  Future<LogEntry> create(String text, {DateTime? now}) =>
-      _inner.create(text, now: now);
+  Future<void> delete() => _inner.delete(id);
 
   @override
-  Future<void> delete(String id) => _inner.delete(id);
+  Future<String> firstLine() => _inner.firstLine(id);
 
   @override
-  Future<String> firstLine(String id) => _inner.firstLine(id);
-
-  @override
-  Future<List<LogEntry>> list() => _inner.list();
-
-  @override
-  Future<String> preview(String id, {int maxChars = 200}) =>
+  Future<String> preview({int maxChars = 200}) =>
       _inner.preview(id, maxChars: maxChars);
 
   @override
-  Future<String> read(String id) => _inner.read(id);
+  Future<String> read() => _inner.read(id);
 
   @override
-  Future<void> update(String id, String text) async {
+  Future<void> update(String text) async {
     await _gate.future;
     final error = _error;
     if (error != null) throw error;
@@ -113,17 +112,16 @@ void main() {
   /// exercise back navigation and the pop result.
   Future<List<bool?>> pumpEditor(
     WidgetTester tester, {
-    NoteStore? noteStore,
+    EntryHandle? handle,
   }) async {
-    final opened = noteStore ?? store;
+    final opened = handle ?? BoundNoteStore(store, entry);
     final results = <bool?>[];
     await tester.pumpWidget(
       MaterialApp(
         home: Scaffold(
           body: Builder(
             builder: (ctx) => TextButton(
-              onPressed: () async =>
-                  results.add(await editEntry(ctx, opened, entry)),
+              onPressed: () async => results.add(await editEntry(ctx, opened)),
               child: const Text('open'),
             ),
           ),
@@ -218,7 +216,10 @@ void main() {
 
   testWidgets('revert after a failed update is not a clean back',
       (tester) async {
-    final results = await pumpEditor(tester, noteStore: _WriteThenThrow(store));
+    final results = await pumpEditor(
+      tester,
+      handle: _WriteThenThrow(store, entry),
+    );
 
     await tester.enterText(find.byType(TextField), 'partial body');
     await pumpWithIo(tester);
@@ -269,8 +270,8 @@ void main() {
 
   testWidgets('back during an in-flight save waits, then pops true once',
       (tester) async {
-    final held = _HeldUpdate(store);
-    final results = await pumpEditor(tester, noteStore: held);
+    final held = _HeldUpdate(store, entry);
+    final results = await pumpEditor(tester, handle: held);
     await saveThenBackWithOriginalText(tester, held);
     expect(results, isEmpty);
 
@@ -285,8 +286,8 @@ void main() {
 
   testWidgets('a save that fails after back stays on the editor',
       (tester) async {
-    final held = _HeldUpdate(store);
-    final results = await pumpEditor(tester, noteStore: held);
+    final held = _HeldUpdate(store, entry);
+    final results = await pumpEditor(tester, handle: held);
     await saveThenBackWithOriginalText(tester, held);
 
     held.release(error: Exception('still writing'));

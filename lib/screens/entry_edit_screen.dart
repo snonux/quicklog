@@ -1,22 +1,18 @@
 import 'package:flutter/material.dart';
 
-import '../services/log_service.dart';
+import '../services/entry_handle.dart';
 
-/// Pushes the full-screen editor for [entry] and returns how it closed.
+/// Pushes the full-screen editor for [handle] and returns how it closed.
 ///
 /// A whole screen rather than an inline field: notes can be long, and the
 /// editor needs the same amount of room the compose screen gets. `true` means
 /// the note was saved. `false` means the user left without a successful save
 /// after either discarding edits or attempting a save (which may have written
 /// one backend). `null` means no save was attempted.
-Future<bool?> editEntry(
-  BuildContext context,
-  NoteStore store,
-  LogEntry entry,
-) {
+Future<bool?> editEntry(BuildContext context, EntryHandle handle) {
   return Navigator.of(context).push<bool>(
     MaterialPageRoute(
-      builder: (_) => EntryEditScreen(store: store, entry: entry),
+      builder: (_) => EntryEditScreen(handle: handle),
     ),
   );
 }
@@ -25,10 +21,9 @@ Future<bool?> editEntry(
 /// keeps its creation timestamp (which is what the filename encodes) and its
 /// position in the browser list.
 class EntryEditScreen extends StatefulWidget {
-  const EntryEditScreen({super.key, required this.store, required this.entry});
+  const EntryEditScreen({super.key, required this.handle});
 
-  final NoteStore store;
-  final LogEntry entry;
+  final EntryHandle handle;
 
   @override
   State<EntryEditScreen> createState() => _EntryEditScreenState();
@@ -45,7 +40,7 @@ class _EntryEditScreenState extends State<EntryEditScreen> {
   Object? _loadError;
   bool _saving = false;
 
-  /// Set before [NoteStore.update] is awaited. A throw after a partial write
+  /// Set before [EntryHandle.update] is awaited. A throw after a partial write
   /// still counts: a later back is not a clean exit, even if the field is
   /// put back to [_original].
   bool _saveAttempted = false;
@@ -72,7 +67,7 @@ class _EntryEditScreenState extends State<EntryEditScreen> {
 
   Future<void> _load() async {
     try {
-      final text = await widget.store.read(widget.entry.id);
+      final text = await widget.handle.read();
       _original = text;
       _controller.text = text;
     } catch (e) {
@@ -93,7 +88,7 @@ class _EntryEditScreenState extends State<EntryEditScreen> {
     });
     final text = _controller.text;
     try {
-      await widget.store.update(widget.entry.id, text);
+      await widget.handle.update(text);
     } catch (e) {
       // Writing can be denied for files outside the app's storage scope;
       // stay in the editor so the user does not lose what they typed.
@@ -117,7 +112,7 @@ class _EntryEditScreenState extends State<EntryEditScreen> {
   /// Back navigation. [PopScope] lets the route pop on its own only when the
   /// field is clean, nothing is saving, and no update was attempted — that
   /// result is `null`. While a save is in flight, back does nothing and does
-  /// not ask to discard: the editor stays until [NoteStore.update] finishes,
+  /// not ask to discard: the editor stays until [EntryHandle.update] finishes,
   /// and a successful save pops `true` itself. A failed save clears
   /// [_saving], after which a dirty field still asks and Discard pops
   /// `false`, and a clean field after an attempted save pops `false` with no
@@ -168,7 +163,7 @@ class _EntryEditScreenState extends State<EntryEditScreen> {
       canPop: !_dirty && !_saving && !_saveAttempted,
       onPopInvokedWithResult: (didPop, _) => _handlePop(didPop),
       child: Scaffold(
-        appBar: AppBar(title: Text(widget.entry.id)),
+        appBar: AppBar(title: Text(widget.handle.id)),
         body: SafeArea(
           child: Padding(padding: const EdgeInsets.all(12), child: _body()),
         ),

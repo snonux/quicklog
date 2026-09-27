@@ -59,10 +59,31 @@ void main() {
     );
     final store = sources.entryStore(located(id, NoteStorageLocation.both));
 
-    await store.update(id, 'from editor');
+    await store.update('from editor');
 
     expect(await local.read(id), 'from editor');
     expect(await s3.read(id), 'from editor');
+  });
+
+  test('entryStore update does not touch a different note', () async {
+    const id = 'ql-260901-110001.md';
+    const other = 'ql-260901-110002.md';
+    await File(p.join(tmp.path, id)).writeAsString('a');
+    await File(p.join(tmp.path, other)).writeAsString('leave me');
+    await client.putText(id, 'b');
+    await client.putText(other, 'leave me');
+    final sources = BrowserNoteSources(
+      local: local,
+      s3: s3,
+      mergeWhenS3Preferred: true,
+    );
+
+    await sources.entryStore(located(id, NoteStorageLocation.both)).update(
+      'from editor',
+    );
+
+    expect(await local.read(other), 'leave me');
+    expect(await s3.read(other), 'leave me');
   });
 
   test('delete of both removes local and S3', () async {
