@@ -22,17 +22,29 @@ Future<bool> confirmEntryDeletion(
   EntryHandle handle,
 ) async {
   final confirmed = await Navigator.of(context).push<bool>(
-    MaterialPageRoute(
-      builder: (_) => DeleteConfirmationScreen(handle: handle),
-    ),
+    MaterialPageRoute(builder: (_) => DeleteConfirmationScreen(handle: handle)),
   );
   return confirmed ?? false;
 }
 
-class DeleteConfirmationScreen extends StatelessWidget {
+class DeleteConfirmationScreen extends StatefulWidget {
   const DeleteConfirmationScreen({super.key, required this.handle});
 
   final EntryHandle handle;
+
+  @override
+  State<DeleteConfirmationScreen> createState() =>
+      _DeleteConfirmationScreenState();
+}
+
+class _DeleteConfirmationScreenState extends State<DeleteConfirmationScreen> {
+  late final Future<String> _previewContent;
+
+  @override
+  void initState() {
+    super.initState();
+    _previewContent = widget.handle.preview(maxChars: kDeletePreviewChars);
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -67,13 +79,10 @@ class DeleteConfirmationScreen extends StatelessWidget {
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
-              Text(
-                handle.id,
-                style: theme.textTheme.titleMedium,
-              ),
+              Text(widget.handle.id, style: theme.textTheme.titleMedium),
               const SizedBox(height: 4),
               Text(
-                _displayFormat.format(handle.entry.timestamp),
+                _displayFormat.format(widget.handle.entry.timestamp),
                 style: theme.textTheme.bodySmall,
               ),
               const SizedBox(height: 8),
@@ -101,7 +110,7 @@ class DeleteConfirmationScreen extends StatelessWidget {
         borderRadius: BorderRadius.circular(8),
       ),
       child: FutureBuilder<String>(
-        future: handle.preview(maxChars: kDeletePreviewChars),
+        future: _previewContent,
         builder: (_, snap) {
           if (snap.connectionState != ConnectionState.done) {
             return const Center(child: CircularProgressIndicator());
