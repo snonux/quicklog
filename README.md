@@ -174,25 +174,36 @@ Default mode remains **Local only**. There is no analytics or background sync.
 
 ### Drain CLI (laptop)
 
-When notes land in the bucket from a phone, pull them into a local notes
-directory and delete the remote objects:
+When notes land in the bucket from a phone, the laptop-side wrappers import
+them straight into taskwarrior — nothing is staged on disk. The CLI's
+`--import` mode streams every note to stdout as one JSON object per line
+(`{"key":...,"content":...}`), waits for an ack line
+(`{"key":...,"ok":bool}`) on stdin after each note, and deletes the remote
+object only after an ok-ack, so a failed import is retried on the next run
+instead of being lost. The consumer side — the dotfiles `quicklog-drain`
+script — parses each note with the same fish line format that
+`taskwarrior::quicklogger` uses for locally created files, so the format
+lives in exactly one place:
 
 ```sh
 # from this repo, with GARAGE_* exported (see ~/.config/garage/quicklog.env)
-dart run bin/quicklog_drain.dart [--dest DIR] [--dry-run] [--force] [--limit N]
-# default --dest is ~/Notes/Quicklog
+dart run bin/quicklog_drain.dart --import [--dry-run] [--limit N] [--only K1,K2]
+dart run bin/quicklog_drain.dart --keys [--limit N]     # list pending notes
+dart run bin/quicklog_drain.dart --delete KEY [KEY...]  # remove stuck notes
+dart run bin/quicklog_drain.dart --dest DIR [--dry-run] [--force] [--limit N] [--only K1,K2]
 ```
 
 Credentials: `GARAGE_ENDPOINT`, `GARAGE_REGION`, `GARAGE_BUCKET`,
-`GARAGE_ACCESS_KEY_ID`, `GARAGE_SECRET_ACCESS_KEY`. Fetch is atomic (temp +
-rename); remote delete runs only after a successful local write. Existing
-local files are skipped unless `--force`. A dry run lists what would move
-without creating files or deleting objects.
-
-After drain, ordinary `ql-*.md` files sit on disk for whatever imports them
-next (for example Taskwarrior's quicklogger). Dotfiles may wrap the CLI
-(`taskwarrior::quicklog_drain` before `quicklogger` in `ti` / `invoke`); that
-wrapper is not part of this repository.
+`GARAGE_ACCESS_KEY_ID`, `GARAGE_SECRET_ACCESS_KEY`. `--dest` is the legacy
+manual-recovery mode: it drains objects into files (atomic temp + rename,
+remote delete only after a successful local write, existing files skipped
+unless `--force`) without importing anything. A dry run of either mode
+reports what would move without touching S3 state. `--only` restricts a
+drain (import or `--dest`) to exactly the named keys, after the usual
+`ql-*.md` filtering — it exists so the dotfiles end-to-end harness can drain
+only its own test keys and never touch a note created mid-run. Dotfiles
+wrap the CLI (`taskwarrior::quicklog_import` before `quicklogger` in `ti`
+/ `invoke`); that wrapper is not part of this repository.
 
 ## Storage on Android
 
