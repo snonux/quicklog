@@ -293,9 +293,10 @@ class BrowserNoteSources {
       await repairs.clear(located.id);
       return null;
     }
-    if (s3Gone && localError != null) {
-      // The bucket object is gone and the device file is not. Replay puts
-      // that file back; clearing would leave the note only on the device.
+    if (localError != null && s3Attempted && s3Error is! ArgumentError) {
+      // The device file is still here. Whether or not the bucket object
+      // survived a delete whose response we could not trust, the next
+      // replay puts this file back.
       await repairs.enqueueUpload(located.id);
       return null;
     }

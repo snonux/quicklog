@@ -520,6 +520,35 @@ void main() {
       expect(repaired, 0);
       expect(utf8.decode(client.objects[id]!), 'remote');
       expect(await prefs.dualWritePendingUploads(), [id]);
+
+      final reloaded = DualWriteS3Repair(preferences: prefs);
+      final again = await reloaded.replay(
+        local: LocalNoteStore(other.path),
+        s3: s3,
+      );
+      expect(again, 0);
+      expect(utf8.decode(client.objects[id]!), 'remote');
+      expect(await prefs.dualWritePendingUploads(), [id]);
+    });
+
+    test('a pending delete waits while its notes folder is missing', () async {
+      SharedPreferences.setMockInitialValues(<String, Object>{
+        'flutter.Directory': tmp.path,
+      });
+      final prefs = PreferencesService();
+      final queued = DualWriteS3Repair(preferences: prefs);
+      await client.putText(id, 'remote');
+      await queued.enqueueDelete(id);
+      await tmp.delete(recursive: true);
+
+      final repaired = await queued.replay(
+        local: LocalNoteStore(tmp.path),
+        s3: s3,
+      );
+
+      expect(repaired, 0);
+      expect(utf8.decode(client.objects[id]!), 'remote');
+      expect(await prefs.dualWritePendingDeletes(), [id]);
     });
 
     test('a lost delete response still re-uploads the device file', () async {
@@ -584,11 +613,9 @@ void main() {
       });
       final prefs = PreferencesService();
       const other = 'ql-260927-120001.md';
-      await prefs.setDualWritePending(
-        uploads: [id],
-        deletes: const [other],
-        directory: tmp.path,
-      );
+      await prefs.setDualWritePendingFolders({
+        tmp.path: (uploads: [id], deletes: const [other]),
+      });
 
       final stored = await SharedPreferences.getInstance();
       final raw = stored.getString('DualWritePending');

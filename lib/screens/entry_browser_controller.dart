@@ -343,7 +343,11 @@ class EntryBrowserController extends ChangeNotifier {
       // granted storage scope; keep the entry listed and say why.
       if (!context.mounted) return;
       _showSnack(context, 'Could not delete $name: $e', isError: true);
-      if (located.location == NoteStorageLocation.both) {
+      if (located.location == NoteStorageLocation.both ||
+          sources.keepLocalCopies) {
+        // Dual-write: the listing can call a note S3-only while the device
+        // file is still there. Refresh replays the upload that delete queued
+        // and shows whichever copy survived.
         refresh();
       } else {
         await _rereadRow(located);

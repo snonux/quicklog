@@ -47,9 +47,8 @@ class DualWriteS3Repair {
 
   final PreferencesService? _prefs;
 
-  final Set<String> _uploads = {};
-  final Set<String> _deletes = {};
-  String? _directory;
+  final Map<String, _RepairQueue> _queues = {};
+  String _active = '';
   bool _loaded = false;
   Future<void> _chain = Future<void>.value();
 
@@ -72,16 +71,26 @@ class DualWriteS3Repair {
   }
 
   Future<void> enqueueDelete(String id) {
-    return run(() => _enqueueDelete(id));
+    return run(() async {
+      await _ensureLoaded();
+      _active = await _folderKey();
+      await _enqueueDelete(id);
+    });
   }
 
-  /// Drops either pending op for [id] after S3 has caught up.
-  Future<void> clear(String id) => run(() => _clear(id));
+  /// Drops either pending op for [id] in the notes directory in use now.
+  Future<void> clear(String id) {
+    return run(() async {
+      await _ensureLoaded();
+      _active = await _folderKey();
+      await _clear(id);
+    });
+  }
 
   Future<bool> hasPending() {
     return run(() async {
       await _ensureLoaded();
-      return _uploads.isNotEmpty || _deletes.isNotEmpty;
+      return _queues.values.any((queue) => !queue.isEmpty);
     });
   }
 
@@ -100,32 +109,51 @@ class DualWriteS3Repair {
     _loaded = true;
     final prefs = _prefs;
     if (prefs == null) return;
-    final pending = await prefs.dualWritePending();
-    _uploads.addAll(pending.uploads);
-    _deletes.addAll(pending.deletes);
-    _directory = pending.directory;
+    final folders = await prefs.dualWritePendingFolders();
+    for (final entry in folders.entries) {
+      final queue = _queues.putIfAbsent(entry.key, _RepairQueue.new);
+      queue.uploads.addAll(entry.value.uploads);
+      queue.deletes.addAll(entry.value.deletes);
+    }
   }
 
   Future<void> _persist() async {
     final prefs = _prefs;
     if (prefs == null) return;
-    _directory ??= await prefs.directory();
-    await prefs.setDualWritePending(
-      uploads: _sorted(_uploads),
-      deletes: _sorted(_deletes),
-      directory: _directory,
-    );
+    final folders =
+        <String, ({List<String> uploads, List<String> deletes})>{};
+    for (final entry in _queues.entries) {
+      if (entry.value.isEmpty) continue;
+      folders[entry.key] = (
+        uploads: _sorted(entry.value.uploads),
+        deletes: _sorted(entry.value.deletes),
+      );
+    }
+    await prefs.setDualWritePendingFolders(folders);
   }
 
-  /// True when [local] is not the folder these ids were queued for, or that
-  /// folder is gone. A missing file there must not be treated as a delete:
-  /// the notes may still be in the previous directory.
-  Future<bool> _leaveUploads(NoteStore local) async {
-    if (local is! LocalNoteStore) return false;
-    final queued = _directory;
-    if (queued != null && queued != local.directory) return true;
+  /// '' when nothing is persisted. Otherwise the notes directory in use now.
+  Future<String> _folderKey() async {
+    final prefs = _prefs;
+    if (prefs == null) return '';
+    return prefs.directory();
+  }
+
+  /// Folder [local] is replaying. In-memory repairs (no preferences) share
+  /// one queue. A missing directory is not replayed: a missing parent looks
+  /// the same as a missing note, and that must not delete the bucket object.
+  String _replayKey(NoteStore local) {
+    if (_prefs == null) return '';
+    if (local is LocalNoteStore) return local.directory;
+    return _active;
+  }
+
+  Future<bool> _folderMissing(NoteStore local) async {
+    if (_prefs == null || local is! LocalNoteStore) return false;
     return !await Directory(local.directory).exists();
   }
+
+  _RepairQueue _queue() => _queues.putIfAbsent(_active, _RepairQueue.new);
 
   List<String> _sorted(Set<String> ids) {
     final list = ids.toList()..sort();
@@ -141,22 +169,28 @@ class DualWriteS3Repair {
   Future<void> _enqueueUpload(String id) async {
     _requireNoteId(id);
     await _ensureLoaded();
-    _deletes.remove(id);
-    _uploads.add(id);
+    _active = await _folderKey();
+    final queue = _queue();
+    queue.deletes.remove(id);
+    queue.uploads.add(id);
     await _persist();
   }
 
   Future<void> _enqueueDelete(String id) async {
     _requireNoteId(id);
     await _ensureLoaded();
-    _uploads.remove(id);
-    _deletes.add(id);
+    final queue = _queue();
+    queue.uploads.remove(id);
+    queue.deletes.add(id);
     await _persist();
   }
 
   Future<void> _clear(String id) async {
     await _ensureLoaded();
-    final changed = _uploads.remove(id) || _deletes.remove(id);
+    if (!_queues.containsKey(_active)) return;
+    final queue = _queue();
+    final changed = queue.uploads.remove(id) || queue.deletes.remove(id);
+    if (queue.isEmpty) _queues.remove(_active);
     if (changed) await _persist();
   }
 
@@ -176,11 +210,15 @@ class DualWriteS3Repair {
     required NoteStore s3,
   }) async {
     await _ensureLoaded();
+    _active = _replayKey(local);
+    final queue = _queues[_active];
+    if (queue == null || queue.isEmpty) return 0;
+    // A missing folder looks like every note is gone. Leave the queue until
+    // that folder exists again, and never replay another folder's ids here.
+    if (await _folderMissing(local)) return 0;
     var done = 0;
-    // Another notes folder must not supply the bytes for these ids, and
-    // must not turn a missing file there into a bucket delete.
-    if (!await _leaveUploads(local)) {
-      for (final id in List<String>.of(_uploads)) {
+    {
+      for (final id in List<String>.of(queue.uploads)) {
         try {
           final text = await local.read(id);
           await s3.update(id, text);
@@ -190,16 +228,14 @@ class DualWriteS3Repair {
           await _clear(id);
           done++;
         } on PathNotFoundException {
-          // Nothing on device to put. Dropping the object matches the
-          // primary, unless this folder is not the one the id was queued in.
-          if (await _leaveUploads(local)) continue;
+          // Nothing in this folder to put. Dropping the object matches it.
           await _enqueueDelete(id);
         } catch (_) {
           // Leave the upload queued for the next recovery.
         }
       }
     }
-    for (final id in List<String>.of(_deletes)) {
+    for (final id in List<String>.of(queue.deletes)) {
       String? restored;
       try {
         restored = await local.read(id);
@@ -254,4 +290,11 @@ class DualWriteS3Repair {
     }
     return done;
   }
+}
+
+class _RepairQueue {
+  final Set<String> uploads = {};
+  final Set<String> deletes = {};
+
+  bool get isEmpty => uploads.isEmpty && deletes.isEmpty;
 }

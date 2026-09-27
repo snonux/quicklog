@@ -116,71 +116,100 @@ class PreferencesService {
   /// Dual-write note ids whose local text still needs to overwrite S3.
   /// Transient, like [degradedUntil]: not part of a settings export.
   Future<List<String>> dualWritePendingUploads() async {
-    return (await dualWritePending()).uploads;
+    final folders = await dualWritePendingFolders();
+    final ids = <String>{
+      for (final queue in folders.values) ...queue.uploads,
+    };
+    return _sortedIds(ids);
   }
 
   /// Dual-write note ids removed on device whose S3 object is still there.
   Future<List<String>> dualWritePendingDeletes() async {
-    return (await dualWritePending()).deletes;
+    final folders = await dualWritePendingFolders();
+    final ids = <String>{
+      for (final queue in folders.values) ...queue.deletes,
+    };
+    return _sortedIds(ids);
   }
 
-  /// Both repair lists and the notes directory they were queued for.
+  /// Repair ids grouped by the notes directory they were queued in.
   ///
-  /// One preference value, so a crash cannot save the upload list without
-  /// the delete list. [directory] is the folder those ids belong to.
-  Future<
-    ({List<String> uploads, List<String> deletes, String? directory})
-  >
-  dualWritePending() async {
+  /// One preference value, so a crash cannot save one folder's list without
+  /// the other. Ids from a later directory stay in their own group.
+  Future<Map<String, ({List<String> uploads, List<String> deletes})>>
+  dualWritePendingFolders() async {
     final prefs = await SharedPreferences.getInstance();
     final raw = prefs.getString(_kPending);
-    if (raw != null) return _decodePending(raw);
-    return (
-      uploads: List<String>.from(
-        prefs.getStringList(_kPendingUploads) ?? const <String>[],
-      ),
-      deletes: List<String>.from(
-        prefs.getStringList(_kPendingDeletes) ?? const <String>[],
-      ),
-      directory: null,
+    if (raw != null) return _decodeFolders(raw);
+    final uploads = List<String>.from(
+      prefs.getStringList(_kPendingUploads) ?? const <String>[],
     );
+    final deletes = List<String>.from(
+      prefs.getStringList(_kPendingDeletes) ?? const <String>[],
+    );
+    if (uploads.isEmpty && deletes.isEmpty) return {};
+    return {
+      await directory(): (uploads: uploads, deletes: deletes),
+    };
   }
 
-  Future<void> setDualWritePending({
-    required List<String> uploads,
-    required List<String> deletes,
-    String? directory,
-  }) async {
+  Future<void> setDualWritePendingFolders(
+    Map<String, ({List<String> uploads, List<String> deletes})> folders,
+  ) async {
     final prefs = await SharedPreferences.getInstance();
-    if (uploads.isEmpty && deletes.isEmpty) {
+    final kept = <String, Object>{};
+    for (final entry in folders.entries) {
+      if (entry.value.uploads.isEmpty && entry.value.deletes.isEmpty) {
+        continue;
+      }
+      kept[entry.key] = <String, Object>{
+        'uploads': entry.value.uploads,
+        'deletes': entry.value.deletes,
+      };
+    }
+    if (kept.isEmpty) {
       await prefs.remove(_kPending);
     } else {
-      await prefs.setString(
-        _kPending,
-        jsonEncode(<String, Object?>{
-          'uploads': uploads,
-          'deletes': deletes,
-          'directory': ?directory,
-        }),
-      );
+      await prefs.setString(_kPending, jsonEncode(<String, Object>{
+        'folders': kept,
+      }));
     }
     await prefs.remove(_kPendingUploads);
     await prefs.remove(_kPendingDeletes);
   }
 
-  ({List<String> uploads, List<String> deletes, String? directory})
-  _decodePending(String raw) {
+  Map<String, ({List<String> uploads, List<String> deletes})> _decodeFolders(
+    String raw,
+  ) {
     final Object? decoded = jsonDecode(raw);
-    if (decoded is! Map) {
-      return (uploads: const <String>[], deletes: const <String>[], directory: null);
+    if (decoded is! Map) return {};
+    final grouped = decoded['folders'];
+    if (grouped is Map) {
+      final folders =
+          <String, ({List<String> uploads, List<String> deletes})>{};
+      for (final entry in grouped.entries) {
+        if (entry.key is! String || entry.value is! Map) continue;
+        final body = entry.value as Map;
+        folders[entry.key as String] = (
+          uploads: _stringList(body['uploads']),
+          deletes: _stringList(body['deletes']),
+        );
+      }
+      return folders;
     }
-    return (
-      uploads: _stringList(decoded['uploads']),
-      deletes: _stringList(decoded['deletes']),
-      directory: decoded['directory'] is String
-          ? decoded['directory'] as String
-          : null,
-    );
+    final directory = decoded['directory'];
+    if (directory is! String) return {};
+    return {
+      directory: (
+        uploads: _stringList(decoded['uploads']),
+        deletes: _stringList(decoded['deletes']),
+      ),
+    };
+  }
+
+  List<String> _sortedIds(Set<String> ids) {
+    final list = ids.toList()..sort();
+    return list;
   }
 
   List<String> _stringList(Object? value) {
