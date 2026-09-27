@@ -176,16 +176,71 @@ void main() {
         expect(session.isDegraded, isTrue);
       });
 
-      test('ArgumentError with a failing local write: the ArgumentError '
-          'propagates', () async {
-        final active = await storeFor(mode, blockLocal: true);
-        fakeS3.alwaysFail = ArgumentError('bad key');
+      if (mode == StorageMode.both) {
+        test('ArgumentError with a failing local write: the ArgumentError '
+            'propagates', () async {
+          final active = await storeFor(mode, blockLocal: true);
+          fakeS3.alwaysFail = ArgumentError('bad key');
 
-        await expectLater(
-          active.createNote('lost', now: now),
-          throwsA(isA<ArgumentError>()),
+          await expectLater(
+            active.createNote('lost', now: now),
+            throwsA(isA<ArgumentError>()),
+          );
+          expect(session.isDegraded, isFalse);
+        });
+
+        test('S3 outage with a failing local write: the local error keeps '
+            'its original stack trace', () async {
+          final active = await storeFor(mode, blockLocal: true);
+          fakeS3.alwaysFail = Exception('network down');
+
+          StackTrace? stack;
+          try {
+            await active.createNote('lost', now: now);
+          } on FileSystemException catch (_, st) {
+            stack = st;
+          }
+          // The trace points at the failed local write, not at the rethrow
+          // inside the S3 fallback.
+          expect(stack.toString(), contains('log_service.dart'));
+        });
+      } else {
+        test(
+          'ArgumentError propagates before any local write is attempted',
+          () async {
+            final active = await storeFor(mode);
+            fakeS3.alwaysFail = ArgumentError('bad key');
+
+            await expectLater(
+              active.createNote('lost', now: now),
+              throwsA(isA<ArgumentError>()),
+            );
+            expect(localText(), isNull);
+            expect(tmp.listSync(), isEmpty);
+            expect(session.isDegraded, isFalse);
+          },
         );
-        expect(session.isDegraded, isFalse);
+      }
+
+      test('without an explicit time, the S3 key and the local fallback '
+          'share one id', () async {
+        final active = await storeFor(mode);
+        // The put lands, then the response is lost: the note falls back to
+        // local, and both copies must carry the same stamp.
+        fakeS3.putSucceedsButThrows = Exception('response lost');
+
+        final result = await active.createNote('same id');
+
+        expect(result.outcome, NoteCreateOutcome.savedLocalOnly);
+        expect(fakeS3.objects.keys, [result.entry.id]);
+        expect(
+          File(p.join(tmp.path, result.entry.id)).readAsStringSync(),
+          'same id',
+        );
+        expect(
+          tmp.listSync().where((e) => e.path.endsWith('.md')),
+          hasLength(1),
+        );
       });
     });
   }

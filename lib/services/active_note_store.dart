@@ -223,6 +223,34 @@ enum NoteCreateOutcome {
 /// The outcome of [ActiveNoteStore.createNote].
 typedef NoteCreateResult = ({LogEntry entry, NoteCreateOutcome outcome});
 
+/// The dual-write local copy, attempted before S3: written or failed.
+sealed class _LocalAttempt {
+  const _LocalAttempt();
+
+  /// The written entry, or the captured failure rethrown with its original
+  /// stack trace.
+  LogEntry entryOrRethrow();
+}
+
+final class _LocalWritten extends _LocalAttempt {
+  const _LocalWritten(this.entry);
+
+  final LogEntry entry;
+
+  @override
+  LogEntry entryOrRethrow() => entry;
+}
+
+final class _LocalFailed extends _LocalAttempt {
+  const _LocalFailed(this.error, this.stackTrace);
+
+  final Object error;
+  final StackTrace stackTrace;
+
+  @override
+  LogEntry entryOrRethrow() => Error.throwWithStackTrace(error, stackTrace);
+}
+
 /// Resolves the process-active [NoteStore] from prefs + [S3SessionController].
 ///
 /// S3-only preferred (and not degraded) → [S3NoteStore]; otherwise
@@ -299,26 +327,30 @@ class ActiveNoteStore {
 
   /// Creates a new note per the preferred [StorageMode]:
   ///
-  /// - [StorageMode.local]: local directory only ([_createLocal]).
+  /// - [StorageMode.local]: local directory only.
   /// - [StorageMode.s3]: S3 first; when the S3 write fails the note is
   ///   written to the local directory **immediately** (same timestamp, hence
   ///   the same `ql-*.md` id), so it lands on the first try instead of
-  ///   waiting for a user retry ([_createS3Only]).
+  ///   waiting for a user retry.
   /// - [StorageMode.both]: dual write — the local copy is written first, then
   ///   S3 with the same id. An S3 failure still leaves the note safely on
   ///   device ([NoteCreateOutcome.savedLocalOnly]); a local failure still
-  ///   keeps it in the bucket ([NoteCreateOutcome.savedS3Only])
-  ///   ([_createDual]).
+  ///   keeps it in the bucket ([NoteCreateOutcome.savedS3Only]).
   ///
-  /// With S3 in the target, the note goes local-only without contacting S3
-  /// inside the degrade window or without credentials
-  /// ([_s3ConfigForCreate]). An S3 failure is kept locally by
-  /// [_fallbackLocal], which reports invalid saved settings
-  /// ([NoteCreateOutcome.savedLocalS3SettingsInvalid]) apart from an outage.
+  /// When S3 is part of the target but the session is inside the degrade
+  /// window, or no S3 credentials are saved, the note is written locally
+  /// without contacting S3 ([NoteCreateOutcome.savedLocalOnly]); missing
+  /// credentials also arm the degrade window. When the saved S3 settings
+  /// cannot build a client, the note is kept locally as
+  /// [NoteCreateOutcome.savedLocalS3SettingsInvalid] and no degrade window is
+  /// armed — the fix is in Preferences. An [ArgumentError] from S3 is
+  /// rethrown, unless a dual-write local copy already landed (then
+  /// [NoteCreateOutcome.savedLocalOnly]).
   ///
   /// The same-second overwrite rule of [LocalNoteStore.create] applies in
   /// every mode (the id only has second granularity). If both backends fail,
-  /// the local error is rethrown — the note is nowhere.
+  /// the local error is rethrown with its original stack trace — the note is
+  /// nowhere.
   Future<NoteCreateResult> createNote(String text, {DateTime? now}) async {
     bindSessionProbe();
     final local = LocalNoteStore(await _prefs.directory());
@@ -387,45 +419,50 @@ class ActiveNoteStore {
     String text,
     DateTime stamp,
   ) async {
-    final (entry: localEntry, error: localError) = await _attemptLocal(
-      local,
-      text,
-      stamp,
-    );
+    final localAttempt = await _attemptLocal(local, text, stamp);
     try {
       final s3 = _s3StoreFor(config, markFailures: true);
       final s3Entry = await s3.create(text, now: stamp);
-      if (localEntry == null) {
+      return switch (localAttempt) {
+        // Both landed: the local entry is the canonical one.
+        _LocalWritten(:final entry) => (
+          entry: entry,
+          outcome: NoteCreateOutcome.saved,
+        ),
         // Broken local directory: the note is in the bucket. Report it, but
         // do not pretend the save failed — the note is safe, and a retry
         // would duplicate it in the bucket.
-        return (entry: s3Entry, outcome: NoteCreateOutcome.savedS3Only);
-      }
-      // Both landed: the local entry is the canonical one.
-      return (entry: localEntry, outcome: NoteCreateOutcome.saved);
+        _LocalFailed() => (
+          entry: s3Entry,
+          outcome: NoteCreateOutcome.savedS3Only,
+        ),
+      };
     } on ArgumentError {
       // The local copy already landed: report it rather than hiding a saved
       // note behind an error (a re-log would duplicate). Without one there
       // is nothing to fall back to.
-      if (localEntry == null) rethrow;
-      return (entry: localEntry, outcome: NoteCreateOutcome.savedLocalOnly);
+      if (localAttempt case _LocalWritten(:final entry)) {
+        return (entry: entry, outcome: NoteCreateOutcome.savedLocalOnly);
+      }
+      rethrow;
     } catch (e) {
-      // Keep the local copy; if that failed too, the note is nowhere.
-      return _fallbackLocal(e, () async => localEntry ?? (throw localError!));
+      // Keep the local copy; if that failed too, the note is nowhere and
+      // the local error surfaces.
+      return _fallbackLocal(e, () async => localAttempt.entryOrRethrow());
     }
   }
 
-  /// One local write whose failure is captured instead of thrown, so a dual
-  /// write can still try S3. Exactly one of the fields is non-null.
-  Future<({LogEntry? entry, Object? error})> _attemptLocal(
+  /// One local write whose failure is captured (with its stack trace)
+  /// instead of thrown, so a dual write can still try S3.
+  Future<_LocalAttempt> _attemptLocal(
     LocalNoteStore local,
     String text,
     DateTime stamp,
   ) async {
     try {
-      return (entry: await local.create(text, now: stamp), error: null);
-    } catch (e) {
-      return (entry: null, error: e);
+      return _LocalWritten(await local.create(text, now: stamp));
+    } catch (error, stackTrace) {
+      return _LocalFailed(error, stackTrace);
     }
   }
 
