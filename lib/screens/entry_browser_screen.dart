@@ -152,10 +152,11 @@ class _EntryBrowserScreenState extends State<EntryBrowserScreen> {
 
   /// Opens the viewer. The viewer cannot delete by itself; it pops with
   /// `true` to request deletion, so all deletions run through [_delete].
-  /// A successful delete refreshes the list once. A failed delete re-reads
-  /// just that row, which also shows an edit made in the viewer before the
-  /// delete failed. Any other return refreshes as well: the viewer can edit
-  /// in place, and a new load is simpler than plumbing an "edited" flag.
+  /// A successful delete refreshes the list once. A failed delete follows
+  /// [_delete]: a both-location row is re-listed, a single-location row is
+  /// re-read (which also shows an edit made in the viewer before the delete
+  /// failed). Any other return refreshes as well: the viewer can edit in
+  /// place, and a new load is simpler than plumbing an "edited" flag.
   Future<void> _open(LocatedLogEntry located) async {
     final sources = _sources;
     if (sources == null) return;
@@ -177,26 +178,50 @@ class _EntryBrowserScreenState extends State<EntryBrowserScreen> {
     }
   }
 
-  /// Edits an entry straight from the list. A save re-lists; any other
-  /// return re-reads just this row, since a failed save may still have
-  /// written one backend ([BrowserNoteSources.update] tries both).
+  /// Edits an entry straight from the list.
+  ///
+  /// A save re-lists. An explicit discard re-reads just this row: a failed
+  /// save may have written one backend ([BrowserNoteSources.update] tries
+  /// both) before the user discarded. Leaving without discarding keeps the
+  /// cached subtitle and does not read again — a failed re-read would
+  /// otherwise replace a good line with a blank.
   Future<void> _edit(LocatedLogEntry located) async {
     final sources = _sources;
     if (sources == null) return;
     final saved =
         await editEntry(context, sources.entryStore(located), located.entry);
     if (!mounted) return;
-    if (saved) {
+    if (saved == true) {
       _refresh();
-    } else {
-      _rereadRow(located.id);
+    } else if (saved == false) {
+      await _rereadRow(located);
     }
   }
 
-  /// Rebuilds the list so the row of note [id] reads its subtitle again.
-  void _rereadRow(String id) {
-    _firstLines.invalidate(id);
-    setState(() {});
+  /// Re-reads the subtitle of [located] without dropping the line already
+  /// shown. [NoteStore.read] throws on failure, unlike [NoteStore.firstLine],
+  /// which collapses a failure to ''. On success, including an empty note,
+  /// the line is [FirstLineMemo.remember]ed for this load and the row
+  /// rebuilt. On failure the cached line stays. Does not invalidate first,
+  /// and does not re-list.
+  Future<void> _rereadRow(LocatedLogEntry located) async {
+    final sources = _sources;
+    if (sources == null) return;
+    final generation = _loadGeneration;
+    final String text;
+    try {
+      text = await sources.storeFor(located).read(located.id);
+    } catch (_) {
+      return;
+    }
+    if (!mounted || generation != _loadGeneration) return;
+    if (_firstLines.remember(
+      located,
+      firstLineOf(text),
+      generation: generation,
+    )) {
+      setState(() {});
+    }
   }
 
   Future<void> _confirmAndDelete(LocatedLogEntry located) async {
@@ -212,6 +237,14 @@ class _EntryBrowserScreenState extends State<EntryBrowserScreen> {
   }
 
   /// Performs the already-confirmed deletion and reports the outcome.
+  ///
+  /// A failed delete of a note listed in both places refreshes the list. The
+  /// delete may have removed one backend and left the other, while the row is
+  /// still [NoteStorageLocation.both]. A one-row re-read would use
+  /// [BrowserNoteSources.storeFor], which in dual-write prefers the local
+  /// file, miss it, and blank the subtitle. Re-listing shows the surviving
+  /// backend and its real line. A single-location failure re-reads just that
+  /// row: the note is still in that one place, and a viewer edit must show up.
   Future<void> _delete(LocatedLogEntry located) async {
     final sources = _sources;
     if (sources == null) return;
@@ -220,11 +253,14 @@ class _EntryBrowserScreenState extends State<EntryBrowserScreen> {
       await sources.delete(located);
     } catch (e) {
       // Deleting can fail on Android when the directory is outside the app's
-      // granted storage scope; keep the entry listed and say why. The note
-      // may have been edited in the viewer first, so re-read its subtitle.
+      // granted storage scope; keep the entry listed and say why.
       if (mounted) {
         _showSnack('Could not delete $name: $e', isError: true);
-        _rereadRow(name);
+        if (located.location == NoteStorageLocation.both) {
+          _refresh();
+        } else {
+          await _rereadRow(located);
+        }
       }
       return;
     }
@@ -613,7 +649,7 @@ class _EntryDetailScreenState extends State<_EntryDetailScreen> {
 
   Future<void> _edit() async {
     final saved = await editEntry(context, widget.store, widget.entry);
-    if (saved && mounted) _reload();
+    if (saved == true && mounted) _reload();
   }
 
   Future<void> _requestDelete() async {

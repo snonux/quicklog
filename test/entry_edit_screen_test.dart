@@ -33,8 +33,8 @@ void main() {
   /// Pumps a host screen whose button opens the editor, so the editor sits on
   /// a pushed route: that is what the app does, and it is the only way to
   /// exercise back navigation and the pop result.
-  Future<List<bool>> pumpEditor(WidgetTester tester) async {
-    final results = <bool>[];
+  Future<List<bool?>> pumpEditor(WidgetTester tester) async {
+    final results = <bool?>[];
     await tester.pumpWidget(
       MaterialApp(
         home: Scaffold(
@@ -92,7 +92,7 @@ void main() {
     await pumpAfterPop(tester);
 
     expect(await readEntry(tester), 'edited body');
-    expect(results, <bool>[true]);
+    expect(results, <bool?>[true]);
     expect(find.byType(TextField), findsNothing);
   });
 
@@ -131,17 +131,18 @@ void main() {
 
     expect(find.byType(TextField), findsNothing);
     expect(await readEntry(tester), 'original body');
-    expect(results, <bool>[false]);
+    expect(results, <bool?>[false]);
   });
 
   testWidgets('leaving an untouched entry does not ask', (tester) async {
-    await pumpEditor(tester);
+    final results = await pumpEditor(tester);
 
     await tester.pageBack();
     await pumpAfterPop(tester);
 
     expect(find.text('Discard changes?'), findsNothing);
     expect(find.byType(TextField), findsNothing);
+    expect(results, <bool?>[null]);
   });
 
   testWidgets('an unreadable entry shows the error instead of an empty editor',

@@ -14,13 +14,16 @@ import '../services/merged_note_listing.dart';
 /// changes made elsewhere (another device, a sync tool) show on any re-list.
 /// [NoteStore.firstLine] maps a failed read to '', and this memo keeps that
 /// result for the rest of the load. A rebuild does not retry it; the next
-/// load generation does.
+/// load generation does. [remember] stores a line the caller already read
+/// with [NoteStore.read] (which throws). A failed read is not remembered, so
+/// the previous line stays until the next load.
 ///
 /// Within a load, [invalidate] forgets a note the browser may have changed
 /// without re-listing.
 ///
-/// [peek] is the line once that read has completed, so a row scrolled back
-/// into view can show it on the first frame. It does not start a read.
+/// [peek] is the line once that read has completed, or been [remember]ed, so
+/// a row scrolled back into view can show it on the first frame. It does not
+/// start a read.
 class FirstLineMemo {
   int? _generation;
   final Map<(String, NoteStorageLocation), Future<String>> _lines = {};
@@ -63,11 +66,34 @@ class FirstLineMemo {
   }
 
   /// The line for [located] in this [generation], if that read has already
-  /// completed. Null while it is still in flight, after [invalidate], or when
-  /// this generation has not read the row. Does not start a read.
+  /// completed or been [remember]ed. Null while it is still in flight, after
+  /// [invalidate], or when this generation has not read the row. Does not
+  /// start a read.
   String? peek(LocatedLogEntry located, {required int generation}) {
     if (generation != _generation) return null;
     return _resolved[(located.id, located.location)];
+  }
+
+  /// Stores [line] as the finished subtitle of [located] for [generation]
+  /// without calling the store. [peek] then returns [line], including when
+  /// [line] is empty, so the next frame is not blank. No-op when [generation]
+  /// is not the current load: a read that finishes after a newer load, or
+  /// before any load, must not overwrite what is showing.
+  ///
+  /// Returns whether the line was stored.
+  bool remember(
+    LocatedLogEntry located,
+    String line, {
+    required int generation,
+  }) {
+    if (_generation != generation) return false;
+    final key = (located.id, located.location);
+    // Already complete, so no listener: a later [invalidate] clears the line
+    // and nothing asynchronous writes it back. A previous read's listener
+    // no-ops because this future is no longer the one cached for [key].
+    _lines[key] = Future<String>.value(line);
+    _resolved[key] = line;
+    return true;
   }
 
   /// Forgets note [id] in every location, so its next lookup reads again.

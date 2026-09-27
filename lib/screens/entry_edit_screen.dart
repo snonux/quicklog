@@ -2,23 +2,24 @@ import 'package:flutter/material.dart';
 
 import '../services/log_service.dart';
 
-/// Pushes the full-screen editor for [entry] and reports whether it saved.
+/// Pushes the full-screen editor for [entry] and returns how it closed.
 ///
 /// A whole screen rather than an inline field: notes can be long, and the
-/// editor needs the same amount of room the compose screen gets. Returning
-/// only "saved or not" keeps the caller's job trivial — refresh what it shows
-/// when something changed, do nothing otherwise.
-Future<bool> editEntry(
+/// editor needs the same amount of room the compose screen gets. `true` means
+/// the note was saved, `false` means the user discarded edits, and `null`
+/// means they left without discarding (a clean back). Those last two are
+/// different: a discard can follow a partial write, while leaving an
+/// untouched note changed nothing.
+Future<bool?> editEntry(
   BuildContext context,
   NoteStore store,
   LogEntry entry,
-) async {
-  final saved = await Navigator.of(context).push<bool>(
+) {
+  return Navigator.of(context).push<bool>(
     MaterialPageRoute(
       builder: (_) => EntryEditScreen(store: store, entry: entry),
     ),
   );
-  return saved ?? false;
 }
 
 /// Editor for an existing entry. It writes back to the same id, so the note

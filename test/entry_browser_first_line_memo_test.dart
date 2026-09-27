@@ -96,6 +96,23 @@ class _QueuedStore implements NoteStore {
   dynamic noSuchMethod(Invocation invocation) => super.noSuchMethod(invocation);
 }
 
+/// [initialData] of the subtitle [FutureBuilder] for the row showing
+/// [visibleLine] (`S3 · alpha`, and so on).
+String? _subtitleInitialData(WidgetTester tester, String visibleLine) {
+  final tile = find.ancestor(
+    of: find.text(visibleLine),
+    matching: find.byType(ListTile),
+  );
+  return tester
+      .widget<FutureBuilder<String>>(
+        find.descendant(
+          of: tile,
+          matching: find.byType(FutureBuilder<String>),
+        ),
+      )
+      .initialData;
+}
+
 LocatedLogEntry _located(String id, NoteStorageLocation location) =>
     LocatedLogEntry(
       entry: LogEntry(id: id, timestamp: parseLogEntryId(id)!),
@@ -233,6 +250,32 @@ void main() {
       expect(memo.peek(row, generation: 2), 'alpha');
     });
 
+    test('remember stores a line without reading', () async {
+      final row = _located(a, NoteStorageLocation.s3);
+      // No load yet: this generation is not current.
+      expect(memo.remember(row, 'too soon', generation: 1), isFalse);
+      expect(memo.peek(row, generation: 1), isNull);
+      expect(store.calls.containsKey(a), isFalse);
+
+      await memo.firstLine(row, store, generation: 1);
+      expect(store.calls[a], 1);
+
+      expect(memo.remember(row, 'kept', generation: 1), isTrue);
+      expect(memo.peek(row, generation: 1), 'kept');
+      expect(await memo.firstLine(row, store, generation: 1), 'kept');
+      expect(store.calls[a], 1);
+
+      // A successful read of an empty note is stored as '', not left stale.
+      expect(memo.remember(row, '', generation: 1), isTrue);
+      expect(memo.peek(row, generation: 1), '');
+
+      await memo.firstLine(row, store, generation: 2);
+      expect(memo.remember(row, 'stale', generation: 1), isFalse);
+      expect(memo.peek(row, generation: 2), 'alpha');
+      expect(memo.peek(row, generation: 1), isNull);
+      expect(store.calls[a], 2);
+    });
+
     test(
       'a late completion after invalidate does not refill the line',
       () async {
@@ -339,6 +382,11 @@ void main() {
       expect(find.text('S3 · alpha'), findsOneWidget);
       expect(find.text('S3 · beta'), findsOneWidget);
       expect(s3.gets, {older: 1, newer: 1});
+      // The resolved line is the FutureBuilder's initial data, so a row
+      // scrolled back paints it on the first frame. Removing initialData
+      // leaves this null.
+      expect(_subtitleInitialData(tester, 'S3 · alpha'), 'alpha');
+      expect(_subtitleInitialData(tester, 'S3 · beta'), 'beta');
     });
 
     testWidgets('each reload re-reads every row exactly once', (tester) async {
@@ -461,6 +509,38 @@ void main() {
       },
     );
 
+    testWidgets(
+      'a discarded edit whose re-read fails keeps the old subtitle',
+      (tester) async {
+        await start(tester);
+        expect(find.text('S3 · alpha'), findsOneWidget);
+
+        await tapAndSettle(tester, find.byIcon(Icons.edit_outlined).last);
+        s3.failNextPut.add(older);
+        await tester.enterText(find.byType(TextField), 'alpha edited');
+        await pumpWithIo(tester);
+        await tapAndSettle(tester, find.widgetWithText(FilledButton, 'Save'));
+        expect(find.textContaining('Could not save'), findsOneWidget);
+
+        // The editor already read the note. The discard's follow-up read is
+        // the one that fails; the object was never written.
+        s3.failNextGet.add(older);
+        final newerBefore = s3.gets[newer];
+        final olderBefore = s3.gets[older];
+        await tester.pageBack();
+        await pumpWithIo(tester);
+        await tapAndSettle(tester, find.text('Discard'));
+
+        expect(find.text('Entries'), findsOneWidget);
+        expect(find.text('S3 · alpha'), findsOneWidget);
+        expect(find.text('S3 · '), findsNothing);
+        expect(utf8.decode(s3.objects[older]!), 'alpha');
+        expect(s3.failNextGet, isEmpty);
+        expect(s3.gets[older], olderBefore! + 1);
+        expect(s3.gets[newer], newerBefore);
+      },
+    );
+
     testWidgets('a failed delete after a viewer edit re-reads the row', (
       tester,
     ) async {
@@ -493,6 +573,29 @@ void main() {
       expect(s3.gets[older], olderBefore + 1);
       expect(s3.gets[newer], newerBefore);
     });
+
+    testWidgets(
+      'a failed delete of a both row lists the surviving S3 copy',
+      (tester) async {
+        writeLocal(older, 'alpha');
+        await start(tester, mode: 'both');
+        expect(find.text('Local + S3 · alpha'), findsOneWidget);
+
+        s3.failNextDelete.add(older);
+        await tapAndSettle(tester, find.byIcon(Icons.delete_outline).last);
+        await tapAndSettle(tester, find.widgetWithText(FilledButton, 'Delete'));
+
+        expect(find.textContaining('Could not delete'), findsOneWidget);
+        expect(find.text('Local + S3 · alpha'), findsNothing);
+        expect(find.text('S3 · alpha'), findsOneWidget);
+        expect(find.text('S3 · '), findsNothing);
+        expect(
+          await fileExists(tester, File(p.join(tmp.path, older))),
+          isFalse,
+        );
+        expect(utf8.decode(s3.objects[older]!), 'alpha');
+      },
+    );
 
     testWidgets('delete drops the row and re-reads the others once', (
       tester,
