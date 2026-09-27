@@ -176,7 +176,11 @@ void main() {
 
       await expectLater(
         plain.update(both(id), 'edited'),
-        throwsA(isNot(isA<DualWriteS3Pending>())),
+        throwsA(
+          predicate<Object>(
+            (e) => e is! DualWriteS3Pending && '$e'.contains('put failed'),
+          ),
+        ),
       );
 
       await plain.replayPendingS3();
@@ -195,6 +199,12 @@ void main() {
       expect(repaired, 0);
       expect(utf8.decode(client.objects[id]!), 's3 old');
       expect(await repairs.hasPending(), isTrue);
+
+      // A failed put must stay an upload. Recasting it as a delete would
+      // remove the object on the next replay.
+      await repairs.replay(local: local, s3: s3);
+      expect(utf8.decode(client.objects[id]!), 'edited');
+      expect(await repairs.hasPending(), isFalse);
     });
 
     test('a failed S3 list still queues an edit of the local row', () async {
@@ -341,6 +351,71 @@ void main() {
 
       expect(await local.read(id), 'v2');
       expect(utf8.decode(gated.objects[id]!), 'v2');
+      expect(await repairs.hasPending(), isFalse);
+    });
+
+    test('a local delete that fails after the S3 delete is re-uploaded', () async {
+      final failing = _FailingDeleteLocal(tmp.path);
+      final src = BrowserNoteSources(
+        local: failing,
+        s3: s3,
+        mergeWhenS3Preferred: true,
+        preferLocalReads: true,
+        keepLocalCopies: true,
+        pendingRepairs: repairs,
+      );
+      await File(p.join(tmp.path, id)).writeAsString('keep me');
+      await client.putText(id, 'remote');
+      failing.fail = true;
+
+      await expectLater(
+        src.delete(both(id)),
+        throwsA(isA<FileSystemException>()),
+      );
+
+      expect(File(p.join(tmp.path, id)).existsSync(), isTrue);
+      expect(client.objects.containsKey(id), isFalse);
+      expect(await repairs.hasPending(), isTrue);
+
+      failing.fail = false;
+      await repairs.replay(local: failing, s3: s3);
+      expect(utf8.decode(client.objects[id]!), 'keep me');
+      expect(await repairs.hasPending(), isFalse);
+    });
+
+    test('editing an S3 leftover cancels a queued delete', () async {
+      await client.putText(id, 'stale remote');
+      await repairs.enqueueDelete(id);
+      final remoteOnly = LocatedLogEntry(
+        entry: LogEntry(id: id, timestamp: parseLogEntryId(id)!),
+        location: NoteStorageLocation.s3,
+      );
+
+      await sources().update(remoteOnly, 'edited on s3');
+
+      expect(utf8.decode(client.objects[id]!), 'edited on s3');
+      expect(await repairs.hasPending(), isFalse);
+      await repairs.replay(local: local, s3: s3);
+      expect(utf8.decode(client.objects[id]!), 'edited on s3');
+    });
+
+    test('a file restored during the S3 delete is put back', () async {
+      final gated = _GatedDelete();
+      final remote = S3NoteStore(gated);
+      await gated.putText(id, 'remote');
+      await repairs.enqueueDelete(id);
+      final entered = Completer<void>();
+      final release = Completer<void>();
+      gated.entered = entered;
+      gated.release = release;
+
+      final replay = repairs.replay(local: local, s3: remote);
+      await entered.future;
+      await File(p.join(tmp.path, id)).writeAsString('restored');
+      release.complete();
+      await replay;
+
+      expect(utf8.decode(gated.objects[id]!), 'restored');
       expect(await repairs.hasPending(), isFalse);
     });
   });
@@ -492,7 +567,11 @@ void main() {
 
       await expectLater(
         sources.update(both(id), 'edited'),
-        throwsA(isNot(isA<DualWriteS3Pending>())),
+        throwsA(
+          predicate<Object>(
+            (e) => e is! DualWriteS3Pending && '$e'.contains('put failed'),
+          ),
+        ),
       );
 
       expect(await readLocal(), 'edited');
@@ -514,6 +593,36 @@ void main() {
       expect(await prefs.dualWritePendingUploads(), isEmpty);
     });
   });
+}
+
+class _FailingDeleteLocal extends LocalNoteStore {
+  _FailingDeleteLocal(super.directory);
+
+  bool fail = false;
+
+  @override
+  Future<void> delete(String id) async {
+    if (fail) throw const FileSystemException('denied');
+    await super.delete(id);
+  }
+}
+
+/// Removes the object, then waits, so a test can restore the local file
+/// while the delete is still in flight.
+class _GatedDelete extends MemoryS3ObjectClient {
+  Completer<void>? entered;
+  Completer<void>? release;
+
+  @override
+  Future<void> deleteObject(String key) async {
+    objects.remove(key);
+    final started = entered;
+    final wait = release;
+    entered = null;
+    release = null;
+    if (started != null && !started.isCompleted) started.complete();
+    if (wait != null) await wait.future;
+  }
 }
 
 class _FailingLocal extends LocalNoteStore {

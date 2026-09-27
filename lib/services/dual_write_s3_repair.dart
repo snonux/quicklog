@@ -143,6 +143,17 @@ class DualWriteS3Repair {
     if (changed) await _persist();
   }
 
+  /// True when [id] is gone from [s3], including when it was already missing.
+  /// False when the delete failed and the id should stay queued.
+  Future<bool> _deleteOrMissing(NoteStore s3, String id) async {
+    try {
+      await s3.delete(id);
+      return true;
+    } catch (e) {
+      return isMissingObjectError(e);
+    }
+  }
+
   Future<int> _replay({
     required NoteStore local,
     required NoteStore s3,
@@ -191,14 +202,31 @@ class DualWriteS3Repair {
         }
         continue;
       }
+      final removed = await _deleteOrMissing(s3, id);
+      if (!removed) continue;
+      // The file can reappear while the delete is in flight. Local is
+      // still the primary, so put it back instead of dropping the queue.
+      final String? back;
       try {
-        await s3.delete(id);
+        back = await local.read(id);
+      } on PathNotFoundException {
         await _clear(id);
         done++;
-      } catch (e) {
-        if (!isMissingObjectError(e)) continue;
+        continue;
+      } catch (_) {
+        continue;
+      }
+      try {
+        await s3.update(id, back);
+        final current = await local.read(id);
+        if (current != back) {
+          await _enqueueUpload(id);
+          continue;
+        }
         await _clear(id);
         done++;
+      } catch (_) {
+        await _enqueueUpload(id);
       }
     }
     return done;

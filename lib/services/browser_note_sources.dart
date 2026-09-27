@@ -188,7 +188,12 @@ class BrowserNoteSources {
     final repairs = pendingRepairs;
     if (repairs == null) return null;
     final localLanded = located.hasLocal && localError == null;
-    if (s3Attempted && s3Error == null && localLanded) {
+    if (s3Attempted &&
+        s3Error == null &&
+        (localLanded || !located.hasLocal)) {
+      // Both copies match, or this row is only on S3 (a leftover after a
+      // queued delete). Either way the bucket has the text just written,
+      // so a pending delete must not run and remove it.
       await repairs.clear(located.id);
       return null;
     }
@@ -211,12 +216,19 @@ class BrowserNoteSources {
   }) async {
     final repairs = pendingRepairs;
     if (repairs == null) return null;
-    if (s3Attempted &&
-        (s3Error == null || isMissingObjectError(s3Error))) {
+    final localRemoved = located.hasLocal && localError == null;
+    final s3Gone =
+        s3Attempted && (s3Error == null || isMissingObjectError(s3Error));
+    if (s3Gone && (localRemoved || !located.hasLocal)) {
       await repairs.clear(located.id);
       return null;
     }
-    final localRemoved = located.hasLocal && localError == null;
+    if (s3Gone && localError != null) {
+      // The bucket object is gone and the device file is not. Replay puts
+      // that file back; clearing would leave the note only on the device.
+      await repairs.enqueueUpload(located.id);
+      return null;
+    }
     if (localRemoved && s3Error != null && s3Error is! ArgumentError) {
       await repairs.enqueueDelete(located.id);
       return DualWriteS3Pending.notDeleted(s3Error);

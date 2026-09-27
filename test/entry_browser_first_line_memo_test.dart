@@ -491,6 +491,9 @@ void main() {
       // refresh would GET the other visible row again.
       expect(s3.gets[newer], newerBefore);
       expect(s3.gets[older], olderBefore);
+      // Leaving replays the queued upload. A re-read of the local file
+      // alone would leave the bucket on the pre-edit text.
+      expect(utf8.decode(s3.objects[older]!), 'alpha edited');
     });
 
     testWidgets(
