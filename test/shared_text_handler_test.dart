@@ -1,5 +1,6 @@
 import 'dart:async';
 
+import 'package:flutter/foundation.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:quicklog/services/shared_text_handler.dart';
 
@@ -157,8 +158,7 @@ void main() {
       // Mirrors HomeScreen: every cached share goes through the auto-log
       // path of handleSharedTextLoad, backed by the (slow) store.
       intake = SharedTextIntake(
-        readCache: cache.read,
-        clearCache: cache.clear,
+        cache: cache,
         handle: (text, clearHandled) => handleSharedTextLoad(
           text: text,
           autoLog: true,
@@ -260,6 +260,99 @@ void main() {
       expect(store.saved, ['note']);
     });
 
+    test('a failed clear after a save does not log the share twice', () async {
+      cache.share('first');
+      final start = intake.load();
+      await store.started(1);
+      final resume = intake.load();
+
+      cache.failClears = true;
+      store.completeNext();
+      await Future.wait([start, resume]);
+
+      // Logged once, the clear is best effort and not a failed load.
+      expect(store.saved, ['first']);
+      expect(errors, isEmpty);
+      expect(cache.content, 'first');
+
+      // A later resume retries the clear instead of re-logging.
+      cache.failClears = false;
+      await intake.load();
+      expect(store.attempts, ['first']);
+      expect(cache.content, isNull);
+
+      // And a new share afterwards is logged normally.
+      cache.share('second');
+      final next = intake.load();
+      await store.started(2);
+      store.completeNext();
+      await next;
+      expect(store.saved, ['first', 'second']);
+    });
+
+    test(
+      'a failed re-read after a save does not log the share twice',
+      () async {
+        cache.share('first');
+        final start = intake.load();
+        await store.started(1);
+
+        cache.failReads = true;
+        store.completeNext();
+        await start;
+        expect(store.saved, ['first']);
+        expect(errors, isEmpty);
+
+        cache.failReads = false;
+        await intake.load();
+        expect(store.attempts, ['first']);
+        expect(cache.content, isNull);
+        expect(errors, isEmpty);
+      },
+    );
+
+    test('an Error is reported to FlutterError, not onError', () async {
+      final reported = <FlutterErrorDetails>[];
+      final previous = FlutterError.onError;
+      FlutterError.onError = reported.add;
+      addTearDown(() => FlutterError.onError = previous);
+
+      cache
+        ..failReads = true
+        ..readError = StateError('bug');
+      await intake.load();
+
+      expect(errors, isEmpty);
+      expect(reported.single.exception, isA<StateError>());
+    });
+
+    test('a throwing onError does not escape or wedge the intake', () async {
+      final reported = <FlutterErrorDetails>[];
+      final previous = FlutterError.onError;
+      FlutterError.onError = reported.add;
+      addTearDown(() => FlutterError.onError = previous);
+
+      final handled = <String>[];
+      final throwing = SharedTextIntake(
+        cache: cache,
+        handle: (text, clearHandled) async {
+          handled.add(text);
+          await clearHandled();
+        },
+        onError: (_) => throw StateError('onError broke'),
+      );
+      cache.failReads = true;
+      await throwing.load();
+      expect(reported.single.exception, isA<StateError>());
+
+      cache
+        ..failReads = false
+        ..share('note');
+      await throwing.load();
+      expect(handled, ['note']);
+      expect(cache.content, isNull);
+    });
+
     test('an empty share is cleared without logging', () async {
       cache.share('   ');
       await intake.load();
@@ -278,19 +371,24 @@ void main() {
 }
 
 /// In-memory stand-in for the single-slot native share cache.
-class _FakeShareCache {
+class _FakeShareCache implements SharedTextCache {
   String? content;
   int clears = 0;
   bool failReads = false;
+  bool failClears = false;
+  Object readError = Exception('channel down');
 
   void share(String text) => content = text;
 
+  @override
   Future<String?> read() async {
-    if (failReads) throw Exception('channel down');
+    if (failReads) throw readError;
     return content;
   }
 
+  @override
   Future<void> clear() async {
+    if (failClears) throw Exception('delete failed');
     clears++;
     content = null;
   }

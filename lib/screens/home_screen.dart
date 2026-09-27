@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:io';
 
 import 'package:flutter/material.dart';
@@ -5,7 +6,6 @@ import 'package:flutter/material.dart';
 import '../services/active_note_store.dart';
 import '../services/preferences.dart';
 import '../services/s3_session_controller.dart';
-import '../services/share_service.dart';
 import '../services/shared_text_handler.dart';
 import '../widgets/s3_degraded_banner.dart';
 import 'entry_browser_screen.dart';
@@ -14,13 +14,22 @@ import 'preferences_screen.dart';
 const int kMaxTextLength = 5000;
 
 class HomeScreen extends StatefulWidget {
-  const HomeScreen({super.key, this.session, this.activeStore});
+  const HomeScreen({
+    super.key,
+    this.session,
+    this.activeStore,
+    this.sharedTextCache,
+  });
 
   /// Optional override for tests; defaults to the process-wide session.
   final S3SessionController? session;
 
   /// Optional override for tests (inject fake S3).
   final ActiveNoteStore? activeStore;
+
+  /// Optional override for tests: the share cache to drain on start-up and
+  /// resume. Defaults to the native cache, which exists on Android only.
+  final SharedTextCache? sharedTextCache;
 
   @override
   State<HomeScreen> createState() => _HomeScreenState();
@@ -33,12 +42,7 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
   bool _warnShown = false;
   bool _loadingShared = false;
   bool _logging = false;
-  late final SharedTextIntake _sharedIntake = SharedTextIntake(
-    readCache: ShareService.readSharedTextFromCache,
-    clearCache: ShareService.clearSharedTextCache,
-    handle: _handleSharedText,
-    onError: _showError,
-  );
+  late final SharedTextIntake? _sharedIntake = _createSharedIntake();
 
   S3SessionController get _session =>
       widget.session ?? S3SessionController.instance;
@@ -52,9 +56,33 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
     _controller.addListener(_onTextChanged);
     // Session is loaded once in main(); do not re-load here — a racing
     // unawaited load can resurrect a degrade window cleared by retry/mode.
-    if (Platform.isAndroid) {
-      WidgetsBinding.instance.addPostFrameCallback((_) => _sharedIntake.load());
+    if (_sharedIntake != null) {
+      WidgetsBinding.instance.addPostFrameCallback((_) => _loadSharedText());
     }
+  }
+
+  SharedTextIntake? _createSharedIntake() {
+    final cache =
+        widget.sharedTextCache ??
+        (Platform.isAndroid ? const NativeSharedTextCache() : null);
+    if (cache == null) return null;
+    return SharedTextIntake(
+      cache: cache,
+      handle: _handleSharedText,
+      onError: _showError,
+    );
+  }
+
+  /// Drains the share cache in the background; loads are serialized by the
+  /// intake, so this is safe to call on every resume.
+  void _loadSharedText() {
+    final intake = _sharedIntake;
+    if (intake == null) return;
+    unawaited(
+      intake.load().catchError((Object e, StackTrace st) {
+        FlutterError.reportError(FlutterErrorDetails(exception: e, stack: st));
+      }),
+    );
   }
 
   @override
@@ -68,8 +96,8 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
 
   @override
   void didChangeAppLifecycleState(AppLifecycleState state) {
-    if (state == AppLifecycleState.resumed && Platform.isAndroid) {
-      _sharedIntake.load();
+    if (state == AppLifecycleState.resumed) {
+      _loadSharedText();
     }
   }
 
