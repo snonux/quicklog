@@ -38,7 +38,8 @@ class _EntryBrowserScreenState extends State<EntryBrowserScreen> {
   bool _wasDegraded = false;
   int _loadGeneration = 0;
 
-  /// Row subtitles, so a rebuild does not re-read every visible note.
+  /// Row subtitles of the current load, so a rebuild does not re-read every
+  /// visible note; each reload reads them afresh.
   final FirstLineMemo _firstLines = FirstLineMemo();
 
   /// True while a [_refresh] is in flight; [_sources] may then describe a
@@ -74,7 +75,6 @@ class _EntryBrowserScreenState extends State<EntryBrowserScreen> {
   @override
   void dispose() {
     _session.removeListener(_onSessionChanged);
-    _firstLines.clear();
     super.dispose();
   }
 
@@ -93,18 +93,9 @@ class _EntryBrowserScreenState extends State<EntryBrowserScreen> {
         degraded == _wasDegraded) {
       return;
     }
-    // A mode change can switch which backend a row is read from.
-    if (mode != _lastPreferredMode) _firstLines.clear();
     _wasUsingLocalFallback = usingLocal;
     _wasDegraded = degraded;
     _lastPreferredMode = mode;
-    _refresh();
-  }
-
-  /// A refresh the user asked for: re-read every subtitle as well, since
-  /// notes may have changed elsewhere (another device, a sync tool).
-  void _refreshAll() {
-    _firstLines.clear();
     _refresh();
   }
 
@@ -127,7 +118,6 @@ class _EntryBrowserScreenState extends State<EntryBrowserScreen> {
     final sources = await _active.resolveBrowserSources();
     final entries = await sources.list();
     if (generation != _loadGeneration) return entries;
-    _firstLines.retain(entries);
     _dir = dir;
     _sources = sources;
     _wasUsingLocalFallback = _session.usesLocalFallback;
@@ -152,7 +142,7 @@ class _EntryBrowserScreenState extends State<EntryBrowserScreen> {
       _showSnack(message);
       if (result == S3RetryResult.reachable ||
           result == S3RetryResult.armedWithoutProbe) {
-        _refreshAll();
+        _refresh();
       }
     } catch (e) {
       if (!mounted) return;
@@ -178,25 +168,36 @@ class _EntryBrowserScreenState extends State<EntryBrowserScreen> {
         ),
       ),
     );
+    // The viewer may have edited the note even if the delete below fails.
+    _firstLines.invalidate(located.id);
     if (!mounted) return;
     if (deleteRequested == true) {
       await _delete(located);
     } else {
-      _firstLines.invalidate(located.id);
       _refresh();
     }
   }
 
-  /// Edits an entry straight from the list. Only a save changes the note, so
-  /// the listing is re-read only then.
+  /// Edits an entry straight from the list. A save re-lists; any other
+  /// return re-reads just this row, since a failed save may still have
+  /// written one backend ([BrowserNoteSources.update] tries both).
   Future<void> _edit(LocatedLogEntry located) async {
     final sources = _sources;
     if (sources == null) return;
     final saved =
         await editEntry(context, sources.entryStore(located), located.entry);
-    if (!saved || !mounted) return;
-    _firstLines.invalidate(located.id);
-    _refresh();
+    if (!mounted) return;
+    if (saved) {
+      _refresh();
+    } else {
+      _rereadRow(located.id);
+    }
+  }
+
+  /// Rebuilds the list so the row of note [id] reads its subtitle again.
+  void _rereadRow(String id) {
+    _firstLines.invalidate(id);
+    setState(() {});
   }
 
   Future<void> _confirmAndDelete(LocatedLogEntry located) async {
@@ -220,11 +221,14 @@ class _EntryBrowserScreenState extends State<EntryBrowserScreen> {
       await sources.delete(located);
     } catch (e) {
       // Deleting can fail on Android when the directory is outside the app's
-      // granted storage scope; keep the entry listed and say why.
-      if (mounted) _showSnack('Could not delete $name: $e', isError: true);
+      // granted storage scope; keep the entry listed and say why. The note
+      // may have been edited in the viewer first, so re-read its subtitle.
+      if (mounted) {
+        _showSnack('Could not delete $name: $e', isError: true);
+        _rereadRow(name);
+      }
       return;
     }
-    _firstLines.invalidate(name);
     if (!mounted) return;
     _showSnack('Deleted $name');
     _refresh();
@@ -245,7 +249,6 @@ class _EntryBrowserScreenState extends State<EntryBrowserScreen> {
       }
       return;
     }
-    _firstLines.invalidate(located.id);
     if (!mounted) return;
     _showSnack('${upload.past} ${located.id} to S3');
     _refresh();
@@ -265,7 +268,6 @@ class _EntryBrowserScreenState extends State<EntryBrowserScreen> {
       }
       return;
     }
-    _firstLines.invalidate(located.id);
     if (!mounted) return;
     _showSnack('Removed local copy of ${located.id}');
     _refresh();
@@ -303,7 +305,6 @@ class _EntryBrowserScreenState extends State<EntryBrowserScreen> {
     for (final located in localOnly) {
       try {
         await sources.uploadLocalToS3(located);
-        _firstLines.invalidate(located.id);
         done++;
       } catch (_) {
         failed++;
@@ -351,7 +352,7 @@ class _EntryBrowserScreenState extends State<EntryBrowserScreen> {
           IconButton(
             tooltip: 'Refresh',
             icon: const Icon(Icons.refresh),
-            onPressed: _refreshAll,
+            onPressed: _refresh,
           ),
         ],
       ),
@@ -375,7 +376,7 @@ class _EntryBrowserScreenState extends State<EntryBrowserScreen> {
                   null => null,
                 },
                 trailing: TextButton(
-                  onPressed: _refreshAll,
+                  onPressed: _refresh,
                   child: const Text('Retry'),
                 ),
               ),
@@ -415,7 +416,7 @@ class _EntryBrowserScreenState extends State<EntryBrowserScreen> {
   Widget _entryList(List<LocatedLogEntry> entries) {
     final sources = _sources!;
     return RefreshIndicator(
-      onRefresh: () async => _refreshAll(),
+      onRefresh: () async => _refresh(),
       child: ListView.separated(
         itemCount: entries.length,
         separatorBuilder: (_, _) => const Divider(height: 1),
@@ -447,6 +448,7 @@ class _EntryBrowserScreenState extends State<EntryBrowserScreen> {
             firstLine: _firstLines.firstLine(
               located,
               sources.storeFor(located),
+              generation: _loadGeneration,
             ),
             entry: located.entry,
             location: _showLocation ? located.location : null,

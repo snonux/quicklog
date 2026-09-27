@@ -1,68 +1,39 @@
 import '../services/log_service.dart';
 import '../services/merged_note_listing.dart';
 
-/// Remembers the entry browser's per-row [NoteStore.firstLine] reads, so a
-/// rebuild reuses the read in flight or already done instead of starting
-/// another one (in S3 mode, a network GET per visible row).
+/// Remembers the entry browser's per-row [NoteStore.firstLine] reads within
+/// one load of the listing, so a rebuild reuses the read in flight or already
+/// done instead of starting another (in S3 mode, a network GET per visible
+/// row).
 ///
-/// A row is keyed by its note id and where it was listed: the location
-/// decides which backend is read, so a copy or move to S3 gives the row a new
-/// key. Listings carry no ETag or modification time, so content changes are
-/// invalidated explicitly: [invalidate] after the browser edits or deletes a
-/// note, [clear] when the user asks for a fresh read (changes made elsewhere).
-///
-/// [NoteStore.firstLine] maps read errors to an empty string, so an empty
-/// line may be a failed fetch. Such a line is kept only until the next
-/// listing ([retain]); rebuilds in between share it, and the reload retries.
+/// A read is keyed by note id, where the note was listed (the location
+/// decides which backend is read) and the load generation. Listings carry no
+/// ETag or modification time, so every new load reads each row once more:
+/// changes made elsewhere (another device, a sync tool) show on any re-list,
+/// and a failed read is retried then. Within a load, [invalidate] forgets a
+/// note the browser may have changed without re-listing.
 class FirstLineMemo {
-  final Map<(String, NoteStorageLocation), _Read> _reads = {};
+  int? _generation;
+  final Map<(String, NoteStorageLocation), Future<String>> _lines = {};
 
-  /// Number of remembered rows.
-  int get length => _reads.length;
-
-  /// The first line of [located], read from [store] only if not remembered.
-  Future<String> firstLine(LocatedLogEntry located, NoteStore store) {
-    final key = (located.id, located.location);
-    final remembered = _reads[key];
-    if (remembered != null) return remembered.line;
-    final read = _Read();
-    read.line = store
-        .firstLine(located.id)
-        .then(
-          (line) {
-            read.retry = line.isEmpty;
-            return line;
-          },
-          onError: (Object _) {
-            // firstLine should not throw; if it does, show an empty subtitle as
-            // it would for any unreadable note, and retry on the next listing.
-            read.retry = true;
-            return '';
-          },
-        );
-    _reads[key] = read;
-    return read.line;
+  /// The first line of [located] for load [generation], read from [store]
+  /// only if this load has not read it yet. A new generation forgets all
+  /// reads of the previous one.
+  Future<String> firstLine(
+    LocatedLogEntry located,
+    NoteStore store, {
+    required int generation,
+  }) {
+    if (generation != _generation) {
+      _lines.clear();
+      _generation = generation;
+    }
+    return _lines.putIfAbsent((
+      located.id,
+      located.location,
+    ), () => store.firstLine(located.id));
   }
 
-  /// Applies a new listing: forgets rows it no longer contains (deleted or
-  /// moved notes) and rows whose last read came back empty, so a failed
-  /// fetch is retried rather than remembered.
-  void retain(Iterable<LocatedLogEntry> listed) {
-    final keys = {for (final e in listed) (e.id, e.location)};
-    _reads.removeWhere((key, read) => read.retry || !keys.contains(key));
-  }
-
-  /// Forgets every row of note [id], whatever its location (after an edit,
-  /// a delete, or an upload to or removal from a backend).
-  void invalidate(String id) => _reads.removeWhere((key, _) => key.$1 == id);
-
-  /// Forgets everything.
-  void clear() => _reads.clear();
-}
-
-class _Read {
-  late final Future<String> line;
-
-  /// True once the read settled with an empty line (or an error).
-  bool retry = false;
+  /// Forgets note [id] in every location, so its next lookup reads again.
+  void invalidate(String id) => _lines.removeWhere((key, _) => key.$1 == id);
 }
