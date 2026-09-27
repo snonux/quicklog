@@ -15,6 +15,7 @@ class BrowserNoteSources {
     this.s3,
     required this.mergeWhenS3Preferred,
     this.preferLocalReads = false,
+    this.keepLocalCopies = false,
   });
 
   final LocalNoteStore local;
@@ -28,6 +29,11 @@ class BrowserNoteSources {
   /// the local copy (the trusted primary), so a transient S3 GET failure
   /// does not hide a note that is on disk. S3-only rows still read from S3.
   final bool preferLocalReads;
+
+  /// True in dual-write mode: [uploadLocalToS3] copies a local-only note to
+  /// S3 and keeps the local file, the on-device primary. Otherwise (s3-only
+  /// mode) it moves the note and drops the local file after the upload.
+  final bool keepLocalCopies;
 
   /// Set by [list] when an S3 LIST fails; local rows are still returned.
   bool s3ListFailed = false;
@@ -106,15 +112,19 @@ class BrowserNoteSources {
     await local.delete(located.id);
   }
 
-  Future<void> moveLocalToS3(LocatedLogEntry located) async {
+  /// Uploads a local-only note to S3: a copy when [keepLocalCopies] (the
+  /// note ends up in both places), otherwise a move (local file deleted only
+  /// after a successful put).
+  Future<void> uploadLocalToS3(LocatedLogEntry located) async {
     final remote = s3;
     if (remote == null) {
       throw StateError('S3 is not available to receive the note.');
     }
     if (!located.isLocalOnly) {
-      throw StateError('Only local-only notes can be moved to S3.');
+      throw StateError('Only local-only notes can be uploaded to S3.');
     }
-    await moveLocalNoteToS3(local: local, s3: remote, id: located.id);
+    final upload = keepLocalCopies ? copyLocalNoteToS3 : moveLocalNoteToS3;
+    await upload(local: local, s3: remote, id: located.id);
   }
 
   /// Lists notes from these sources (merged when [mergeWhenS3Preferred]).
@@ -399,11 +409,13 @@ class ActiveNoteStore {
       );
     }
     final s3 = await _buildS3Store(markFailures: false);
+    final dualWrite = _session.preferredMode == StorageMode.both;
     return BrowserNoteSources(
       local: local,
       s3: s3,
       mergeWhenS3Preferred: true,
-      preferLocalReads: _session.preferredMode == StorageMode.both,
+      preferLocalReads: dualWrite,
+      keepLocalCopies: dualWrite,
     );
   }
 

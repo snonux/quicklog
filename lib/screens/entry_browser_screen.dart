@@ -44,6 +44,13 @@ class _EntryBrowserScreenState extends State<EntryBrowserScreen> {
 
   bool get _showLocation => _sources?.mergeWhenS3Preferred ?? false;
 
+  /// Wording for [BrowserNoteSources.uploadLocalToS3]: dual-write mode keeps
+  /// the local copy (Copy), s3-only mode drops it (Move).
+  ({String verb, String past}) get _upload =>
+      (_sources?.keepLocalCopies ?? false)
+      ? (verb: 'Copy', past: 'Copied')
+      : (verb: 'Move', past: 'Moved');
+
   @override
   void initState() {
     super.initState();
@@ -197,19 +204,23 @@ class _EntryBrowserScreenState extends State<EntryBrowserScreen> {
     _refresh();
   }
 
-  Future<void> _moveToS3(LocatedLogEntry located) async {
+  Future<void> _uploadToS3(LocatedLogEntry located) async {
     final sources = _sources;
     if (sources == null) return;
+    final upload = _upload;
     try {
-      await sources.moveLocalToS3(located);
+      await sources.uploadLocalToS3(located);
     } catch (e) {
       if (mounted) {
-        _showSnack('Could not move ${located.id} to S3: $e', isError: true);
+        _showSnack(
+          'Could not ${upload.verb.toLowerCase()} ${located.id} to S3: $e',
+          isError: true,
+        );
       }
       return;
     }
     if (!mounted) return;
-    _showSnack('Moved ${located.id} to S3');
+    _showSnack('${upload.past} ${located.id} to S3');
     _refresh();
   }
 
@@ -232,18 +243,20 @@ class _EntryBrowserScreenState extends State<EntryBrowserScreen> {
     _refresh();
   }
 
-  Future<void> _moveAllLocalToS3() async {
+  Future<void> _uploadAllLocalToS3() async {
     final sources = _sources;
     if (sources == null || sources.s3 == null) return;
-    // Re-list so we move whatever is currently local-only, not a stale
+    final upload = _upload;
+    // Re-list so we upload whatever is currently local-only, not a stale
     // FutureBuilder snapshot. Abort if LIST failed — otherwise every local
-    // id looks local-only and Move would overwrite unknown remote objects.
+    // id looks local-only and the upload would overwrite unknown remote
+    // objects.
     final fresh = await sources.list();
     if (sources.s3ListFailed) {
       if (mounted) {
         setState(() => _s3ListFailed = true);
         _showSnack(
-          'Could not list S3 notes; move cancelled.',
+          'Could not list S3 notes; ${upload.verb.toLowerCase()} cancelled.',
           isError: true,
         );
       }
@@ -252,27 +265,28 @@ class _EntryBrowserScreenState extends State<EntryBrowserScreen> {
     final localOnly =
         fresh.where((e) => e.isLocalOnly).toList(growable: false);
     if (localOnly.isEmpty) {
-      if (mounted) _showSnack('No local-only notes to move');
+      if (mounted) {
+        _showSnack('No local-only notes to ${upload.verb.toLowerCase()}');
+      }
       return;
     }
-    var moved = 0;
+    var done = 0;
     var failed = 0;
     for (final located in localOnly) {
       try {
-        await sources.moveLocalToS3(located);
-        moved++;
+        await sources.uploadLocalToS3(located);
+        done++;
       } catch (_) {
         failed++;
       }
     }
     if (!mounted) return;
     if (failed == 0) {
-      _showSnack('Moved $moved local note${moved == 1 ? '' : 's'} to S3');
-    } else {
       _showSnack(
-        'Moved $moved, failed $failed',
-        isError: true,
+        '${upload.past} $done local note${done == 1 ? '' : 's'} to S3',
       );
+    } else {
+      _showSnack('${upload.past} $done, failed $failed', isError: true);
     }
     _refresh();
   }
@@ -289,7 +303,7 @@ class _EntryBrowserScreenState extends State<EntryBrowserScreen> {
   @override
   Widget build(BuildContext context) {
     // Show whenever S3 merge mode is active, S3 is reachable, and LIST worked;
-    // a failed LIST means we cannot tell local-only from both — hide Move.
+    // a failed LIST means we cannot tell local-only from both — hide it.
     final canMoveAll =
         _showLocation && _sources?.s3 != null && !_s3ListFailed;
 
@@ -299,9 +313,9 @@ class _EntryBrowserScreenState extends State<EntryBrowserScreen> {
         actions: [
           if (canMoveAll)
             IconButton(
-              tooltip: 'Move all local to S3',
+              tooltip: '${_upload.verb} all local to S3',
               icon: const Icon(Icons.cloud_upload_outlined),
-              onPressed: _moveAllLocalToS3,
+              onPressed: _uploadAllLocalToS3,
             ),
           IconButton(
             tooltip: 'Refresh',
@@ -375,14 +389,16 @@ class _EntryBrowserScreenState extends State<EntryBrowserScreen> {
           final String? secondaryTooltip;
           final IconData? secondaryIcon;
           if (located.isLocalOnly && sources.s3 != null && !_s3ListFailed) {
-            secondaryAction = () => _moveToS3(located);
-            secondaryTooltip = 'Move to S3';
+            // Dual-write mode copies (the row becomes 'both'); s3-only mode
+            // moves the note off the device.
+            secondaryAction = () => _uploadToS3(located);
+            secondaryTooltip = '${_upload.verb} to S3';
             secondaryIcon = Icons.cloud_upload_outlined;
           } else if (located.location == NoteStorageLocation.both &&
               _session.preferredMode != StorageMode.both) {
             // Dual-write users keep local copies on purpose; dropping the
             // local side is a durability downgrade, so it is not offered.
-            // (Outage leftovers stay local-only and use 'Move to S3' instead.)
+            // (Outage leftovers stay local-only and use 'Copy to S3' instead.)
             secondaryAction = () => _removeLocalCopy(located);
             secondaryTooltip = 'Remove local copy';
             secondaryIcon = Icons.folder_off_outlined;

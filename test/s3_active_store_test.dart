@@ -753,6 +753,153 @@ void main() {
     );
   });
 
+  Future<void> useDualWriteMode() async {
+    await session.setPreferredMode(StorageMode.both);
+    await prefs.setS3Config(
+      S3Config(
+        endpoint: kDefaultS3Endpoint,
+        region: kDefaultS3Region,
+        bucket: kDefaultS3Bucket,
+        accessKeyId: 'AKIA_TEST',
+        secretAccessKey: 'secret_test',
+      ),
+    );
+  }
+
+  testWidgets('dual-write Copy to S3 uploads and keeps the local copy', (
+    tester,
+  ) async {
+    await useDualWriteMode();
+    const id = 'ql-260908-040000.md';
+    await tester.runAsync(() async {
+      await File(p.join(tmp.path, id)).writeAsString('outage leftover');
+    });
+
+    await tester.pumpWidget(
+      MaterialApp(
+        home: EntryBrowserScreen(session: session, activeStore: active),
+      ),
+    );
+    await pumpWithIo(tester);
+
+    expect(find.byTooltip('Move to S3'), findsNothing);
+    expect(find.byTooltip('Move all local to S3'), findsNothing);
+    expect(find.byTooltip('Copy to S3'), findsOneWidget);
+
+    await tester.tap(find.byTooltip('Copy to S3'));
+    await pumpWithIo(tester);
+
+    expect(find.textContaining('Copied $id to S3'), findsOneWidget);
+    expect(
+      await tester.runAsync(() async => File(p.join(tmp.path, id)).exists()),
+      isTrue,
+    );
+    expect(fakeS3.objects.containsKey(id), isTrue);
+    // The row is now in both places; dual mode offers no further action.
+    expect(find.byIcon(Icons.cloud_sync_outlined), findsOneWidget);
+    expect(find.byTooltip('Copy to S3'), findsNothing);
+    expect(find.byTooltip('Remove local copy'), findsNothing);
+  });
+
+  testWidgets('dual-write Copy all local to S3 keeps every local copy', (
+    tester,
+  ) async {
+    await useDualWriteMode();
+    const ids = ['ql-260908-030000.md', 'ql-260908-031000.md'];
+    await tester.runAsync(() async {
+      for (final id in ids) {
+        await File(p.join(tmp.path, id)).writeAsString('local $id');
+      }
+    });
+
+    await tester.pumpWidget(
+      MaterialApp(
+        home: EntryBrowserScreen(session: session, activeStore: active),
+      ),
+    );
+    await pumpWithIo(tester);
+
+    expect(find.byTooltip('Copy all local to S3'), findsOneWidget);
+    await tester.tap(find.byTooltip('Copy all local to S3'));
+    // A fresh LIST plus one read and put per note: allow extra I/O rounds.
+    await pumpWithIo(tester, rounds: 30);
+
+    expect(find.textContaining('Copied 2 local notes to S3'), findsOneWidget);
+    for (final id in ids) {
+      expect(
+        await tester.runAsync(() async => File(p.join(tmp.path, id)).exists()),
+        isTrue,
+      );
+      expect(String.fromCharCodes(fakeS3.objects[id]!), 'local $id');
+    }
+    expect(find.byIcon(Icons.cloud_sync_outlined), findsNWidgets(2));
+  });
+
+  testWidgets('dual-write Copy to S3 failure keeps the note local-only', (
+    tester,
+  ) async {
+    await useDualWriteMode();
+    const id = 'ql-260908-020000.md';
+    await tester.runAsync(() async {
+      await File(p.join(tmp.path, id)).writeAsString('copy will fail');
+    });
+
+    await tester.pumpWidget(
+      MaterialApp(
+        home: EntryBrowserScreen(session: session, activeStore: active),
+      ),
+    );
+    await pumpWithIo(tester);
+
+    fakeS3.alwaysFail = Exception('put failed');
+    await tester.tap(find.byTooltip('Copy to S3'));
+    await pumpWithIo(tester);
+
+    expect(find.textContaining('Could not copy $id to S3'), findsOneWidget);
+    expect(
+      await tester.runAsync(() async => File(p.join(tmp.path, id)).exists()),
+      isTrue,
+    );
+    expect(fakeS3.objects, isEmpty);
+  });
+
+  testWidgets('s3-only Move all local to S3 still removes local copies', (
+    tester,
+  ) async {
+    await session.setPreferredMode(StorageMode.s3);
+    await prefs.setS3Config(
+      S3Config(
+        endpoint: kDefaultS3Endpoint,
+        region: kDefaultS3Region,
+        bucket: kDefaultS3Bucket,
+        accessKeyId: 'AKIA_TEST',
+        secretAccessKey: 'secret_test',
+      ),
+    );
+    const id = 'ql-260908-010000.md';
+    await tester.runAsync(() async {
+      await File(p.join(tmp.path, id)).writeAsString('move off device');
+    });
+
+    await tester.pumpWidget(
+      MaterialApp(
+        home: EntryBrowserScreen(session: session, activeStore: active),
+      ),
+    );
+    await pumpWithIo(tester);
+
+    expect(find.byTooltip('Copy all local to S3'), findsNothing);
+    await tester.tap(find.byTooltip('Move all local to S3'));
+    await pumpWithIo(tester);
+
+    expect(find.textContaining('Moved 1 local note to S3'), findsOneWidget);
+    expect(
+      await tester.runAsync(() async => File(p.join(tmp.path, id)).exists()),
+      isFalse,
+    );
+    expect(String.fromCharCodes(fakeS3.objects[id]!), 'move off device');
+  });
+
   test('listForBrowser merges when S3 preferred and stays local-only otherwise',
       () async {
     await File(p.join(tmp.path, 'ql-260908-080000.md'))

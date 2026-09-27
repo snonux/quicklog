@@ -47,6 +47,70 @@ void main() {
     });
   });
 
+  group('copyLocalNoteToS3', () {
+    late Directory tmp;
+    late LocalNoteStore local;
+    late MemoryS3ObjectClient client;
+    late S3NoteStore s3;
+
+    setUp(() async {
+      tmp = await Directory.systemTemp.createTemp('ql-copy-');
+      local = LocalNoteStore(tmp.path);
+      client = MemoryS3ObjectClient();
+      s3 = S3NoteStore(client);
+    });
+
+    tearDown(() async {
+      if (await tmp.exists()) await tmp.delete(recursive: true);
+    });
+
+    test('uploads and keeps local', () async {
+      final entry = await local.create(
+        'in both places',
+        now: DateTime(2026, 9, 1, 13, 0, 0),
+      );
+
+      await copyLocalNoteToS3(local: local, s3: s3, id: entry.id);
+
+      expect(await local.read(entry.id), 'in both places');
+      expect(await s3.read(entry.id), 'in both places');
+    });
+
+    test('keeps local and rethrows when S3 put fails', () async {
+      final entry = await local.create(
+        'put fails',
+        now: DateTime(2026, 9, 1, 14, 0, 0),
+      );
+      client.alwaysFail = Exception('put failed');
+
+      await expectLater(
+        copyLocalNoteToS3(local: local, s3: s3, id: entry.id),
+        throwsA(isA<Exception>()),
+      );
+      expect(await local.read(entry.id), 'put fails');
+      expect(client.objects, isEmpty);
+    });
+
+    test(
+      'never deletes locally, even with a store whose delete throws',
+      () async {
+        final entry = await local.create(
+          'no delete',
+          now: DateTime(2026, 9, 1, 15, 0, 0),
+        );
+
+        await copyLocalNoteToS3(
+          local: _DeleteFailsNoteStore(local),
+          s3: s3,
+          id: entry.id,
+        );
+
+        expect(File(p.join(tmp.path, entry.id)).existsSync(), isTrue);
+        expect(await s3.read(entry.id), 'no delete');
+      },
+    );
+  });
+
   group('moveLocalNoteToS3', () {
     late Directory tmp;
     late LocalNoteStore local;

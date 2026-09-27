@@ -110,18 +110,96 @@ void main() {
     );
   });
 
-  test('moveLocalToS3 rejects notes that are not local-only', () async {
+  test('uploadLocalToS3 rejects notes that are not local-only', () async {
     final sources = BrowserNoteSources(
       local: local,
       s3: s3,
       mergeWhenS3Preferred: true,
     );
     await expectLater(
-      sources.moveLocalToS3(
+      sources.uploadLocalToS3(
         located('ql-260901-150000.md', NoteStorageLocation.s3),
       ),
       throwsStateError,
     );
+  });
+
+  test(
+    'uploadLocalToS3 moves the note when keepLocalCopies is off (s3-only)',
+    () async {
+      const id = 'ql-260901-151000.md';
+      await File(p.join(tmp.path, id)).writeAsString('move me');
+      final sources = BrowserNoteSources(
+        local: local,
+        s3: s3,
+        mergeWhenS3Preferred: true,
+      );
+
+      await sources.uploadLocalToS3(located(id, NoteStorageLocation.local));
+
+      expect(File(p.join(tmp.path, id)).existsSync(), isFalse);
+      expect(await s3.read(id), 'move me');
+    },
+  );
+
+  test(
+    'uploadLocalToS3 keeps the local copy when keepLocalCopies (dual)',
+    () async {
+      const id = 'ql-260901-152000.md';
+      await File(p.join(tmp.path, id)).writeAsString('keep me');
+      final sources = BrowserNoteSources(
+        local: local,
+        s3: s3,
+        mergeWhenS3Preferred: true,
+        preferLocalReads: true,
+        keepLocalCopies: true,
+      );
+
+      await sources.uploadLocalToS3(located(id, NoteStorageLocation.local));
+
+      expect(await local.read(id), 'keep me');
+      expect(await s3.read(id), 'keep me');
+      final relisted = await sources.list();
+      expect(relisted.single.location, NoteStorageLocation.both);
+    },
+  );
+
+  test(
+    'uploadLocalToS3 in dual mode keeps local and rethrows on S3 failure',
+    () async {
+      const id = 'ql-260901-153000.md';
+      await File(p.join(tmp.path, id)).writeAsString('still here');
+      client.alwaysFail = Exception('put failed');
+      final sources = BrowserNoteSources(
+        local: local,
+        s3: s3,
+        mergeWhenS3Preferred: true,
+        keepLocalCopies: true,
+      );
+
+      await expectLater(
+        sources.uploadLocalToS3(located(id, NoteStorageLocation.local)),
+        throwsA(isA<Exception>()),
+      );
+      expect(await local.read(id), 'still here');
+      expect(client.objects, isEmpty);
+    },
+  );
+
+  test('uploadLocalToS3 rejects when there is no S3 store', () async {
+    const id = 'ql-260901-154000.md';
+    await File(p.join(tmp.path, id)).writeAsString('no bucket');
+    final sources = BrowserNoteSources(
+      local: local,
+      mergeWhenS3Preferred: true,
+      keepLocalCopies: true,
+    );
+
+    await expectLater(
+      sources.uploadLocalToS3(located(id, NoteStorageLocation.local)),
+      throwsStateError,
+    );
+    expect(await local.read(id), 'no bucket');
   });
 
   test('list sets s3ListFailed when S3 LIST throws', () async {
@@ -170,14 +248,14 @@ void main() {
     expect(await s3.read(id), 's3 old');
   });
 
-  test('moveLocalToS3 rejects both-location notes', () async {
+  test('uploadLocalToS3 rejects both-location notes', () async {
     final sources = BrowserNoteSources(
       local: local,
       s3: s3,
       mergeWhenS3Preferred: true,
     );
     await expectLater(
-      sources.moveLocalToS3(
+      sources.uploadLocalToS3(
         located('ql-260901-180000.md', NoteStorageLocation.both),
       ),
       throwsStateError,
