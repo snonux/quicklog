@@ -182,13 +182,19 @@ class PreferencesService {
     String raw,
   ) {
     final Object? decoded = jsonDecode(raw);
-    if (decoded is! Map) return {};
+    if (decoded is! Map) {
+      throw const FormatException('DualWritePending is not an object');
+    }
     final grouped = decoded['folders'];
     if (grouped is Map) {
       final folders =
           <String, ({List<String> uploads, List<String> deletes})>{};
       for (final entry in grouped.entries) {
-        if (entry.key is! String || entry.value is! Map) continue;
+        if (entry.key is! String || entry.value is! Map) {
+          throw const FormatException(
+            'DualWritePending folder entry is unreadable',
+          );
+        }
         final body = entry.value as Map;
         folders[entry.key as String] = (
           uploads: _stringList(body['uploads']),
@@ -197,8 +203,14 @@ class PreferencesService {
       }
       return folders;
     }
+    if (grouped != null) {
+      throw const FormatException('DualWritePending folders is not an object');
+    }
     final directory = decoded['directory'];
-    if (directory is! String) return {};
+    if (directory is! String ||
+        (!decoded.containsKey('uploads') && !decoded.containsKey('deletes'))) {
+      throw const FormatException('DualWritePending has no folders');
+    }
     return {
       directory: (
         uploads: _stringList(decoded['uploads']),
@@ -213,8 +225,11 @@ class PreferencesService {
   }
 
   List<String> _stringList(Object? value) {
-    if (value is! List) return const <String>[];
-    return [for (final item in value) if (item is String) item];
+    if (value == null) return const <String>[];
+    if (value is! List || value.any((item) => item is! String)) {
+      throw const FormatException('DualWritePending list is unreadable');
+    }
+    return [for (final item in value) item as String];
   }
 
   Future<S3Config> s3Config() async {

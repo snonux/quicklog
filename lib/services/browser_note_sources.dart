@@ -163,13 +163,32 @@ class BrowserNoteSources {
         localError = e;
       }
     }
+    var s3Gone = s3Attempted &&
+        (s3Error == null || isMissingObjectError(s3Error));
+    // Only a dual-write repair needs to know whether a thrown delete still
+    // removed the object. S3-only keeps the raw error and does not re-read.
+    if (pendingRepairs != null &&
+        s3Attempted &&
+        !s3Gone &&
+        s3Error is! ArgumentError &&
+        await _objectMissing(located.id)) {
+      // The object is gone even though the delete call reported failure.
+      s3Gone = true;
+    }
     final pending = await _recordDelete(
       located,
       s3Attempted: s3Attempted,
       s3Error: s3Error,
       localError: localError,
+      s3Gone: s3Gone,
     );
     if (pending != null) throw pending;
+    final localGone = !located.hasLocal || localError == null;
+    // A dual-write delete can throw after both copies are already gone.
+    // S3-only still surfaces that error, including a missing-object error.
+    if (pendingRepairs != null && localGone && (!s3Attempted || s3Gone)) {
+      return;
+    }
     final firstError = s3Error ?? localError;
     if (firstError != null) throw firstError;
   }
@@ -276,19 +295,11 @@ class BrowserNoteSources {
     required bool s3Attempted,
     required Object? s3Error,
     required Object? localError,
+    required bool s3Gone,
   }) async {
     final repairs = pendingRepairs;
     if (repairs == null) return null;
     final localRemoved = located.hasLocal && localError == null;
-    var s3Gone =
-        s3Attempted && (s3Error == null || isMissingObjectError(s3Error));
-    if (s3Attempted &&
-        !s3Gone &&
-        s3Error is! ArgumentError &&
-        await _objectMissing(located.id)) {
-      // The object is gone even though the delete call reported failure.
-      s3Gone = true;
-    }
     if (s3Gone && (localRemoved || !located.hasLocal)) {
       await repairs.clear(located.id);
       return null;

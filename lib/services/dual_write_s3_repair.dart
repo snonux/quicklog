@@ -50,6 +50,11 @@ class DualWriteS3Repair {
   final Map<String, _RepairQueue> _queues = {};
   String _active = '';
   bool _loaded = false;
+
+  /// The saved repair document could not be decoded. Replay is skipped and
+  /// nothing is written back, so a bad value cannot replace itself or
+  /// fail the note list.
+  bool _persistBlocked = false;
   Future<void> _chain = Future<void>.value();
 
   static const Object _held = Object();
@@ -67,7 +72,11 @@ class DualWriteS3Repair {
   }
 
   Future<void> enqueueUpload(String id) {
-    return run(() => _enqueueUpload(id));
+    return run(() async {
+      await _ensureLoaded();
+      _active = await _folderKey();
+      await _enqueueUpload(id);
+    });
   }
 
   Future<void> enqueueDelete(String id) {
@@ -106,18 +115,29 @@ class DualWriteS3Repair {
 
   Future<void> _ensureLoaded() async {
     if (_loaded) return;
-    _loaded = true;
     final prefs = _prefs;
-    if (prefs == null) return;
-    final folders = await prefs.dualWritePendingFolders();
-    for (final entry in folders.entries) {
-      final queue = _queues.putIfAbsent(entry.key, _RepairQueue.new);
-      queue.uploads.addAll(entry.value.uploads);
-      queue.deletes.addAll(entry.value.deletes);
+    if (prefs == null) {
+      _loaded = true;
+      return;
     }
+    // Load before marking loaded. A decode failure must not stick an empty
+    // map that the next persist would write over the saved repairs, and it
+    // must not fail every later read of the note list.
+    try {
+      final folders = await prefs.dualWritePendingFolders();
+      for (final entry in folders.entries) {
+        final queue = _queues.putIfAbsent(entry.key, _RepairQueue.new);
+        queue.uploads.addAll(_noteIds(entry.value.uploads));
+        queue.deletes.addAll(_noteIds(entry.value.deletes));
+      }
+    } on FormatException {
+      _persistBlocked = true;
+    }
+    _loaded = true;
   }
 
   Future<void> _persist() async {
+    if (_persistBlocked) return;
     final prefs = _prefs;
     if (prefs == null) return;
     final folders =
@@ -150,7 +170,12 @@ class DualWriteS3Repair {
 
   Future<bool> _folderMissing(NoteStore local) async {
     if (_prefs == null || local is! LocalNoteStore) return false;
-    return !await Directory(local.directory).exists();
+    try {
+      return !await Directory(local.directory).exists();
+    } catch (_) {
+      // A stat failure is not proof the notes were deleted.
+      return true;
+    }
   }
 
   _RepairQueue _queue() => _queues.putIfAbsent(_active, _RepairQueue.new);
@@ -166,10 +191,17 @@ class DualWriteS3Repair {
     }
   }
 
+  Iterable<String> _noteIds(List<String> ids) =>
+      ids.where((id) => parseLogEntryId(id) != null);
+
   Future<void> _enqueueUpload(String id) async {
     _requireNoteId(id);
     await _ensureLoaded();
-    _active = await _folderKey();
+    if (_persistBlocked) {
+      throw StateError(
+        'Dual-write repairs could not be read and were not queued.',
+      );
+    }
     final queue = _queue();
     queue.deletes.remove(id);
     queue.uploads.add(id);
@@ -179,6 +211,11 @@ class DualWriteS3Repair {
   Future<void> _enqueueDelete(String id) async {
     _requireNoteId(id);
     await _ensureLoaded();
+    if (_persistBlocked) {
+      throw StateError(
+        'Dual-write repairs could not be read and were not queued.',
+      );
+    }
     final queue = _queue();
     queue.uploads.remove(id);
     queue.deletes.add(id);
@@ -194,15 +231,108 @@ class DualWriteS3Repair {
     if (changed) await _persist();
   }
 
-  /// True when [id] is gone from [s3], including when it was already missing.
-  /// False when the delete failed and the id should stay queued.
+  /// True when [id] is gone from [s3], including when the delete call threw
+  /// after the object was already removed. False when it should stay queued.
   Future<bool> _deleteOrMissing(NoteStore s3, String id) async {
     try {
       await s3.delete(id);
       return true;
     } catch (e) {
+      if (isMissingObjectError(e)) return true;
+    }
+    try {
+      await s3.read(id);
+      return false;
+    } catch (e) {
       return isMissingObjectError(e);
     }
+  }
+
+  /// After a put of [written], drop [id] only when the device file still
+  /// matches. A missing folder leaves the queue entry as it is. A file that
+  /// disappeared from a folder that still exists is deleted from [s3], then
+  /// checked again so a file that returns during that delete is put back.
+  Future<bool> _confirmPut({
+    required NoteStore local,
+    required NoteStore s3,
+    required String id,
+    required String written,
+    bool deleteIfMissing = true,
+  }) async {
+    final String current;
+    try {
+      current = await local.read(id);
+    } on PathNotFoundException {
+      if (await _folderMissing(local)) return false;
+      if (!deleteIfMissing) {
+        // Already put the file back once. One more delete, then stop.
+        // A file that is still gone is removed in this pass so the list
+        // does not show an S3-only leftover until the next refresh.
+        final removed = await _deleteOrMissing(s3, id);
+        if (!removed) return false;
+        try {
+          final again = await local.read(id);
+          try {
+            await s3.update(id, again);
+          } catch (_) {
+            await _enqueueUpload(id);
+            return false;
+          }
+          await _enqueueUpload(id);
+          return false;
+        } on PathNotFoundException {
+          if (await _folderMissing(local)) return false;
+          await _clear(id);
+          return true;
+        } catch (_) {
+          return false;
+        }
+      }
+      return _finishDelete(local: local, s3: s3, id: id);
+    } catch (_) {
+      await _enqueueUpload(id);
+      return false;
+    }
+    if (current != written) {
+      await _enqueueUpload(id);
+      return false;
+    }
+    await _clear(id);
+    return true;
+  }
+
+  /// Deletes [id] from [s3] when the device file is gone, then reads again.
+  /// A file or folder that appears during the delete is not dropped.
+  Future<bool> _finishDelete({
+    required NoteStore local,
+    required NoteStore s3,
+    required String id,
+  }) async {
+    final removed = await _deleteOrMissing(s3, id);
+    if (!removed) return false;
+    final String? back;
+    try {
+      back = await local.read(id);
+    } on PathNotFoundException {
+      if (await _folderMissing(local)) return false;
+      await _clear(id);
+      return true;
+    } catch (_) {
+      return false;
+    }
+    try {
+      await s3.update(id, back);
+    } catch (_) {
+      await _enqueueUpload(id);
+      return false;
+    }
+    return _confirmPut(
+      local: local,
+      s3: s3,
+      id: id,
+      written: back,
+      deleteIfMissing: false,
+    );
   }
 
   Future<int> _replay({
@@ -219,19 +349,31 @@ class DualWriteS3Repair {
     var done = 0;
     {
       for (final id in List<String>.of(queue.uploads)) {
+        final String text;
         try {
-          final text = await local.read(id);
-          await s3.update(id, text);
-          // A save during the put leaves the newer device text queued.
-          final current = await local.read(id);
-          if (current != text) continue;
-          await _clear(id);
-          done++;
+          text = await local.read(id);
         } on PathNotFoundException {
-          // Nothing in this folder to put. Dropping the object matches it.
+          // A missing folder is not a deleted note. Leave the upload queued.
+          if (await _folderMissing(local)) continue;
           await _enqueueDelete(id);
+          continue;
         } catch (_) {
           // Leave the upload queued for the next recovery.
+          continue;
+        }
+        try {
+          await s3.update(id, text);
+        } catch (_) {
+          continue;
+        }
+        // A save during the put leaves the newer device text queued.
+        if (await _confirmPut(
+          local: local,
+          s3: s3,
+          id: id,
+          written: text,
+        )) {
+          done++;
         }
       }
     }
@@ -240,6 +382,8 @@ class DualWriteS3Repair {
       try {
         restored = await local.read(id);
       } on PathNotFoundException {
+        // A missing folder is not a deleted note. Leave the delete queued.
+        if (await _folderMissing(local)) continue;
         restored = null;
       } catch (_) {
         continue;
@@ -249,44 +393,23 @@ class DualWriteS3Repair {
         // bucket must match it instead of being deleted.
         try {
           await s3.update(id, restored);
-          final current = await local.read(id);
-          if (current != restored) {
-            await _enqueueUpload(id);
-            continue;
-          }
-          await _clear(id);
-          done++;
         } catch (_) {
-          await _enqueueUpload(id);
-        }
-        continue;
-      }
-      final removed = await _deleteOrMissing(s3, id);
-      if (!removed) continue;
-      // The file can reappear while the delete is in flight. Local is
-      // still the primary, so put it back instead of dropping the queue.
-      final String? back;
-      try {
-        back = await local.read(id);
-      } on PathNotFoundException {
-        await _clear(id);
-        done++;
-        continue;
-      } catch (_) {
-        continue;
-      }
-      try {
-        await s3.update(id, back);
-        final current = await local.read(id);
-        if (current != back) {
           await _enqueueUpload(id);
           continue;
         }
-        await _clear(id);
-        done++;
-      } catch (_) {
-        await _enqueueUpload(id);
+        if (await _confirmPut(
+          local: local,
+          s3: s3,
+          id: id,
+          written: restored,
+        )) {
+          done++;
+        }
+        continue;
       }
+      // The file can reappear while the delete is in flight. Local is
+      // still the primary, so put it back instead of dropping the queue.
+      if (await _finishDelete(local: local, s3: s3, id: id)) done++;
     }
     return done;
   }
