@@ -36,9 +36,9 @@ class SettingsImportException implements Exception {
 /// are added. [directory] uses the empty string for "app default", which is
 /// distinct from null.
 ///
-/// Not included: the S3 degrade window (`S3DegradedUntil`), which is transient
-/// runtime state that expires on its own within an hour and would be wrong on
-/// another install.
+/// Not included: the S3 degrade window (`S3DegradedUntil`) and the dual-write
+/// pending repair ids (`DualWritePendingUploads`, `DualWritePendingDeletes`).
+/// Those are transient runtime state for this install, not settings to copy.
 class QuicklogSettings {
   const QuicklogSettings({
     this.directory,

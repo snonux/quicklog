@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 
+import '../services/dual_write_s3_repair.dart';
 import '../services/entry_handle.dart';
 
 /// Pushes the full-screen editor for [handle] and returns how it closed.
@@ -89,6 +90,13 @@ class _EntryEditScreenState extends State<EntryEditScreen> {
     final text = _controller.text;
     try {
       await widget.handle.update(text);
+    } on DualWriteS3Pending catch (e) {
+      // The device has the new text. Don't prefix "Could not save" — that
+      // sentence is for a write that did not land anywhere.
+      if (!mounted) return;
+      setState(() => _saving = false);
+      _showSnack('$e', isError: true);
+      return;
     } catch (e) {
       // Writing can be denied for files outside the app's storage scope;
       // stay in the editor so the user does not lose what they typed.

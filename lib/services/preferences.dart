@@ -7,6 +7,8 @@ const _kDirectory = 'Directory';
 const _kAutoLogSharedText = 'AutoLogSharedText';
 const _kStorageMode = 'StorageMode';
 const _kDegradedUntil = 'S3DegradedUntil';
+const _kPendingUploads = 'DualWritePendingUploads';
+const _kPendingDeletes = 'DualWritePendingDeletes';
 const _kS3Endpoint = 'S3Endpoint';
 const _kS3Region = 'S3Region';
 const _kS3Bucket = 'S3Bucket';
@@ -105,6 +107,41 @@ class PreferencesService {
       await prefs.remove(_kDegradedUntil);
     } else {
       await prefs.setString(_kDegradedUntil, until.toUtc().toIso8601String());
+    }
+  }
+
+  /// Dual-write note ids whose local text still needs to overwrite S3.
+  /// Transient, like [degradedUntil]: not part of a settings export.
+  Future<List<String>> dualWritePendingUploads() async {
+    final prefs = await SharedPreferences.getInstance();
+    return List<String>.from(
+      prefs.getStringList(_kPendingUploads) ?? const <String>[],
+    );
+  }
+
+  Future<void> setDualWritePendingUploads(List<String> ids) async {
+    final prefs = await SharedPreferences.getInstance();
+    if (ids.isEmpty) {
+      await prefs.remove(_kPendingUploads);
+    } else {
+      await prefs.setStringList(_kPendingUploads, ids);
+    }
+  }
+
+  /// Dual-write note ids removed on device whose S3 object is still there.
+  Future<List<String>> dualWritePendingDeletes() async {
+    final prefs = await SharedPreferences.getInstance();
+    return List<String>.from(
+      prefs.getStringList(_kPendingDeletes) ?? const <String>[],
+    );
+  }
+
+  Future<void> setDualWritePendingDeletes(List<String> ids) async {
+    final prefs = await SharedPreferences.getInstance();
+    if (ids.isEmpty) {
+      await prefs.remove(_kPendingDeletes);
+    } else {
+      await prefs.setStringList(_kPendingDeletes, ids);
     }
   }
 

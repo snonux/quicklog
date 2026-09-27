@@ -53,6 +53,12 @@ class S3SessionController extends ChangeNotifier {
   /// Left injectable (not private) so tests / S3NoteStore can wire it later.
   S3Probe? probe;
 
+  /// Called after S3 is worth trying again: [retryS3] reached it, the degrade
+  /// window elapsed, or a cold [load] dropped an already-expired window.
+  /// Dual-write repair replays from here. Must not throw — the session has
+  /// already recorded the outcome, and a repair failure is not "S3 is down".
+  Future<void> Function()? onRecovered;
+
   StorageMode _preferredMode = StorageMode.local;
   DateTime? _degradedUntil;
   bool _loaded = false;
@@ -153,10 +159,22 @@ class S3SessionController extends ChangeNotifier {
     }
     try {
       await run();
+      await _notifyRecovered();
       return S3RetryResult.reachable;
     } catch (_) {
       await markS3Failed(now: now ?? _clock());
       return S3RetryResult.unavailable;
+    }
+  }
+
+  Future<void> _notifyRecovered() async {
+    final hook = onRecovered;
+    if (hook == null) return;
+    try {
+      await hook();
+    } catch (_) {
+      // The bucket answered (or the window simply ended). A repair that
+      // fails stays queued; it must not look like the probe failed.
     }
   }
 
@@ -182,7 +200,9 @@ class S3SessionController extends ChangeNotifier {
         if (armed != null) await _prefs.setDegradedUntil(armed);
         return;
       }
-      if (!_disposed) notifyListeners();
+      if (_disposed) return;
+      notifyListeners();
+      await _notifyRecovered();
     });
   }
 
@@ -207,6 +227,7 @@ class S3SessionController extends ChangeNotifier {
     final t = now ?? _clock();
     if (!t.isBefore(until)) {
       await _clearDegraded();
+      await _notifyRecovered();
     }
   }
 

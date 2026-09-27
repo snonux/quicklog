@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 
 import '../services/active_note_store.dart';
 import '../services/browser_note_sources.dart';
+import '../services/dual_write_s3_repair.dart';
 import '../services/log_service.dart';
 import '../services/merged_note_listing.dart';
 import '../services/preferences.dart';
@@ -142,6 +143,14 @@ class EntryBrowserController extends ChangeNotifier {
   Future<List<LocatedLogEntry>> _load(int generation) async {
     final dir = await _prefs.directory();
     final sources = await _active.resolveBrowserSources();
+    // Dual-write only, and not while the degrade window is open: one replay
+    // per refresh, so a note edited while S3 was down catches up when it
+    // answers. S3-only listings do not enter this branch.
+    if (sources.keepLocalCopies &&
+        sources.s3 != null &&
+        _session.shouldAttemptS3) {
+      await sources.replayPendingS3();
+    }
     final entries = await sources.list();
     if (generation != _loadGeneration) return entries;
     _dir = dir;
@@ -304,6 +313,14 @@ class EntryBrowserController extends ChangeNotifier {
     final name = located.id;
     try {
       await sources.delete(located);
+    } on DualWriteS3Pending catch (e) {
+      // The on-device file is already gone. Say so, then re-list: the
+      // refresh replays the S3 delete when the bucket is up, and otherwise
+      // shows the leftover as an S3 row until a later retry.
+      if (!context.mounted) return;
+      _showSnack(context, '$e', isError: true);
+      refresh();
+      return;
     } catch (e) {
       // Deleting can fail on Android when the directory is outside the app's
       // granted storage scope; keep the entry listed and say why.

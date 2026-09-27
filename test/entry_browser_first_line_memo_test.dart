@@ -25,6 +25,9 @@ class _CountingS3 extends MemoryS3ObjectClient {
   final Set<String> failNextPut = {};
   final Set<String> failNextDelete = {};
 
+  /// Keys whose DELETE always fails, including a later repair replay.
+  final Set<String> failDeletes = {};
+
   /// Awaited when a delete is about to fail, so a test can let a frame paint
   /// while that delete is still in flight.
   Future<void> Function()? onFailingDelete;
@@ -52,7 +55,7 @@ class _CountingS3 extends MemoryS3ObjectClient {
 
   @override
   Future<void> deleteObject(String key) async {
-    if (failNextDelete.remove(key)) {
+    if (failDeletes.contains(key) || failNextDelete.remove(key)) {
       final hook = onFailingDelete;
       if (hook != null) await hook();
       throw Exception('DELETE $key failed');
@@ -470,7 +473,7 @@ void main() {
       s3.failNextPut.add(older);
       await tapAndSettle(tester, find.byIcon(Icons.edit_outlined).last);
       await saveEdit(tester, 'alpha edited');
-      expect(find.textContaining('Could not save'), findsOneWidget);
+      expect(find.textContaining('S3 copy was not updated'), findsOneWidget);
 
       final newerBefore = s3.gets[newer];
       final olderBefore = s3.gets[older];
@@ -499,7 +502,10 @@ void main() {
         s3.failNextPut.add(older);
         await tapAndSettle(tester, find.byIcon(Icons.edit_outlined).last);
         await saveEdit(tester, 'alpha edited');
-        expect(find.textContaining('Could not save'), findsOneWidget);
+        expect(
+          find.textContaining('S3 copy was not updated'),
+          findsOneWidget,
+        );
 
         await tester.pump(const Duration(seconds: 4));
         await tester.pump(const Duration(milliseconds: 500));
@@ -636,11 +642,13 @@ void main() {
         await start(tester, mode: 'both');
         expect(find.text('Local + S3 · alpha'), findsOneWidget);
 
-        s3.failNextDelete.add(older);
+        // Keep failing, including the refresh's repair replay, so the leftover
+        // S3 object stays visible. A one-shot failure is removed on that replay.
+        s3.failDeletes.add(older);
         await tapAndSettle(tester, find.byIcon(Icons.delete_outline).last);
         await tapAndSettle(tester, find.widgetWithText(FilledButton, 'Delete'));
 
-        expect(find.textContaining('Could not delete'), findsOneWidget);
+        expect(find.textContaining('S3 copy was not deleted'), findsOneWidget);
         expect(find.text('Local + S3 · alpha'), findsNothing);
         expect(find.text('S3 · alpha'), findsOneWidget);
         expect(find.text('S3 · '), findsNothing);

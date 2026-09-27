@@ -1,4 +1,5 @@
 import 'browser_note_sources.dart';
+import 'dual_write_s3_repair.dart';
 import 'lazy_s3_note_store.dart';
 import 'log_service.dart';
 import 'merged_note_listing.dart';
@@ -76,15 +77,24 @@ class ActiveNoteStore {
     PreferencesService? preferences,
     S3SessionController? session,
     S3ObjectClientFactory? s3ClientFactory,
-  })  : _prefs = preferences ?? PreferencesService(),
-        _session = session ?? S3SessionController.instance,
-        _s3ClientFactory = s3ClientFactory ?? _defaultMinioFactory;
+  }) : this._(
+         preferences ?? PreferencesService(),
+         session ?? S3SessionController.instance,
+         s3ClientFactory ?? _defaultMinioFactory,
+       );
+
+  ActiveNoteStore._(
+    this._prefs,
+    this._session,
+    this._s3ClientFactory,
+  ) : _repairs = DualWriteS3Repair(preferences: _prefs);
 
   static final ActiveNoteStore instance = ActiveNoteStore();
 
   final PreferencesService _prefs;
   final S3SessionController _session;
   final S3ObjectClientFactory _s3ClientFactory;
+  final DualWriteS3Repair _repairs;
   bool _probeBound = false;
 
   S3SessionController get session => _session;
@@ -101,6 +111,26 @@ class ActiveNoteStore {
       final store = await _buildS3Store(markFailures: true);
       await store.probe();
     };
+    _session.onRecovered = replayDualWriteRepairs;
+  }
+
+  /// Replays dual-write repairs once, when the preferred mode is dual-write
+  /// and S3 is not inside the degrade window. No-op in s3-only and local
+  /// mode, and when nothing is queued. Wired to
+  /// [S3SessionController.onRecovered].
+  Future<void> replayDualWriteRepairs() async {
+    if (_session.preferredMode != StorageMode.both) return;
+    if (!_session.shouldAttemptS3) return;
+    if (!await _repairs.hasPending()) return;
+    final config = await _prefs.s3Config();
+    if (!config.hasCredentials) return;
+    final S3NoteStore s3;
+    try {
+      s3 = _s3StoreFor(config, markFailures: false);
+    } on S3ConfigException {
+      return;
+    }
+    await _repairs.replay(local: await resolveLocal(), s3: s3);
   }
 
   /// Active store for create/list/read/update/delete.
@@ -335,6 +365,7 @@ class ActiveNoteStore {
       mergeWhenS3Preferred: true,
       preferLocalReads: dualWrite,
       keepLocalCopies: dualWrite,
+      pendingRepairs: dualWrite ? _repairs : null,
     );
   }
 
