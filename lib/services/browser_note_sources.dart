@@ -3,6 +3,7 @@ import 'entry_handle.dart';
 import 'log_service.dart';
 import 'merged_note_listing.dart';
 import 's3_note_store.dart';
+import 's3_object_client.dart';
 
 /// Local + optional S3 stores for the entry browser when S3 is preferred.
 class BrowserNoteSources {
@@ -72,13 +73,22 @@ class BrowserNoteSources {
   /// In dual-write mode ([pendingRepairs] set), an S3 put that fails after the
   /// local write landed is queued and reported as [DualWriteS3Pending]: the
   /// device has the new text, and [replayPendingS3] overwrites the bucket
-  /// later. S3-only mode has no queue and still throws the raw S3 error.
-  Future<void> update(LocatedLogEntry located, String text) async {
+  /// later. A failed LIST hides remote ids, so a local-only row is still
+  /// written to S3 in that case. S3-only mode has no queue and still throws
+  /// the raw S3 error. The attempt shares the repair lock with [replay] so a
+  /// save cannot land after a replay has already read older text.
+  Future<void> update(LocatedLogEntry located, String text) {
+    final repairs = pendingRepairs;
+    if (repairs == null) return _update(located, text);
+    return repairs.run(() => _update(located, text));
+  }
+
+  Future<void> _update(LocatedLogEntry located, String text) async {
     Object? s3Error;
     Object? localError;
     final remote = s3;
-    final s3Attempted = located.hasS3 && remote != null;
-    if (located.hasS3 && remote != null) {
+    final s3Attempted = _shouldWriteS3(located);
+    if (s3Attempted && remote != null) {
       try {
         await remote.update(located.id, text);
       } catch (e) {
@@ -110,13 +120,21 @@ class BrowserNoteSources {
   ///
   /// In dual-write mode, a local delete that lands while the S3 delete fails
   /// is queued ([DualWriteS3Pending]) and removed from the bucket on
-  /// [replayPendingS3]. Without that, the note comes back as S3-only.
-  Future<void> delete(LocatedLogEntry located) async {
+  /// [replayPendingS3]. Without that, the note comes back as S3-only. A
+  /// failed LIST is treated the same way: the row looks local-only, but the
+  /// object may still be in the bucket.
+  Future<void> delete(LocatedLogEntry located) {
+    final repairs = pendingRepairs;
+    if (repairs == null) return _delete(located);
+    return repairs.run(() => _delete(located));
+  }
+
+  Future<void> _delete(LocatedLogEntry located) async {
     Object? s3Error;
     Object? localError;
     final remote = s3;
-    final s3Attempted = located.hasS3 && remote != null;
-    if (located.hasS3 && remote != null) {
+    final s3Attempted = _shouldWriteS3(located);
+    if (s3Attempted && remote != null) {
       try {
         await remote.delete(located.id);
       } catch (e) {
@@ -141,6 +159,17 @@ class BrowserNoteSources {
     if (firstError != null) throw firstError;
   }
 
+  /// True when this write should touch S3. A note listed on S3 always does.
+  /// In dual-write mode a failed LIST drops every remote id, so a local row
+  /// is written too — otherwise an edit during the outage never reaches the
+  /// bucket. A genuine local-only row after a successful LIST is left for
+  /// the explicit upload action.
+  bool _shouldWriteS3(LocatedLogEntry located) {
+    if (s3 == null) return false;
+    if (located.hasS3) return true;
+    return pendingRepairs != null && s3ListFailed && located.hasLocal;
+  }
+
   /// One pass over [pendingRepairs]. No-op without a queue or an S3 store.
   /// Does not loop: an id that fails stays queued for a later call.
   Future<void> replayPendingS3() async {
@@ -158,13 +187,15 @@ class BrowserNoteSources {
   }) async {
     final repairs = pendingRepairs;
     if (repairs == null) return null;
-    if (s3Attempted && s3Error == null) {
-      // Bucket has this text (or the local failure is a separate problem).
-      // A queued re-upload would put the old local bytes back.
+    final localLanded = located.hasLocal && localError == null;
+    if (s3Attempted && s3Error == null && localLanded) {
       await repairs.clear(located.id);
       return null;
     }
-    final localLanded = located.hasLocal && localError == null;
+    // S3 accepted this text and the device write did not. Leave a queued
+    // upload in place so replay can put the device text back. Do not add a
+    // new one: the device file does not contain this attempt, and enqueueing
+    // it would not change that.
     if (localLanded && s3Error != null && s3Error is! ArgumentError) {
       await repairs.enqueueUpload(located.id);
       return DualWriteS3Pending.notUploaded(s3Error);
@@ -180,7 +211,8 @@ class BrowserNoteSources {
   }) async {
     final repairs = pendingRepairs;
     if (repairs == null) return null;
-    if (s3Attempted && s3Error == null) {
+    if (s3Attempted &&
+        (s3Error == null || isMissingObjectError(s3Error))) {
       await repairs.clear(located.id);
       return null;
     }

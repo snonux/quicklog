@@ -477,10 +477,14 @@ void main() {
 
       final newerBefore = s3.gets[newer];
       final olderBefore = s3.gets[older];
+      // The device copy is saved, so Back does not ask to discard.
+      await tester.pump(const Duration(seconds: 4));
+      await tester.pump(const Duration(milliseconds: 500));
       await tester.pageBack();
-      await pumpWithIo(tester);
-      await tapAndSettle(tester, find.text('Discard'));
+      await pumpWithIo(tester, rounds: 30);
+      await tester.pump(const Duration(seconds: 1));
 
+      expect(find.text('Discard changes?'), findsNothing);
       expect(find.text('Entries'), findsOneWidget);
       expect(find.text('Local + S3 · alpha edited'), findsOneWidget);
       // Re-read just this row (the local copy, so no S3 GET for it). A full
@@ -493,8 +497,8 @@ void main() {
       'revert after a partial save shows the edited local text',
       (tester) async {
         // Same partial write as above: S3 put fails, the local file lands.
-        // Revert only restores the field to the pre-edit text, so leaving
-        // must not be treated as a clean back.
+        // The field matches that file, so Revert is disabled and Back does
+        // not ask to discard.
         writeLocal(older, 'alpha');
         await start(tester, mode: 'both');
         expect(find.text('Local + S3 · alpha'), findsOneWidget);
@@ -506,15 +510,15 @@ void main() {
           find.textContaining('S3 copy was not updated'),
           findsOneWidget,
         );
-
-        await tester.pump(const Duration(seconds: 4));
-        await tester.pump(const Duration(milliseconds: 500));
-        await tester.tap(find.widgetWithText(OutlinedButton, 'Revert'));
-        await pumpWithIo(tester);
-        expect(find.text('alpha'), findsOneWidget);
+        final revert = tester.widget<OutlinedButton>(
+          find.widgetWithText(OutlinedButton, 'Revert'),
+        );
+        expect(revert.onPressed, isNull);
 
         final newerBefore = s3.gets[newer];
         final olderBefore = s3.gets[older];
+        await tester.pump(const Duration(seconds: 4));
+        await tester.pump(const Duration(milliseconds: 500));
         await tester.pageBack();
         await pumpWithIo(tester, rounds: 30);
         await tester.pump(const Duration(seconds: 1));

@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
 
@@ -182,6 +183,166 @@ void main() {
       expect(await local.read(id), 'edited');
       expect(utf8.decode(client.objects[id]!), 's3 old');
     });
+
+    test('replay leaves the id queued when the put still fails', () async {
+      await File(p.join(tmp.path, id)).writeAsString('edited');
+      await client.putText(id, 's3 old');
+      await repairs.enqueueUpload(id);
+      client.failNext = Exception('put failed');
+
+      final repaired = await repairs.replay(local: local, s3: s3);
+
+      expect(repaired, 0);
+      expect(utf8.decode(client.objects[id]!), 's3 old');
+      expect(await repairs.hasPending(), isTrue);
+    });
+
+    test('a failed S3 list still queues an edit of the local row', () async {
+      await File(p.join(tmp.path, id)).writeAsString('local old');
+      await client.putText(id, 's3 old');
+      client.failNext = Exception('list failed');
+      final src = sources();
+      final rows = await src.list();
+      final row = rows.single;
+      expect(src.s3ListFailed, isTrue);
+      expect(row.isLocalOnly, isTrue);
+
+      client.failNext = Exception('put failed');
+      await expectLater(
+        src.update(row, 'edited'),
+        throwsA(isA<DualWriteS3Pending>()),
+      );
+
+      expect(await local.read(id), 'edited');
+      expect(utf8.decode(client.objects[id]!), 's3 old');
+      await repairs.replay(local: local, s3: s3);
+      expect(utf8.decode(client.objects[id]!), 'edited');
+      expect(await repairs.hasPending(), isFalse);
+    });
+
+    test('a failed S3 list still queues a delete of the local row', () async {
+      await File(p.join(tmp.path, id)).writeAsString('gone soon');
+      await client.putText(id, 'still remote');
+      client.failNext = Exception('list failed');
+      final src = sources();
+      final row = (await src.list()).single;
+      expect(row.isLocalOnly, isTrue);
+
+      client.failNext = Exception('delete failed');
+      await expectLater(
+        src.delete(row),
+        throwsA(isA<DualWriteS3Pending>()),
+      );
+
+      expect(File(p.join(tmp.path, id)).existsSync(), isFalse);
+      expect(client.objects.containsKey(id), isTrue);
+      await repairs.replay(local: local, s3: s3);
+      expect(client.objects.containsKey(id), isFalse);
+      expect(await repairs.hasPending(), isFalse);
+    });
+
+    test('local failure after an S3 put keeps the device text primary', () async {
+      final failing = _FailingLocal(tmp.path);
+      final src = BrowserNoteSources(
+        local: failing,
+        s3: s3,
+        mergeWhenS3Preferred: true,
+        preferLocalReads: true,
+        keepLocalCopies: true,
+        pendingRepairs: repairs,
+      );
+      await File(p.join(tmp.path, id)).writeAsString('local old');
+      await client.putText(id, 's3 old');
+      client.failNext = Exception('put failed');
+      await expectLater(
+        src.update(both(id), 'edited'),
+        throwsA(isA<DualWriteS3Pending>()),
+      );
+
+      failing.fail = true;
+      await expectLater(
+        src.update(both(id), 'edited again'),
+        throwsA(isA<FileSystemException>()),
+      );
+
+      expect(await local.read(id), 'edited');
+      expect(utf8.decode(client.objects[id]!), 'edited again');
+      expect(await repairs.hasPending(), isTrue);
+
+      failing.fail = false;
+      await repairs.replay(local: failing, s3: s3);
+      expect(utf8.decode(client.objects[id]!), 'edited');
+      expect(await repairs.hasPending(), isFalse);
+    });
+
+    test('a restored local file is uploaded instead of deleted', () async {
+      await client.putText(id, 'remote');
+      await repairs.enqueueDelete(id);
+      await File(p.join(tmp.path, id)).writeAsString('restored');
+
+      final repaired = await repairs.replay(local: local, s3: s3);
+
+      expect(repaired, 1);
+      expect(utf8.decode(client.objects[id]!), 'restored');
+      expect(await repairs.hasPending(), isFalse);
+    });
+
+    test('text written during a replay stays queued and is put next', () async {
+      final gated = _GatedPut();
+      final remote = S3NoteStore(gated);
+      await File(p.join(tmp.path, id)).writeAsString('v1');
+      await gated.putText(id, 'v1');
+      await repairs.enqueueUpload(id);
+      final entered = Completer<void>();
+      final release = Completer<void>();
+      gated.entered = entered;
+      gated.release = release;
+
+      final replay = repairs.replay(local: local, s3: remote);
+      await entered.future;
+      await File(p.join(tmp.path, id)).writeAsString('v2');
+      release.complete();
+      await replay;
+
+      expect(utf8.decode(gated.objects[id]!), 'v1');
+      expect(await repairs.hasPending(), isTrue);
+
+      final repaired = await repairs.replay(local: local, s3: remote);
+      expect(repaired, 1);
+      expect(utf8.decode(gated.objects[id]!), 'v2');
+      expect(await repairs.hasPending(), isFalse);
+    });
+
+    test('a save during replay is the text that remains on S3', () async {
+      final gated = _GatedPut();
+      final remote = S3NoteStore(gated);
+      await File(p.join(tmp.path, id)).writeAsString('v1');
+      await gated.putText(id, 'v1');
+      await repairs.enqueueUpload(id);
+      final entered = Completer<void>();
+      final release = Completer<void>();
+      gated.entered = entered;
+      gated.release = release;
+      final src = BrowserNoteSources(
+        local: local,
+        s3: remote,
+        mergeWhenS3Preferred: true,
+        preferLocalReads: true,
+        keepLocalCopies: true,
+        pendingRepairs: repairs,
+      );
+
+      final replay = repairs.replay(local: local, s3: remote);
+      await entered.future;
+      final saved = src.update(both(id), 'v2');
+      release.complete();
+      await replay;
+      await saved;
+
+      expect(await local.read(id), 'v2');
+      expect(utf8.decode(gated.objects[id]!), 'v2');
+      expect(await repairs.hasPending(), isFalse);
+    });
   });
 
   group('ActiveNoteStore dual-write repair', () {
@@ -353,6 +514,39 @@ void main() {
       expect(await prefs.dualWritePendingUploads(), isEmpty);
     });
   });
+}
+
+class _FailingLocal extends LocalNoteStore {
+  _FailingLocal(super.directory);
+
+  bool fail = false;
+
+  @override
+  Future<void> update(String id, String text) async {
+    if (fail) throw const FileSystemException('denied');
+    await super.update(id, text);
+  }
+}
+
+/// Holds the next [putObject] until [release] completes.
+class _GatedPut extends MemoryS3ObjectClient {
+  Completer<void>? entered;
+  Completer<void>? release;
+
+  @override
+  Future<void> putObject(
+    String key,
+    List<int> bytes, {
+    String contentType = 'text/markdown',
+  }) async {
+    final started = entered;
+    final wait = release;
+    entered = null;
+    release = null;
+    if (started != null && !started.isCompleted) started.complete();
+    if (wait != null) await wait.future;
+    await super.putObject(key, bytes, contentType: contentType);
+  }
 }
 
 /// DELETE always reports the object as already gone.

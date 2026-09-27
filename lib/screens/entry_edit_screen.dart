@@ -91,9 +91,12 @@ class _EntryEditScreenState extends State<EntryEditScreen> {
     try {
       await widget.handle.update(text);
     } on DualWriteS3Pending catch (e) {
-      // The device has the new text. Don't prefix "Could not save" — that
-      // sentence is for a write that did not land anywhere.
+      // The device has the new text. Treat the field as saved so Back does
+      // not call it unsaved, and stay so the message remains visible.
+      // Don't prefix "Could not save". Leaving pops false; the browser
+      // replays the queued upload without re-listing every row.
       if (!mounted) return;
+      _original = text;
       setState(() => _saving = false);
       _showSnack('$e', isError: true);
       return;

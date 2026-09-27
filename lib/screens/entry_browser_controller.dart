@@ -242,10 +242,10 @@ class EntryBrowserController extends ChangeNotifier {
 
   /// Edits an entry straight from the list.
   ///
-  /// A save (`true`) re-lists. `false` re-reads just this row: the user
-  /// discarded edits, or a save was attempted and may have written one
-  /// backend ([BrowserNoteSources.update] tries both) before they left.
-  /// `null` does not re-read, because storage was not touched.
+  /// A save (`true`) re-lists. `false` replays a queued dual-write repair
+  /// when S3 is up, then re-reads just this row: the user discarded edits,
+  /// or a save was attempted and may have written one backend before they
+  /// left. `null` does not re-read, because storage was not touched.
   Future<void> edit(BuildContext context, LocatedLogEntry located) async {
     final sources = _sources;
     if (sources == null) return;
@@ -254,8 +254,25 @@ class EntryBrowserController extends ChangeNotifier {
     if (saved == true) {
       refresh();
     } else if (saved == false) {
+      // A dual-write save that missed S3 pops false: the device copy is
+      // already updated, and this is the chance to replay that one id.
+      // A discard of unsaved text hits the same path; replay is a no-op
+      // when nothing is queued. Skip a full re-list so other rows are not
+      // read again.
+      await _replayPendingIfReady();
       await _rereadRow(located);
     }
+  }
+
+  /// One dual-write replay when S3 is outside the degrade window. Same gate
+  /// as a list refresh, without the list.
+  Future<void> _replayPendingIfReady() async {
+    final sources = _sources;
+    if (sources == null || !sources.keepLocalCopies || sources.s3 == null) {
+      return;
+    }
+    if (!_session.shouldAttemptS3) return;
+    await sources.replayPendingS3();
   }
 
   /// Re-reads the subtitle of [located] without dropping the line already

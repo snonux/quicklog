@@ -52,27 +52,33 @@ class DualWriteS3Repair {
   bool _loaded = false;
   Future<void> _chain = Future<void>.value();
 
+  static const Object _held = Object();
+
   /// Runs [action] after any in-flight queue change. Overlapping replays
-  /// queue instead of interleaving prefs writes.
-  Future<T> _exclusive<T>(Future<T> Function() action) {
-    final result = _chain.then((_) => action());
+  /// and dual-write saves queue instead of interleaving. A call made from
+  /// inside [action] runs immediately so enqueue cannot deadlock on itself.
+  Future<T> run<T>(Future<T> Function() action) {
+    if (Zone.current[_held] == true) return action();
+    final result = _chain.then(
+      (_) => runZoned(action, zoneValues: {_held: true}),
+    );
     _chain = result.then((_) {}, onError: (Object _, StackTrace _) {});
     return result;
   }
 
   Future<void> enqueueUpload(String id) {
-    return _exclusive(() => _enqueueUpload(id));
+    return run(() => _enqueueUpload(id));
   }
 
   Future<void> enqueueDelete(String id) {
-    return _exclusive(() => _enqueueDelete(id));
+    return run(() => _enqueueDelete(id));
   }
 
   /// Drops either pending op for [id] after S3 has caught up.
-  Future<void> clear(String id) => _exclusive(() => _clear(id));
+  Future<void> clear(String id) => run(() => _clear(id));
 
   Future<bool> hasPending() {
-    return _exclusive(() async {
+    return run(() async {
       await _ensureLoaded();
       return _uploads.isNotEmpty || _deletes.isNotEmpty;
     });
@@ -85,7 +91,7 @@ class DualWriteS3Repair {
   /// device no longer has text to put. Anything else stays queued.
   /// Returns how many ids were dropped.
   Future<int> replay({required NoteStore local, required NoteStore s3}) {
-    return _exclusive(() => _replay(local: local, s3: s3));
+    return run(() => _replay(local: local, s3: s3));
   }
 
   Future<void> _ensureLoaded() async {
@@ -147,6 +153,9 @@ class DualWriteS3Repair {
       try {
         final text = await local.read(id);
         await s3.update(id, text);
+        // A save during the put leaves the newer device text queued.
+        final current = await local.read(id);
+        if (current != text) continue;
         await _clear(id);
         done++;
       } on PathNotFoundException {
@@ -157,6 +166,31 @@ class DualWriteS3Repair {
       }
     }
     for (final id in List<String>.of(_deletes)) {
+      String? restored;
+      try {
+        restored = await local.read(id);
+      } on PathNotFoundException {
+        restored = null;
+      } catch (_) {
+        continue;
+      }
+      if (restored != null) {
+        // The device has this note again. Local is the primary, so the
+        // bucket must match it instead of being deleted.
+        try {
+          await s3.update(id, restored);
+          final current = await local.read(id);
+          if (current != restored) {
+            await _enqueueUpload(id);
+            continue;
+          }
+          await _clear(id);
+          done++;
+        } catch (_) {
+          await _enqueueUpload(id);
+        }
+        continue;
+      }
       try {
         await s3.delete(id);
         await _clear(id);

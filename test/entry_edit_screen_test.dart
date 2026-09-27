@@ -5,6 +5,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:path/path.dart' as p;
 import 'package:quicklog/screens/entry_edit_screen.dart';
+import 'package:quicklog/services/dual_write_s3_repair.dart';
 import 'package:quicklog/services/entry_handle.dart';
 import 'package:quicklog/services/log_service.dart';
 
@@ -40,6 +41,38 @@ class _WriteThenThrow implements EntryHandle {
   Future<void> update(String text) async {
     await _inner.update(id, text);
     throw Exception('write landed, then failed');
+  }
+}
+
+/// Writes the new text, then reports that S3 still needs a replay.
+class _PendingAfterWrite implements EntryHandle {
+  _PendingAfterWrite(this._inner, this.entry);
+
+  final NoteStore _inner;
+
+  @override
+  final LogEntry entry;
+
+  @override
+  String get id => entry.id;
+
+  @override
+  Future<void> delete() => _inner.delete(id);
+
+  @override
+  Future<String> firstLine() => _inner.firstLine(id);
+
+  @override
+  Future<String> preview({int maxChars = 200}) =>
+      _inner.preview(id, maxChars: maxChars);
+
+  @override
+  Future<String> read() => _inner.read(id);
+
+  @override
+  Future<void> update(String text) async {
+    await _inner.update(id, text);
+    throw DualWriteS3Pending.notUploaded(Exception('down'));
   }
 }
 
@@ -212,6 +245,37 @@ void main() {
     expect(find.byType(TextField), findsNothing);
     expect(await readEntry(tester), 'original body');
     expect(results, <bool?>[false]);
+  });
+
+  testWidgets('a save that missed S3 stays open and back is not unsaved', (
+    tester,
+  ) async {
+    final results = await pumpEditor(
+      tester,
+      handle: _PendingAfterWrite(store, entry),
+    );
+
+    await tester.enterText(find.byType(TextField), 'edited body');
+    await pumpWithIo(tester);
+    await tester.tap(find.widgetWithText(FilledButton, 'Save'));
+    await pumpWithIo(tester);
+    expect(find.textContaining('Saved on this device'), findsOneWidget);
+    expect(find.byType(TextField), findsOneWidget);
+    final revert = tester.widget<OutlinedButton>(
+      find.widgetWithText(OutlinedButton, 'Revert'),
+    );
+    expect(revert.onPressed, isNull);
+
+    // The snack covers the back button until it leaves.
+    await tester.pump(const Duration(seconds: 4));
+    await tester.pump(const Duration(milliseconds: 500));
+    await tester.pageBack();
+    await pumpAfterPop(tester);
+
+    expect(find.text('Discard changes?'), findsNothing);
+    expect(find.byType(TextField), findsNothing);
+    expect(results, <bool?>[false]);
+    expect(await readEntry(tester), 'edited body');
   });
 
   testWidgets('revert after a failed update is not a clean back',
