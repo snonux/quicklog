@@ -31,7 +31,8 @@ void main(List<String> args) async {
   }
 
   final dest = Directory(opts.dest);
-  final client = MinioS3ObjectClient(config);
+  // Build from exactly what configProblem validated.
+  final client = MinioS3ObjectClient(config.normalized());
   final summary = await drainQuicklogObjects(
     client: client,
     destDir: dest,
@@ -47,7 +48,9 @@ void main(List<String> args) async {
   }
 }
 
-/// Why [config] cannot be drained from, or null when it can. Checked before
+/// Why [config] cannot be drained from, or null when it can: the credentials
+/// are missing, or [config] as normalized ([S3Config.normalized], which is
+/// what main() builds its client from) cannot back a client. Checked before
 /// any client is built, so bad settings exit cleanly instead of throwing.
 String? configProblem(S3Config config) {
   if (!config.hasCredentials) {

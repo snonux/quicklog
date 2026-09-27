@@ -121,6 +121,8 @@ class PreferencesService {
 
   Future<void> setS3Config(S3Config config) async {
     final prefs = await SharedPreferences.getInstance();
+    // Trim only, don't normalize: a blank field is stored as '' (not the
+    // default), so [s3Config] keeps applying the current default on read.
     await prefs.setString(_kS3Endpoint, config.endpoint.trim());
     await prefs.setString(_kS3Region, config.region.trim());
     await prefs.setString(_kS3Bucket, config.bucket.trim());

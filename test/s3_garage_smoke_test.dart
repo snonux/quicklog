@@ -1,9 +1,10 @@
 import 'dart:io';
 
 import 'package:flutter_test/flutter_test.dart';
-import 'package:quicklog/services/s3_config.dart';
 import 'package:quicklog/services/s3_note_store.dart';
 import 'package:quicklog/services/s3_object_client.dart';
+
+import '../bin/quicklog_drain.dart' as drain;
 
 /// Optional live Garage smoke. Skipped unless ~/.config/garage/quicklog.env
 /// exists — CI and developer machines without credentials stay green.
@@ -17,13 +18,7 @@ void main() {
     'live Garage path-style create/list/delete smoke',
     () async {
       final env = _loadShEnv(await envFile.readAsString());
-      final config = S3Config(
-        endpoint: env['GARAGE_ENDPOINT'] ?? kDefaultS3Endpoint,
-        region: env['GARAGE_REGION'] ?? kDefaultS3Region,
-        bucket: env['GARAGE_BUCKET'] ?? kDefaultS3Bucket,
-        accessKeyId: env['GARAGE_ACCESS_KEY_ID'] ?? '',
-        secretAccessKey: env['GARAGE_SECRET_ACCESS_KEY'] ?? '',
-      );
+      final config = drain.configFromEnv(env);
       expect(config.hasCredentials, isTrue);
 
       final store = S3NoteStore(MinioS3ObjectClient(config));

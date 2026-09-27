@@ -90,17 +90,4 @@ class S3Config {
     final trimmed = raw?.trim() ?? '';
     return trimmed.isEmpty ? fallback : trimmed;
   }
-
-  factory S3Config.defaults({
-    String accessKeyId = '',
-    String secretAccessKey = '',
-  }) {
-    return S3Config(
-      endpoint: kDefaultS3Endpoint,
-      region: kDefaultS3Region,
-      bucket: kDefaultS3Bucket,
-      accessKeyId: accessKeyId,
-      secretAccessKey: secretAccessKey,
-    );
-  }
 }

@@ -2,6 +2,8 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:quicklog/services/s3_config.dart';
 import 'package:quicklog/services/s3_object_client.dart';
 
+import '../bin/quicklog_drain.dart' as drain;
+
 void main() {
   group('S3Config.fromRaw', () {
     test('absent fields fall back to the defaults, credentials to empty', () {
@@ -68,12 +70,23 @@ void main() {
       expect(config.secretAccessKey, ' s ');
     });
 
-    test('is idempotent', () {
-      final once = S3Config.fromRaw(endpoint: ' x.example ', bucket: ' b1 ');
+    test('is idempotent, credentials included', () {
+      final once = S3Config.fromRaw(
+        endpoint: ' x.example ',
+        region: '  ',
+        bucket: ' b1 ',
+        accessKeyId: ' AKIA ',
+        secretAccessKey: '',
+      );
       final twice = once.normalized();
       expect(twice.endpoint, once.endpoint);
       expect(twice.region, once.region);
       expect(twice.bucket, once.bucket);
+      expect(twice.accessKeyId, ' AKIA ');
+      expect(twice.secretAccessKey, '');
+      final thrice = twice.normalized();
+      expect(thrice.accessKeyId, twice.accessKeyId);
+      expect(thrice.secretAccessKey, twice.secretAccessKey);
     });
   });
 
@@ -145,6 +158,43 @@ void main() {
         ),
         isNull,
       );
+    });
+  });
+
+  group('quicklog_drain configFromEnv', () {
+    test('unset, empty and whitespace region/bucket use the defaults', () {
+      for (final value in <String?>[null, '', '   ']) {
+        final config = drain.configFromEnv({
+          'GARAGE_REGION': ?value,
+          'GARAGE_BUCKET': ?value,
+        });
+        expect(config.region, kDefaultS3Region, reason: '$value');
+        expect(config.bucket, kDefaultS3Bucket, reason: '$value');
+        expect(config.endpoint, kDefaultS3Endpoint, reason: '$value');
+      }
+    });
+
+    test('trims endpoint, region and bucket', () {
+      final config = drain.configFromEnv({
+        'GARAGE_ENDPOINT': ' http://s3.example:9000 ',
+        'GARAGE_REGION': ' eu-1 ',
+        'GARAGE_BUCKET': ' notes ',
+      });
+      expect(config.endpoint, 'http://s3.example:9000');
+      expect(config.region, 'eu-1');
+      expect(config.bucket, 'notes');
+    });
+
+    test('keeps credentials as given; unset means empty', () {
+      final config = drain.configFromEnv({
+        'GARAGE_ACCESS_KEY_ID': ' AKIA ',
+        'GARAGE_SECRET_ACCESS_KEY': ' sekrit ',
+      });
+      expect(config.accessKeyId, ' AKIA ');
+      expect(config.secretAccessKey, ' sekrit ');
+      final none = drain.configFromEnv({});
+      expect(none.accessKeyId, '');
+      expect(none.secretAccessKey, '');
     });
   });
 }
