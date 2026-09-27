@@ -9,11 +9,13 @@ void main() {
   late SafNoteStore store;
   late Map<String, String> notes;
   late bool granted;
+  late bool listingIncomplete;
   late int calls;
 
   setUp(() {
     notes = {};
     granted = true;
+    listingIncomplete = false;
     calls = 0;
     store = SafNoteStore(uri, channel: channel);
     TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
@@ -30,6 +32,12 @@ void main() {
           final id = args['id'];
           switch (call.method) {
             case 'list':
+              if (listingIncomplete) {
+                throw PlatformException(
+                  code: 'io',
+                  message: 'Folder is still loading',
+                );
+              }
               return [...notes.keys, 'other.md', '../ql-260101-000000.md'];
             case 'create':
               if (notes.containsKey(id)) {
@@ -125,6 +133,19 @@ void main() {
     );
     expect(notes['ql-260101-000000.md'], 'keep');
   });
+
+  test(
+    'incomplete provider listing is an error, never an empty vault',
+    () async {
+      notes['ql-260101-000000.md'] = 'keep';
+      listingIncomplete = true;
+      await expectLater(
+        store.list(),
+        throwsA(isA<PlatformException>().having((e) => e.code, 'code', 'io')),
+      );
+      expect(notes['ql-260101-000000.md'], 'keep');
+    },
+  );
 
   test('revoked grant fails visibly and preserves existing notes', () async {
     notes['ql-260101-000000.md'] = 'original';

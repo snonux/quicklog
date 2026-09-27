@@ -304,8 +304,9 @@ class MainActivity : FlutterActivity() {
     }
 
     override fun onDestroy() {
-        // Let in-flight writes finish; interrupting a provider while writing
-        // could leave a partially updated note. No new requests are accepted.
+        // Stop accepting requests without interrupting writes already handed
+        // to the provider. Android may still kill the process before they
+        // finish; SafNoteWorkflow leaves staged/backup documents recoverable.
         safExecutor.shutdown()
         super.onDestroy()
     }
