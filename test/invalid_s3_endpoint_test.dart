@@ -328,6 +328,21 @@ void main() {
       expect((await prefs.s3Config()).bucket, kDefaultS3Bucket);
     });
 
+    // Checked as stored settings read back: trimmed, empty -> default.
+    for (final bucket in ['', ' quicklog ']) {
+      test(
+        'S3 mode imports bucket "$bucket" as it will be read back',
+        () async {
+          await setUpPrefs(mode: StorageMode.local);
+          await service().apply(
+            QuicklogSettings(storageMode: StorageMode.s3, s3Bucket: bucket),
+          );
+          expect(session.preferredMode, StorageMode.s3);
+          expect((await prefs.s3Config()).bucket, kDefaultS3Bucket);
+        },
+      );
+    }
+
     test('local mode imports an unused invalid endpoint', () async {
       await setUpPrefs(mode: StorageMode.s3);
       await service().apply(
