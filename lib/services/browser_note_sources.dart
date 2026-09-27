@@ -1,3 +1,7 @@
+import 'dart:io';
+
+import 'package:path/path.dart' as p;
+
 import 'dual_write_s3_repair.dart';
 import 'entry_handle.dart';
 import 'log_service.dart';
@@ -84,6 +88,7 @@ class BrowserNoteSources {
   }
 
   Future<void> _update(LocatedLogEntry located, String text) async {
+    located = await _includingLocalFile(located);
     Object? s3Error;
     Object? localError;
     final remote = s3;
@@ -104,6 +109,7 @@ class BrowserNoteSources {
     }
     final pending = await _recordUpdate(
       located,
+      text: text,
       s3Attempted: s3Attempted,
       s3Error: s3Error,
       localError: localError,
@@ -130,6 +136,7 @@ class BrowserNoteSources {
   }
 
   Future<void> _delete(LocatedLogEntry located) async {
+    located = await _includingLocalFile(located);
     Object? s3Error;
     Object? localError;
     final remote = s3;
@@ -179,8 +186,23 @@ class BrowserNoteSources {
     await repairs.replay(local: local, s3: remote);
   }
 
+  /// A failed LIST, or a listing error, can show a note as S3-only while the
+  /// device file is still there. Dual-write then has to write that file too.
+  Future<LocatedLogEntry> _includingLocalFile(LocatedLogEntry located) async {
+    if (pendingRepairs == null || located.hasLocal) return located;
+    if (parseLogEntryId(located.id) == null) return located;
+    if (!await File(p.join(local.directory, located.id)).exists()) {
+      return located;
+    }
+    return LocatedLogEntry(
+      entry: located.entry,
+      location: NoteStorageLocation.both,
+    );
+  }
+
   Future<DualWriteS3Pending?> _recordUpdate(
     LocatedLogEntry located, {
+    required String text,
     required bool s3Attempted,
     required Object? s3Error,
     required Object? localError,
@@ -205,7 +227,26 @@ class BrowserNoteSources {
       await repairs.enqueueUpload(located.id);
       return DualWriteS3Pending.notUploaded(s3Error);
     }
+    if (s3Attempted &&
+        s3Error != null &&
+        !located.hasLocal &&
+        s3Error is! ArgumentError &&
+        await _bucketHasText(located.id, text)) {
+      // The response was lost after the object was stored. Clearing a
+      // queued delete keeps the next replay from removing that edit.
+      await repairs.clear(located.id);
+    }
     return null;
+  }
+
+  Future<bool> _bucketHasText(String id, String text) async {
+    final remote = s3;
+    if (remote == null) return false;
+    try {
+      return await remote.read(id) == text;
+    } catch (_) {
+      return false;
+    }
   }
 
   Future<DualWriteS3Pending?> _recordDelete(

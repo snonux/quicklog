@@ -18,6 +18,11 @@ import 'package:shared_preferences/shared_preferences.dart';
 
 import 'support/memory_s3_object_client.dart';
 
+LocatedLogEntry _remoteOnly(String noteId) => LocatedLogEntry(
+  entry: LogEntry(id: noteId, timestamp: parseLogEntryId(noteId)!),
+  location: NoteStorageLocation.s3,
+);
+
 void main() {
   TestWidgetsFlutterBinding.ensureInitialized();
 
@@ -417,6 +422,88 @@ void main() {
 
       expect(utf8.decode(gated.objects[id]!), 'restored');
       expect(await repairs.hasPending(), isFalse);
+    });
+
+    test('a missing notes directory does not delete the queued upload', () async {
+      SharedPreferences.setMockInitialValues(<String, Object>{
+        'flutter.Directory': tmp.path,
+      });
+      final prefs = PreferencesService();
+      final queued = DualWriteS3Repair(preferences: prefs);
+      await File(p.join(tmp.path, id)).writeAsString('keep');
+      await client.putText(id, 'remote');
+      await queued.enqueueUpload(id);
+      await tmp.delete(recursive: true);
+
+      final repaired = await queued.replay(
+        local: LocalNoteStore(tmp.path),
+        s3: s3,
+      );
+
+      expect(repaired, 0);
+      expect(utf8.decode(client.objects[id]!), 'remote');
+      expect(await prefs.dualWritePendingUploads(), [id]);
+      expect(await prefs.dualWritePendingDeletes(), isEmpty);
+    });
+
+    test('an S3-only row with a device file is updated in both places', () async {
+      await File(p.join(tmp.path, id)).writeAsString('device');
+      await client.putText(id, 'remote');
+
+      await sources().update(_remoteOnly(id), 'edited');
+
+      expect(await local.read(id), 'edited');
+      expect(utf8.decode(client.objects[id]!), 'edited');
+    });
+
+    test('an S3-only row with a device file is deleted in both places', () async {
+      await File(p.join(tmp.path, id)).writeAsString('device');
+      await client.putText(id, 'remote');
+
+      await sources().delete(_remoteOnly(id));
+
+      expect(File(p.join(tmp.path, id)).existsSync(), isFalse);
+      expect(client.objects.containsKey(id), isFalse);
+    });
+
+    test('a lost put response keeps the edit and drops the queued delete', () async {
+      await client.putText(id, 'old');
+      await repairs.enqueueDelete(id);
+      client.putSucceedsButThrows = Exception('lost response');
+
+      await expectLater(
+        sources().update(_remoteOnly(id), 'edited'),
+        throwsA(
+          predicate<Object>((e) => '$e'.contains('lost response')),
+        ),
+      );
+
+      expect(utf8.decode(client.objects[id]!), 'edited');
+      expect(await repairs.hasPending(), isFalse);
+      await repairs.replay(local: local, s3: s3);
+      expect(utf8.decode(client.objects[id]!), 'edited');
+    });
+
+    test('repair lists share one preference value', () async {
+      SharedPreferences.setMockInitialValues(<String, Object>{
+        'flutter.Directory': tmp.path,
+      });
+      final prefs = PreferencesService();
+      const other = 'ql-260927-120001.md';
+      await prefs.setDualWritePending(
+        uploads: [id],
+        deletes: const [other],
+        directory: tmp.path,
+      );
+
+      final stored = await SharedPreferences.getInstance();
+      final raw = stored.getString('DualWritePending');
+      expect(raw, contains(id));
+      expect(raw, contains(other));
+      expect(stored.getStringList('DualWritePendingUploads'), isNull);
+      expect(stored.getStringList('DualWritePendingDeletes'), isNull);
+      expect(await prefs.dualWritePendingUploads(), [id]);
+      expect(await prefs.dualWritePendingDeletes(), [other]);
     });
   });
 

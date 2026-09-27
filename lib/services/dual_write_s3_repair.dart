@@ -49,6 +49,7 @@ class DualWriteS3Repair {
 
   final Set<String> _uploads = {};
   final Set<String> _deletes = {};
+  String? _directory;
   bool _loaded = false;
   Future<void> _chain = Future<void>.value();
 
@@ -99,15 +100,31 @@ class DualWriteS3Repair {
     _loaded = true;
     final prefs = _prefs;
     if (prefs == null) return;
-    _uploads.addAll(await prefs.dualWritePendingUploads());
-    _deletes.addAll(await prefs.dualWritePendingDeletes());
+    final pending = await prefs.dualWritePending();
+    _uploads.addAll(pending.uploads);
+    _deletes.addAll(pending.deletes);
+    _directory = pending.directory;
   }
 
   Future<void> _persist() async {
     final prefs = _prefs;
     if (prefs == null) return;
-    await prefs.setDualWritePendingUploads(_sorted(_uploads));
-    await prefs.setDualWritePendingDeletes(_sorted(_deletes));
+    _directory ??= await prefs.directory();
+    await prefs.setDualWritePending(
+      uploads: _sorted(_uploads),
+      deletes: _sorted(_deletes),
+      directory: _directory,
+    );
+  }
+
+  /// True when [local] is not the folder these ids were queued for, or that
+  /// folder is gone. A missing file there must not be treated as a delete:
+  /// the notes may still be in the previous directory.
+  Future<bool> _leaveUploads(NoteStore local) async {
+    if (local is! LocalNoteStore) return false;
+    final queued = _directory;
+    if (queued != null && queued != local.directory) return true;
+    return !await Directory(local.directory).exists();
   }
 
   List<String> _sorted(Set<String> ids) {
@@ -170,7 +187,9 @@ class DualWriteS3Repair {
         await _clear(id);
         done++;
       } on PathNotFoundException {
-        // Nothing on device to put. Dropping the object matches the primary.
+        // Nothing on device to put. Dropping the object matches the primary,
+        // unless this folder is not the one the id was queued in.
+        if (await _leaveUploads(local)) continue;
         await _enqueueDelete(id);
       } catch (_) {
         // Leave the upload queued for the next recovery.

@@ -1,3 +1,5 @@
+import 'dart:convert';
+
 import 'package:shared_preferences/shared_preferences.dart';
 
 import 's3_config.dart';
@@ -9,6 +11,7 @@ const _kStorageMode = 'StorageMode';
 const _kDegradedUntil = 'S3DegradedUntil';
 const _kPendingUploads = 'DualWritePendingUploads';
 const _kPendingDeletes = 'DualWritePendingDeletes';
+const _kPending = 'DualWritePending';
 const _kS3Endpoint = 'S3Endpoint';
 const _kS3Region = 'S3Region';
 const _kS3Bucket = 'S3Bucket';
@@ -113,36 +116,76 @@ class PreferencesService {
   /// Dual-write note ids whose local text still needs to overwrite S3.
   /// Transient, like [degradedUntil]: not part of a settings export.
   Future<List<String>> dualWritePendingUploads() async {
-    final prefs = await SharedPreferences.getInstance();
-    return List<String>.from(
-      prefs.getStringList(_kPendingUploads) ?? const <String>[],
-    );
-  }
-
-  Future<void> setDualWritePendingUploads(List<String> ids) async {
-    final prefs = await SharedPreferences.getInstance();
-    if (ids.isEmpty) {
-      await prefs.remove(_kPendingUploads);
-    } else {
-      await prefs.setStringList(_kPendingUploads, ids);
-    }
+    return (await dualWritePending()).uploads;
   }
 
   /// Dual-write note ids removed on device whose S3 object is still there.
   Future<List<String>> dualWritePendingDeletes() async {
+    return (await dualWritePending()).deletes;
+  }
+
+  /// Both repair lists and the notes directory they were queued for.
+  ///
+  /// One preference value, so a crash cannot save the upload list without
+  /// the delete list. [directory] is the folder those ids belong to.
+  Future<
+    ({List<String> uploads, List<String> deletes, String? directory})
+  >
+  dualWritePending() async {
     final prefs = await SharedPreferences.getInstance();
-    return List<String>.from(
-      prefs.getStringList(_kPendingDeletes) ?? const <String>[],
+    final raw = prefs.getString(_kPending);
+    if (raw != null) return _decodePending(raw);
+    return (
+      uploads: List<String>.from(
+        prefs.getStringList(_kPendingUploads) ?? const <String>[],
+      ),
+      deletes: List<String>.from(
+        prefs.getStringList(_kPendingDeletes) ?? const <String>[],
+      ),
+      directory: null,
     );
   }
 
-  Future<void> setDualWritePendingDeletes(List<String> ids) async {
+  Future<void> setDualWritePending({
+    required List<String> uploads,
+    required List<String> deletes,
+    String? directory,
+  }) async {
     final prefs = await SharedPreferences.getInstance();
-    if (ids.isEmpty) {
-      await prefs.remove(_kPendingDeletes);
+    if (uploads.isEmpty && deletes.isEmpty) {
+      await prefs.remove(_kPending);
     } else {
-      await prefs.setStringList(_kPendingDeletes, ids);
+      await prefs.setString(
+        _kPending,
+        jsonEncode(<String, Object?>{
+          'uploads': uploads,
+          'deletes': deletes,
+          'directory': ?directory,
+        }),
+      );
     }
+    await prefs.remove(_kPendingUploads);
+    await prefs.remove(_kPendingDeletes);
+  }
+
+  ({List<String> uploads, List<String> deletes, String? directory})
+  _decodePending(String raw) {
+    final Object? decoded = jsonDecode(raw);
+    if (decoded is! Map) {
+      return (uploads: const <String>[], deletes: const <String>[], directory: null);
+    }
+    return (
+      uploads: _stringList(decoded['uploads']),
+      deletes: _stringList(decoded['deletes']),
+      directory: decoded['directory'] is String
+          ? decoded['directory'] as String
+          : null,
+    );
+  }
+
+  List<String> _stringList(Object? value) {
+    if (value is! List) return const <String>[];
+    return [for (final item in value) if (item is String) item];
   }
 
   Future<S3Config> s3Config() async {

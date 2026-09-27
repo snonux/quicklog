@@ -37,7 +37,7 @@ class SettingsImportException implements Exception {
 /// distinct from null.
 ///
 /// Not included: the S3 degrade window (`S3DegradedUntil`) and the dual-write
-/// pending repair ids (`DualWritePendingUploads`, `DualWritePendingDeletes`).
+/// pending repair ids (`DualWritePending`).
 /// Those are transient runtime state for this install, not settings to copy.
 class QuicklogSettings {
   const QuicklogSettings({
