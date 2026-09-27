@@ -284,8 +284,17 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
     String? version;
     try {
       version = await loadAppVersion(DefaultAssetBundle.of(context));
-    } catch (_) {
-      version = null; // Omit the version rather than fail to show About.
+    } catch (e, st) {
+      // Omit the version rather than fail to show About, but surface the
+      // cause: a missing asset or version: line is a packaging bug.
+      FlutterError.reportError(
+        FlutterErrorDetails(
+          exception: e,
+          stack: st,
+          library: 'quicklog',
+          context: ErrorDescription('while loading the app version for About'),
+        ),
+      );
     }
     if (!mounted) return;
     showAboutDialog(

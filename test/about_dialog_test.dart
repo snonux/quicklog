@@ -10,18 +10,25 @@ import 'package:quicklog/services/s3_session_controller.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
 /// Serves a fixed `pubspec.yaml` so a test can prove the About dialog reads
-/// the version from the bundle instead of a literal in the source.
+/// the version from the bundle instead of a literal in the source. A null
+/// [pubspec] makes every load fail, as a missing asset would.
 class _FakePubspecBundle extends CachingAssetBundle {
   _FakePubspecBundle(this.pubspec);
 
-  final String pubspec;
+  final String? pubspec;
 
   @override
   Future<ByteData> load(String key) async {
-    if (key != kPubspecAsset) throw FlutterError('Unexpected asset: $key');
-    return ByteData.sublistView(utf8.encode(pubspec));
+    final content = pubspec;
+    if (key != kPubspecAsset || content == null) {
+      throw FlutterError('Unable to load asset: $key');
+    }
+    return ByteData.sublistView(utf8.encode(content));
   }
 }
+
+String? _shownVersion(WidgetTester tester) =>
+    tester.widget<AboutDialog>(find.byType(AboutDialog)).applicationVersion;
 
 void main() {
   TestWidgetsFlutterBinding.ensureInitialized();
@@ -82,8 +89,32 @@ void main() {
         tester,
         bundle: _FakePubspecBundle('name: quicklog\nversion: 9.8.7+654\n'),
       );
+      expect(_shownVersion(tester), '9.8.7');
       expect(find.text('9.8.7'), findsOneWidget);
     });
+
+    // Fail-soft: a broken bundle must not stop About from opening, but the
+    // cause has to be reported rather than swallowed.
+    for (final (name, pubspec, errorType) in <(String, String?, Type)>[
+      ('the asset cannot be loaded', null, FlutterError),
+      ('pubspec.yaml has no version line', 'name: quicklog\n', FormatException),
+    ]) {
+      testWidgets('opens without a version and reports it when $name', (
+        tester,
+      ) async {
+        final reported = <FlutterErrorDetails>[];
+        final original = FlutterError.onError;
+        FlutterError.onError = reported.add;
+        try {
+          await openAbout(tester, bundle: _FakePubspecBundle(pubspec));
+        } finally {
+          FlutterError.onError = original;
+        }
+        expect(_shownVersion(tester), isNull);
+        expect(reported, hasLength(1));
+        expect(reported.single.exception.runtimeType, errorType);
+      });
+    }
 
     // Drift guard: the version the shipped About dialog shows must be the one
     // in pubspec.yaml on disk. This fails if pubspec.yaml ever stops being
@@ -93,24 +124,8 @@ void main() {
         File('pubspec.yaml').readAsStringSync(),
       );
       await openAbout(tester);
+      expect(_shownVersion(tester), expected);
       expect(find.text(expected), findsOneWidget);
     });
-  });
-
-  test('no screen hard-codes an applicationVersion string', () {
-    final literal = RegExp(r'''applicationVersion:\s*['"]''');
-    final offenders = Directory('lib')
-        .listSync(recursive: true)
-        .whereType<File>()
-        .where((f) => f.path.endsWith('.dart'))
-        .where((f) => literal.hasMatch(f.readAsStringSync()))
-        .map((f) => f.path)
-        .toList();
-    expect(
-      offenders,
-      isEmpty,
-      reason:
-          'Read the version via loadAppVersion() so it follows pubspec.yaml',
-    );
   });
 }

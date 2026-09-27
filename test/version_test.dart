@@ -1,6 +1,7 @@
 import 'dart:io';
 
 import 'package:flutter_test/flutter_test.dart';
+import 'package:quicklog/services/app_version.dart';
 
 /// Guards the invariants F-Droid packaging depends on.
 ///
@@ -12,28 +13,35 @@ import 'package:flutter_test/flutter_test.dart';
 void main() {
   const abiCodes = {'armeabi-v7a': 1, 'arm64-v8a': 2, 'x86_64': 3};
 
-  final versionLine = File('pubspec.yaml')
-      .readAsLinesSync()
+  final pubspec = File('pubspec.yaml').readAsStringSync();
+  final versionLine = pubspec
+      .split('\n')
       .firstWhere((line) => line.startsWith('version:'));
-  final match =
-      RegExp(r'^version:\s*(\d+\.\d+\.\d+)\+(\d+)$').firstMatch(versionLine);
+  // The semver comes from the same parser the About dialog uses; this file only
+  // adds the strict `<semver>+<buildNumber>` shape F-Droid depends on.
+  final semver = parsePubspecVersion(pubspec);
+  final match = RegExp(
+    '^version:\\s*${RegExp.escape(semver)}\\+(\\d+)\$',
+  ).firstMatch(versionLine);
 
   test('pubspec version line is <semver>+<buildNumber>', () {
+    expect(semver, matches(RegExp(r'^\d+\.\d+\.\d+$')));
     expect(
       match,
       isNotNull,
-      reason: 'F-Droid parses this line with '
+      reason:
+          'F-Droid parses this line with '
           r'`version:\s.+\+(\d+)` and `version:\s(.+)\+`; '
           'anything else silently breaks its update check. Got: $versionLine',
     );
   });
 
   test('build number is a positive integer', () {
-    expect(int.parse(match!.group(2)!), greaterThan(0));
+    expect(int.parse(match!.group(1)!), greaterThan(0));
   });
 
   test('per-ABI version codes are distinct and correctly ordered', () {
-    final buildNumber = int.parse(match!.group(2)!);
+    final buildNumber = int.parse(match!.group(1)!);
     int codeFor(String abi) => buildNumber * 10 + abiCodes[abi]!;
 
     final codes = abiCodes.keys.map(codeFor).toList();
@@ -57,7 +65,11 @@ void main() {
     final all = <int>{};
     for (var n = 1; n < 500; n++) {
       for (final abi in abiCodes.keys) {
-        expect(all.add(codeFor(n, abi)), isTrue, reason: 'collision at $n/$abi');
+        expect(
+          all.add(codeFor(n, abi)),
+          isTrue,
+          reason: 'collision at $n/$abi',
+        );
       }
     }
   });
