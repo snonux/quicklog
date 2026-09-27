@@ -111,7 +111,20 @@ internal class SafTreeDocuments(private val resolver: ContentResolver) {
         override fun rename(document: SafDocument, name: String): SafDocument? {
             val renamed = DocumentsContract.renameDocument(resolver, documentUri(document.id), name)
                 ?: return null
-            return metadata(renamed)
+            val returnedId = try {
+                DocumentsContract.getDocumentId(renamed)
+            } catch (_: IllegalArgumentException) {
+                document.id
+            }
+            return try {
+                metadata(renamed)
+            } catch (e: Exception) {
+                throw SafRenameOutcomeException(
+                    SafDocument(returnedId, name, document.canRename),
+                    "The provider renamed the document but its metadata could not be read (id $returnedId).",
+                    e,
+                )
+            }
         }
 
         override fun delete(document: SafDocument): Boolean =

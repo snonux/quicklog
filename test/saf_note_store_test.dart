@@ -10,12 +10,14 @@ void main() {
   late Map<String, String> notes;
   late bool granted;
   late bool listingIncomplete;
+  late bool duplicateListing;
   late int calls;
 
   setUp(() {
     notes = {};
     granted = true;
     listingIncomplete = false;
+    duplicateListing = false;
     calls = 0;
     store = SafNoteStore(uri, channel: channel);
     TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
@@ -38,7 +40,12 @@ void main() {
                   message: 'Folder is still loading',
                 );
               }
-              return [...notes.keys, 'other.md', '../ql-260101-000000.md'];
+              return [
+                ...notes.keys,
+                if (duplicateListing && notes.isNotEmpty) notes.keys.first,
+                'other.md',
+                '../ql-260101-000000.md',
+              ];
             case 'create':
               if (notes.containsKey(id)) {
                 throw PlatformException(code: 'io', message: 'Note exists');
@@ -143,6 +150,16 @@ void main() {
         store.list(),
         throwsA(isA<PlatformException>().having((e) => e.code, 'code', 'io')),
       );
+      expect(notes['ql-260101-000000.md'], 'keep');
+    },
+  );
+
+  test(
+    'duplicate provider names fail rather than selecting one note',
+    () async {
+      notes['ql-260101-000000.md'] = 'keep';
+      duplicateListing = true;
+      await expectLater(store.list(), throwsStateError);
       expect(notes['ql-260101-000000.md'], 'keep');
     },
   );

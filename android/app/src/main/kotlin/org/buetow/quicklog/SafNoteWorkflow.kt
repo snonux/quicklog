@@ -5,6 +5,13 @@ import java.util.UUID
 
 internal data class SafDocument(val id: String, val name: String, val canRename: Boolean)
 
+/** Rename reached the provider, but its resulting name could not be trusted. */
+internal class SafRenameOutcomeException(
+    val moved: SafDocument,
+    message: String,
+    cause: Throwable? = null,
+) : IOException(message, cause)
+
 /** Small provider boundary so failure and recovery paths can be tested without Android. */
 internal interface SafDocumentGateway {
     fun list(): List<SafDocument>
@@ -38,12 +45,23 @@ internal class SafNoteWorkflow(private val gateway: SafDocumentGateway) {
         if (!document.canRename) throw IOException("This document provider cannot safely rename $name.")
         val result = gateway.rename(document, name)
             ?: throw IOException("The document provider could not rename $name.")
-        if (result.name != name) throw IOException("The document provider changed the note filename.")
+        if (result.name != name) {
+            throw SafRenameOutcomeException(result, "The document provider renamed $name to ${result.name}.")
+        }
         return result
+    }
+
+    private fun rejectDuplicates(docs: List<SafDocument>) {
+        val duplicate = docs.filter { isQuicklogNoteName(it.name) }
+            .groupBy { it.name }.entries.firstOrNull { it.value.size > 1 }
+        if (duplicate != null) {
+            throw IOException("The selected folder contains multiple documents named ${duplicate.key}. Resolve them before using this note.")
+        }
     }
 
     private fun scan(): List<SafDocument> {
         var docs = gateway.list()
+        rejectDuplicates(docs)
         val backups = docs.mapNotNull { doc ->
             backupPattern.matchEntire(doc.name)?.groupValues?.get(1)?.let { it to doc }
         }.groupBy({ it.first }, { it.second })
@@ -56,9 +74,29 @@ internal class SafNoteWorkflow(private val gateway: SafDocumentGateway) {
             // backup name. Restore it before reporting a listing or missing id.
             renamed(copies.single(), name)
             docs = gateway.list()
+            rejectDuplicates(docs)
         }
         listedNotes = docs.filter { isQuicklogNoteName(it.name) }.associateBy { it.name }
         return docs
+    }
+
+    private fun restoreAfterBackupRenameFailure(
+        name: String,
+        original: SafDocument,
+        outcome: SafRenameOutcomeException?,
+    ) {
+        // The returned document ID is useful even if the provider's metadata
+        // query failed after a successful rename. Prefer fresh metadata when
+        // available, but try the returned ID directly if listing also fails.
+        val moved = outcome?.moved
+        val docs = try { gateway.list() } catch (_: Exception) { emptyList() }
+        // Another document using the canonical name is ambiguous. Leave both
+        // untouched so a rollback cannot overwrite the wrong one.
+        if (docs.any { it.name == name }) return
+        val candidate = moved?.let { returned ->
+            docs.firstOrNull { it.id == returned.id } ?: returned
+        } ?: docs.firstOrNull { it.id == original.id }
+        if (candidate != null) renamed(candidate, name)
     }
 
     fun list(): List<String> = scan().map { it.name }.filter(::isQuicklogNoteName).distinct()
@@ -127,7 +165,19 @@ internal class SafNoteWorkflow(private val gateway: SafDocumentGateway) {
             throw IOException("The note changed while editing; staged data remains as ${staged.name}.")
         }
         val backupName = ".quicklog-backup-${UUID.randomUUID()}-$name"
-        val backup = renamed(latest, backupName)
+        val backup = try {
+            renamed(latest, backupName)
+        } catch (e: Exception) {
+            try {
+                restoreAfterBackupRenameFailure(name, latest, e as? SafRenameOutcomeException)
+            } catch (rollback: Exception) {
+                e.addSuppressed(rollback)
+            }
+            listedNotes = null
+            val moved = (e as? SafRenameOutcomeException)?.moved
+            val location = moved?.let { "${it.name} (document ${it.id})" } ?: backupName
+            throw IOException("Backup rename failed; original content remains at $name or $location.", e)
+        }
         listedNotes = null
         try {
             val published = renamed(staged, name)

@@ -19,6 +19,10 @@ class SafNoteWorkflowTest {
         var shortWrite = false
         var failPublish = false
         var corruptPublished = false
+        var alterBackupName = false
+        var failBackupMetadata = false
+        var rotateIdOnBackup = false
+        var failNextList = false
         var listingError: String? = null
         var loading = false
 
@@ -30,6 +34,10 @@ class SafNoteWorkflowTest {
 
         override fun list(): List<SafDocument> {
             listCalls++
+            if (failNextList) {
+                failNextList = false
+                throw IOException("directory temporarily unavailable")
+            }
             requireCompleteListing(loading, listingError)
             return records.map { (id, value) -> SafDocument(id, value.name, value.renameable) }
         }
@@ -50,11 +58,25 @@ class SafNoteWorkflowTest {
                 return null
             }
             val record = records[document.id] ?: throw java.io.FileNotFoundException()
-            record.name = name
+            record.name = if (alterBackupName && name.startsWith(".quicklog-backup-")) "$name-changed" else name
             if (corruptPublished && document.name.startsWith(".quicklog-pending-") && name.startsWith("ql-")) {
                 record.text = record.text.take(2)
             }
-            return SafDocument(document.id, name, record.renameable)
+            val returnedId = if (rotateIdOnBackup && name.startsWith(".quicklog-backup-")) {
+                records.remove(document.id)
+                (++nextId).toString().also { records[it] = record }
+            } else {
+                document.id
+            }
+            if (failBackupMetadata && name.startsWith(".quicklog-backup-")) {
+                if (rotateIdOnBackup) failNextList = true
+                throw SafRenameOutcomeException(
+                    SafDocument(returnedId, name, record.renameable),
+                    "Post-rename metadata unavailable",
+                    IOException("metadata failed"),
+                )
+            }
+            return SafDocument(returnedId, record.name, record.renameable)
         }
 
         override fun delete(document: SafDocument): Boolean = records.remove(document.id) != null
@@ -188,5 +210,41 @@ class SafNoteWorkflowTest {
         provider.add(note, "replacement")
         assertEquals("replacement", workflow.read(note))
         assertTrue(provider.listCalls >= 2)
+    }
+
+    @Test
+    fun duplicateCanonicalNamesFailBeforeAnySelectionOrMutation() {
+        val provider = FakeGateway()
+        provider.add(note, "first")
+        provider.add(note, "second")
+        val workflow = SafNoteWorkflow(provider)
+        expectIo { workflow.list() }
+        expectIo { workflow.read(note) }
+        expectIo { workflow.update(note, "replacement") }
+        expectIo { workflow.delete(note) }
+        expectIo { workflow.create(note, "third") }
+        assertEquals(listOf("first", "second"), provider.records.values.map { it.text })
+        assertEquals(2, provider.records.size)
+    }
+
+    @Test
+    fun changedBackupNameIsRolledBackUsingReturnedDocumentId() {
+        val provider = FakeGateway().apply { alterBackupName = true }
+        provider.add(note, "original")
+        expectIo { SafNoteWorkflow(provider).update(note, "replacement") }
+        assertEquals("original", provider.textAt(note))
+        assertFalse(provider.records.values.any { it.name.startsWith(".quicklog-backup-") })
+    }
+
+    @Test
+    fun postRenameMetadataFailureRollsBackUsingReturnedDocumentId() {
+        val provider = FakeGateway().apply {
+            failBackupMetadata = true
+            rotateIdOnBackup = true
+        }
+        provider.add(note, "original")
+        expectIo { SafNoteWorkflow(provider).update(note, "replacement") }
+        assertEquals("original", provider.textAt(note))
+        assertFalse(provider.records.values.any { it.name.startsWith(".quicklog-backup-") })
     }
 }

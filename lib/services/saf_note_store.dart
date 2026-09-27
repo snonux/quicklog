@@ -45,9 +45,15 @@ class SafNoteStore implements NoteStore {
       throw StateError('The document provider returned no listing.');
     }
     final entries = <LogEntry>[];
+    final seen = <String>{};
     for (final name in names) {
       final timestamp = parseLogEntryId(name);
       if (timestamp != null) {
+        if (!seen.add(name)) {
+          throw StateError(
+            'The document provider returned duplicate note $name.',
+          );
+        }
         entries.add(LogEntry(id: name, timestamp: timestamp));
       }
     }
