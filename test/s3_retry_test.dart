@@ -242,6 +242,31 @@ void main() {
       await _drainDegradeTimer(tester);
     });
 
+    testWidgets(
+      'refreshes the list when retry arms without a connectivity check',
+      (tester) async {
+        session.forced = S3RetryResult.armedWithoutProbe;
+        await _pumpBrowser(tester, session);
+        // First load binds a LIST probe. Drop it so the snackbar is the
+        // no-check wording; that result must still re-list.
+        session.probe = null;
+        expect(session.probe, isNull);
+        expect(find.text('2026-05-07 14:30:45'), findsOneWidget);
+
+        await _writeExtraNote(tester, tmp);
+        await tester.tap(find.text('Retry S3'));
+        await pumpWithIo(tester);
+
+        expect(
+          find.text('S3 retry armed (no connectivity check yet).'),
+          findsOneWidget,
+        );
+        expect(find.text('S3 reachable again.'), findsNothing);
+        expect(find.text('2026-05-07 15:00:00'), findsOneWidget);
+        await _drainDegradeTimer(tester);
+      },
+    );
+
     testWidgets('unreachable retry does not refresh or pretend S3 is back', (
       tester,
     ) async {
