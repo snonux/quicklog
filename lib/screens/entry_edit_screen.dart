@@ -116,11 +116,14 @@ class _EntryEditScreenState extends State<EntryEditScreen> {
 
   /// Back navigation. [PopScope] lets the route pop on its own only when the
   /// field is clean, nothing is saving, and no update was attempted — that
-  /// result is `null`. A dirty field still asks, and Discard pops `false`.
-  /// A clean field after an attempted save pops `false` with no dialog: the
-  /// field is not dirty, but the attempt may have written one backend.
+  /// result is `null`. While a save is in flight, back does nothing and does
+  /// not ask to discard: the editor stays until [NoteStore.update] finishes,
+  /// and a successful save pops `true` itself. A failed save clears
+  /// [_saving], after which a dirty field still asks and Discard pops
+  /// `false`, and a clean field after an attempted save pops `false` with no
+  /// dialog (the attempt may have written one backend).
   Future<void> _handlePop(bool didPop) async {
-    if (didPop) return;
+    if (didPop || _saving) return;
     if (!_dirty) {
       if (mounted) Navigator.of(context).pop(false);
       return;

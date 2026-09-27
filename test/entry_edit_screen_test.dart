@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:io';
 
 import 'package:flutter/material.dart';
@@ -39,6 +40,49 @@ class _WriteThenThrow implements NoteStore {
   Future<void> update(String id, String text) async {
     await _inner.update(id, text);
     throw Exception('write landed, then failed');
+  }
+}
+
+/// Holds [NoteStore.update] until [release], so a test can press back while
+/// the save is still in flight. [error] is thrown instead of writing.
+class _HeldUpdate implements NoteStore {
+  _HeldUpdate(this._inner);
+
+  final NoteStore _inner;
+  final Completer<void> _gate = Completer<void>();
+  Object? _error;
+
+  void release({Object? error}) {
+    _error = error;
+    if (!_gate.isCompleted) _gate.complete();
+  }
+
+  @override
+  Future<LogEntry> create(String text, {DateTime? now}) =>
+      _inner.create(text, now: now);
+
+  @override
+  Future<void> delete(String id) => _inner.delete(id);
+
+  @override
+  Future<String> firstLine(String id) => _inner.firstLine(id);
+
+  @override
+  Future<List<LogEntry>> list() => _inner.list();
+
+  @override
+  Future<String> preview(String id, {int maxChars = 200}) =>
+      _inner.preview(id, maxChars: maxChars);
+
+  @override
+  Future<String> read(String id) => _inner.read(id);
+
+  @override
+  Future<void> update(String id, String text) async {
+    await _gate.future;
+    final error = _error;
+    if (error != null) throw error;
+    await _inner.update(id, text);
   }
 }
 
@@ -197,6 +241,64 @@ void main() {
     expect(results, <bool?>[false]);
     // Revert restores the field, not the file the failed update already wrote.
     expect(await readEntry(tester), 'partial body');
+  });
+
+  /// Starts a save, puts the field back to the loaded text, and presses back
+  /// while [held] is still blocking [NoteStore.update].
+  Future<void> saveThenBackWithOriginalText(
+    WidgetTester tester,
+    _HeldUpdate held,
+  ) async {
+    await tester.enterText(find.byType(TextField), 'edited body');
+    await pumpWithIo(tester);
+    await tester.tap(find.widgetWithText(FilledButton, 'Save'));
+    await tester.pump();
+
+    await tester.enterText(find.byType(TextField), 'original body');
+    await tester.pump();
+    await tester.pageBack();
+    // Long enough for a route exit to finish, so a pop is not hidden by the
+    // transition still being on screen.
+    await tester.pump(const Duration(seconds: 1));
+
+    expect(find.byType(TextField), findsOneWidget);
+    expect(find.text('Discard changes?'), findsNothing);
+    expect(find.text('original body'), findsOneWidget);
+    expect(held._gate.isCompleted, isFalse);
+  }
+
+  testWidgets('back during an in-flight save waits, then pops true once',
+      (tester) async {
+    final held = _HeldUpdate(store);
+    final results = await pumpEditor(tester, noteStore: held);
+    await saveThenBackWithOriginalText(tester, held);
+    expect(results, isEmpty);
+
+    held.release();
+    await pumpAfterPop(tester);
+
+    expect(results, <bool?>[true]);
+    expect(find.byType(TextField), findsNothing);
+    expect(find.text('open'), findsOneWidget);
+    expect(await readEntry(tester), 'edited body');
+  });
+
+  testWidgets('a save that fails after back stays on the editor',
+      (tester) async {
+    final held = _HeldUpdate(store);
+    final results = await pumpEditor(tester, noteStore: held);
+    await saveThenBackWithOriginalText(tester, held);
+
+    held.release(error: Exception('still writing'));
+    await tester.pump();
+    await tester.pump(const Duration(seconds: 1));
+
+    expect(find.textContaining('Could not save'), findsOneWidget);
+    expect(find.byType(TextField), findsOneWidget);
+    expect(find.text('Discard changes?'), findsNothing);
+    expect(results, isEmpty);
+    expect(find.text('open'), findsNothing);
+    expect(await readEntry(tester), 'original body');
   });
 
   testWidgets('leaving an untouched entry does not ask', (tester) async {
