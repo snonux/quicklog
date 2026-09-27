@@ -41,7 +41,12 @@ class MainActivity : FlutterActivity() {
                             result.error("bad_args", "Expected shared text is required.", null)
                         } else {
                             try {
-                                result.success(clearCacheIfEquals(expected))
+                                result.success(
+                                    clearSharedTextCacheIfEquals(
+                                        File(cacheDir, cacheFilename),
+                                        expected,
+                                    ),
+                                )
                             } catch (e: IOException) {
                                 result.error("io", e.message ?: e.toString(), null)
                             }
@@ -218,14 +223,5 @@ class MainActivity : FlutterActivity() {
     private fun readCache(): String? {
         val f = File(cacheDir, cacheFilename)
         return if (f.exists()) f.readText() else null
-    }
-
-    // Both this channel handler and captureSendIntent run on the main thread,
-    // so a new share cannot overwrite the file between this check and delete.
-    private fun clearCacheIfEquals(expected: String): Boolean {
-        val f = File(cacheDir, cacheFilename)
-        if (!f.exists() || f.readText() != expected) return false
-        if (!f.delete()) throw IOException("Could not clear the shared-text cache.")
-        return true
     }
 }

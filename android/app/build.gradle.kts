@@ -97,6 +97,10 @@ flutter {
     source = "../.."
 }
 
+dependencies {
+    testImplementation("junit:junit:4.13.2")
+}
+
 // Per-ABI version codes for the split APKs, in F-Droid's scheme rather than
 // Flutter's. Flutter's Gradle plugin would stamp `abi * 1000 + versionCode`,
 // which collides two releases as soon as the build number reaches 1000. Putting
