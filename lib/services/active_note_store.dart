@@ -8,10 +8,6 @@ import 's3_note_store.dart';
 import 's3_object_client.dart';
 import 's3_session_controller.dart';
 
-// BrowserNoteSources moved to its own file; re-exported so callers that only
-// import the active store (e.g. the entry browser) keep compiling unchanged.
-export 'browser_note_sources.dart' show BrowserNoteSources;
-
 typedef S3ObjectClientFactory = S3ObjectClient Function(S3Config config);
 
 /// Where a newly created note ended up.

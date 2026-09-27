@@ -7,7 +7,8 @@ typedef S3NoteStoreBuilder = Future<S3NoteStore> Function();
 /// Defers async prefs/client construction until the first NoteStore call.
 ///
 /// The builder is injected, so this wrapper knows nothing about where the
-/// settings come from; the built store is cached after the first success.
+/// settings come from. The built store is cached once a build succeeds;
+/// failures are not cached, and concurrent first calls may each build.
 class LazyS3NoteStore implements NoteStore {
   LazyS3NoteStore(this._build);
 

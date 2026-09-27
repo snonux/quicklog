@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:intl/intl.dart';
 
 import '../services/active_note_store.dart';
+import '../services/browser_note_sources.dart';
 import '../services/log_service.dart';
 import '../services/merged_note_listing.dart';
 import '../services/preferences.dart';
