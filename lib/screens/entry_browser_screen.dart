@@ -10,6 +10,7 @@ import '../services/s3_session_controller.dart';
 import '../widgets/s3_degraded_banner.dart';
 import 'delete_confirmation_screen.dart';
 import 'entry_edit_screen.dart';
+import 'first_line_memo.dart';
 
 final _displayFormat = DateFormat('yyyy-MM-dd HH:mm:ss');
 
@@ -36,6 +37,9 @@ class _EntryBrowserScreenState extends State<EntryBrowserScreen> {
   bool _s3ListFailed = false;
   bool _wasDegraded = false;
   int _loadGeneration = 0;
+
+  /// Row subtitles, so a rebuild does not re-read every visible note.
+  final FirstLineMemo _firstLines = FirstLineMemo();
 
   /// True while a [_refresh] is in flight; [_sources] may then describe a
   /// mode that no longer applies, so the upload-all action is hidden.
@@ -70,6 +74,7 @@ class _EntryBrowserScreenState extends State<EntryBrowserScreen> {
   @override
   void dispose() {
     _session.removeListener(_onSessionChanged);
+    _firstLines.clear();
     super.dispose();
   }
 
@@ -88,9 +93,18 @@ class _EntryBrowserScreenState extends State<EntryBrowserScreen> {
         degraded == _wasDegraded) {
       return;
     }
+    // A mode change can switch which backend a row is read from.
+    if (mode != _lastPreferredMode) _firstLines.clear();
     _wasUsingLocalFallback = usingLocal;
     _wasDegraded = degraded;
     _lastPreferredMode = mode;
+    _refresh();
+  }
+
+  /// A refresh the user asked for: re-read every subtitle as well, since
+  /// notes may have changed elsewhere (another device, a sync tool).
+  void _refreshAll() {
+    _firstLines.clear();
     _refresh();
   }
 
@@ -113,6 +127,7 @@ class _EntryBrowserScreenState extends State<EntryBrowserScreen> {
     final sources = await _active.resolveBrowserSources();
     final entries = await sources.list();
     if (generation != _loadGeneration) return entries;
+    _firstLines.retain(entries);
     _dir = dir;
     _sources = sources;
     _wasUsingLocalFallback = _session.usesLocalFallback;
@@ -137,7 +152,7 @@ class _EntryBrowserScreenState extends State<EntryBrowserScreen> {
       _showSnack(message);
       if (result == S3RetryResult.reachable ||
           result == S3RetryResult.armedWithoutProbe) {
-        _refresh();
+        _refreshAll();
       }
     } catch (e) {
       if (!mounted) return;
@@ -167,6 +182,7 @@ class _EntryBrowserScreenState extends State<EntryBrowserScreen> {
     if (deleteRequested == true) {
       await _delete(located);
     } else {
+      _firstLines.invalidate(located.id);
       _refresh();
     }
   }
@@ -178,7 +194,9 @@ class _EntryBrowserScreenState extends State<EntryBrowserScreen> {
     if (sources == null) return;
     final saved =
         await editEntry(context, sources.entryStore(located), located.entry);
-    if (saved && mounted) _refresh();
+    if (!saved || !mounted) return;
+    _firstLines.invalidate(located.id);
+    _refresh();
   }
 
   Future<void> _confirmAndDelete(LocatedLogEntry located) async {
@@ -206,6 +224,7 @@ class _EntryBrowserScreenState extends State<EntryBrowserScreen> {
       if (mounted) _showSnack('Could not delete $name: $e', isError: true);
       return;
     }
+    _firstLines.invalidate(name);
     if (!mounted) return;
     _showSnack('Deleted $name');
     _refresh();
@@ -226,6 +245,7 @@ class _EntryBrowserScreenState extends State<EntryBrowserScreen> {
       }
       return;
     }
+    _firstLines.invalidate(located.id);
     if (!mounted) return;
     _showSnack('${upload.past} ${located.id} to S3');
     _refresh();
@@ -245,6 +265,7 @@ class _EntryBrowserScreenState extends State<EntryBrowserScreen> {
       }
       return;
     }
+    _firstLines.invalidate(located.id);
     if (!mounted) return;
     _showSnack('Removed local copy of ${located.id}');
     _refresh();
@@ -282,6 +303,7 @@ class _EntryBrowserScreenState extends State<EntryBrowserScreen> {
     for (final located in localOnly) {
       try {
         await sources.uploadLocalToS3(located);
+        _firstLines.invalidate(located.id);
         done++;
       } catch (_) {
         failed++;
@@ -329,7 +351,7 @@ class _EntryBrowserScreenState extends State<EntryBrowserScreen> {
           IconButton(
             tooltip: 'Refresh',
             icon: const Icon(Icons.refresh),
-            onPressed: _refresh,
+            onPressed: _refreshAll,
           ),
         ],
       ),
@@ -353,7 +375,7 @@ class _EntryBrowserScreenState extends State<EntryBrowserScreen> {
                   null => null,
                 },
                 trailing: TextButton(
-                  onPressed: _refresh,
+                  onPressed: _refreshAll,
                   child: const Text('Retry'),
                 ),
               ),
@@ -393,7 +415,7 @@ class _EntryBrowserScreenState extends State<EntryBrowserScreen> {
   Widget _entryList(List<LocatedLogEntry> entries) {
     final sources = _sources!;
     return RefreshIndicator(
-      onRefresh: () async => _refresh(),
+      onRefresh: () async => _refreshAll(),
       child: ListView.separated(
         itemCount: entries.length,
         separatorBuilder: (_, _) => const Divider(height: 1),
@@ -422,7 +444,10 @@ class _EntryBrowserScreenState extends State<EntryBrowserScreen> {
             secondaryIcon = null;
           }
           return _EntryTile(
-            store: sources.entryStore(located),
+            firstLine: _firstLines.firstLine(
+              located,
+              sources.storeFor(located),
+            ),
             entry: located.entry,
             location: _showLocation ? located.location : null,
             onTap: () => _open(located),
@@ -442,7 +467,7 @@ class _EntryBrowserScreenState extends State<EntryBrowserScreen> {
 
 class _EntryTile extends StatelessWidget {
   const _EntryTile({
-    required this.store,
+    required this.firstLine,
     required this.entry,
     required this.onTap,
     required this.onEdit,
@@ -453,7 +478,8 @@ class _EntryTile extends StatelessWidget {
     this.secondaryIcon,
   });
 
-  final NoteStore store;
+  /// Remembered by the browser, so rebuilding the tile does not re-read.
+  final Future<String> firstLine;
   final LogEntry entry;
   final NoteStorageLocation? location;
   final VoidCallback onTap;
@@ -470,7 +496,7 @@ class _EntryTile extends StatelessWidget {
       leading: location == null ? null : _LocationBadge(location: location!),
       title: Text(_displayFormat.format(entry.timestamp)),
       subtitle: FutureBuilder<String>(
-        future: store.firstLine(entry.id),
+        future: firstLine,
         builder: (_, snap) {
           final line = snap.data ?? '';
           final label = location == null ? null : _locationLabel(location!);
