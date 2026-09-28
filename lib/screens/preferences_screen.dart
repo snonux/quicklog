@@ -1,4 +1,7 @@
+import 'dart:io' show FileSystemException, Platform;
+
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart' show PlatformException;
 
 import '../services/active_note_store.dart';
 import '../services/preferences.dart';
@@ -6,6 +9,8 @@ import '../services/s3_config.dart';
 import '../services/s3_note_store.dart';
 import '../services/s3_object_client.dart';
 import '../services/s3_session_controller.dart';
+import '../services/settings_backup.dart';
+import '../services/settings_file_service.dart';
 import '../services/storage.dart';
 import '../services/storage_access_service.dart';
 
@@ -15,6 +20,7 @@ class PreferencesScreen extends StatefulWidget {
     this.session,
     this.activeStore,
     this.s3ClientFactory,
+    this.settingsFiles,
   });
 
   /// Optional override for tests; defaults to the process-wide session.
@@ -26,6 +32,10 @@ class PreferencesScreen extends StatefulWidget {
   /// Optional client factory for "Test connection" (defaults to Minio).
   /// Injected in tests so the probe never hits the network or prefs.
   final S3ObjectClientFactory? s3ClientFactory;
+
+  /// Where Export / Import settings save and read the file. Defaults to the
+  /// Android system file dialogs, or a typed path elsewhere (Linux).
+  final SettingsFileGateway? settingsFiles;
 
   @override
   State<PreferencesScreen> createState() => _PreferencesScreenState();
@@ -47,6 +57,14 @@ class _PreferencesScreenState extends State<PreferencesScreen>
   // Whether the configured directory is actually writable -- not whether the
   // All files access permission is held. See canWriteToDirectory().
   bool _directoryWritable = true;
+  bool _transferring = false;
+  late final SettingsFileGateway _files = widget.settingsFiles ??
+      (Platform.isAndroid
+          ? const AndroidSettingsFileGateway()
+          : PathPromptSettingsFileGateway(
+              _promptForPath,
+              confirmOverwrite: _confirmOverwrite,
+            ));
 
   S3SessionController get _session =>
       widget.session ?? S3SessionController.instance;
@@ -117,14 +135,164 @@ class _PreferencesScreenState extends State<PreferencesScreen>
     setState(() {});
   }
 
-  Future<void> _save() async {
+  Future<void> _persist() async {
     await _prefs.setDirectory(_dirController.text);
     await _prefs.setAutoLogSharedText(_autoLog);
     await _prefs.setS3Config(_readS3Config());
     await _session.setPreferredMode(_storageMode);
     _active.bindSessionProbe();
+  }
+
+  Future<void> _save() async {
+    await _persist();
     if (!mounted) return;
     Navigator.of(context).pop();
+  }
+
+  SettingsBackupService get _backup =>
+      SettingsBackupService(preferences: _prefs, session: _session);
+
+  Future<void> _exportSettings() async {
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        icon: const Icon(Icons.warning_amber),
+        title: const Text('Export settings'),
+        content: const Text(
+          'The settings shown here are saved first, then written to a file. '
+          'The file contains your S3 access key ID and secret access key in '
+          'plain text: anyone who gets it can use your bucket. Keep it '
+          'somewhere private and delete it once restored.',
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(ctx).pop(false),
+            child: const Text('Cancel'),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.of(ctx).pop(true),
+            child: const Text('Export'),
+          ),
+        ],
+      ),
+    );
+    if (confirmed != true || !mounted) return;
+    setState(() => _transferring = true);
+    try {
+      await _persist();
+      final json = await _backup.exportJson();
+      final where = await _files.save(
+        suggestedName: suggestedSettingsFileName(DateTime.now()),
+        content: json,
+      );
+      if (where == null || !mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('Settings exported to $where')),
+      );
+    } catch (e) {
+      await _showFailure('Export failed', e);
+    } finally {
+      if (mounted) setState(() => _transferring = false);
+    }
+  }
+
+  Future<void> _importSettings() async {
+    setState(() => _transferring = true);
+    try {
+      final text = await _files.open();
+      if (text == null || !mounted) return;
+      final backup = decodeSettingsBackup(text);
+      final exportedAt = backup.exportedAt;
+      final confirmed = await showDialog<bool>(
+        context: context,
+        builder: (ctx) => AlertDialog(
+          title: const Text('Import settings'),
+          content: Text(
+            'Replace the current settings with the ones in this file'
+            '${exportedAt == null ? '' : ' (exported ${exportedAt.toLocal()})'}?'
+            ' Unsaved changes on this screen are discarded.',
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.of(ctx).pop(false),
+              child: const Text('Cancel'),
+            ),
+            FilledButton(
+              onPressed: () => Navigator.of(ctx).pop(true),
+              child: const Text('Import'),
+            ),
+          ],
+        ),
+      );
+      if (confirmed != true || !mounted) return;
+      await _backup.apply(backup.settings);
+      _active.bindSessionProbe();
+      await _load();
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Settings imported.')),
+      );
+    } catch (e) {
+      await _showFailure('Import failed', e);
+    } finally {
+      if (mounted) setState(() => _transferring = false);
+    }
+  }
+
+  Future<void> _showFailure(String title, Object error) async {
+    if (!mounted) return;
+    final message = switch (error) {
+      SettingsImportException(:final message) => message,
+      FileSystemException(:final message, :final osError) =>
+        osError == null ? message : '$message: ${osError.message}',
+      PlatformException(:final message, :final code) => message ?? code,
+      _ => '$error',
+    };
+    await showDialog<void>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: Text(title),
+        content: Text(message),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(ctx).pop(),
+            child: const Text('OK'),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Future<bool> _confirmOverwrite(String path) async {
+    final replace = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Text('Replace existing file?'),
+        content: Text('$path already exists. Replace it with this export?'),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(ctx).pop(false),
+            child: const Text('Cancel'),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.of(ctx).pop(true),
+            child: const Text('Replace'),
+          ),
+        ],
+      ),
+    );
+    return replace ?? false;
+  }
+
+  Future<String?> _promptForPath({
+    required bool forSave,
+    required String initialPath,
+  }) {
+    return showDialog<String>(
+      context: context,
+      builder: (_) =>
+          _SettingsPathDialog(forSave: forSave, initialPath: initialPath),
+    );
   }
 
   Future<void> _testConnection() async {
@@ -205,6 +373,7 @@ class _PreferencesScreenState extends State<PreferencesScreen>
           const Text('Directory:', style: TextStyle(fontWeight: FontWeight.bold)),
           const SizedBox(height: 4),
           TextField(
+            key: const ValueKey('prefs.directory'),
             controller: _dirController,
             decoration: InputDecoration(
               border: const OutlineInputBorder(),
@@ -288,6 +457,7 @@ class _PreferencesScreenState extends State<PreferencesScreen>
                 style: TextStyle(fontWeight: FontWeight.bold)),
             const SizedBox(height: 4),
             TextField(
+              key: const ValueKey('prefs.s3Endpoint'),
               controller: _endpointController,
               decoration: const InputDecoration(
                 border: OutlineInputBorder(),
@@ -300,6 +470,7 @@ class _PreferencesScreenState extends State<PreferencesScreen>
             const Text('Region:', style: TextStyle(fontWeight: FontWeight.bold)),
             const SizedBox(height: 4),
             TextField(
+              key: const ValueKey('prefs.s3Region'),
               controller: _regionController,
               decoration: const InputDecoration(
                 border: OutlineInputBorder(),
@@ -312,6 +483,7 @@ class _PreferencesScreenState extends State<PreferencesScreen>
             const Text('Bucket:', style: TextStyle(fontWeight: FontWeight.bold)),
             const SizedBox(height: 4),
             TextField(
+              key: const ValueKey('prefs.s3Bucket'),
               controller: _bucketController,
               decoration: const InputDecoration(
                 border: OutlineInputBorder(),
@@ -325,6 +497,7 @@ class _PreferencesScreenState extends State<PreferencesScreen>
                 style: TextStyle(fontWeight: FontWeight.bold)),
             const SizedBox(height: 4),
             TextField(
+              key: const ValueKey('prefs.s3AccessKeyId'),
               controller: _accessKeyController,
               decoration: const InputDecoration(
                 border: OutlineInputBorder(),
@@ -337,6 +510,7 @@ class _PreferencesScreenState extends State<PreferencesScreen>
                 style: TextStyle(fontWeight: FontWeight.bold)),
             const SizedBox(height: 4),
             TextField(
+              key: const ValueKey('prefs.s3SecretAccessKey'),
               controller: _secretController,
               decoration: const InputDecoration(
                 border: OutlineInputBorder(),
@@ -377,8 +551,103 @@ class _PreferencesScreenState extends State<PreferencesScreen>
             value: _autoLog,
             onChanged: (v) => setState(() => _autoLog = v),
           ),
+          const Divider(height: 32),
+          const Text('Backup:', style: TextStyle(fontWeight: FontWeight.bold)),
+          const SizedBox(height: 4),
+          Text(
+            'Export every setting to a file you choose, and import it later '
+            '(e.g. after reinstalling) to restore them. Notes are not '
+            'included; they live in the log directory or bucket.',
+            style: Theme.of(context).textTheme.bodySmall,
+          ),
+          const SizedBox(height: 8),
+          Card(
+            color: Theme.of(context).colorScheme.tertiaryContainer,
+            child: const ListTile(
+              leading: Icon(Icons.key),
+              title: Text('The export file contains secrets'),
+              subtitle: Text(
+                'Your S3 access key and secret are stored in it in plain '
+                'text. Keep it private.',
+              ),
+            ),
+          ),
+          const SizedBox(height: 8),
+          Wrap(
+            spacing: 8,
+            runSpacing: 8,
+            children: [
+              OutlinedButton.icon(
+                onPressed: _transferring ? null : _exportSettings,
+                icon: const Icon(Icons.upload_file),
+                label: const Text('Export settings'),
+              ),
+              OutlinedButton.icon(
+                onPressed: _transferring ? null : _importSettings,
+                icon: const Icon(Icons.download),
+                label: const Text('Import settings'),
+              ),
+            ],
+          ),
         ],
       ),
+    );
+  }
+}
+
+/// Path entry for Export / Import settings on desktop, where there is no
+/// system file dialog to lean on. Owns its controller so it outlives the
+/// dialog's closing animation.
+class _SettingsPathDialog extends StatefulWidget {
+  const _SettingsPathDialog({required this.forSave, required this.initialPath});
+
+  final bool forSave;
+  final String initialPath;
+
+  @override
+  State<_SettingsPathDialog> createState() => _SettingsPathDialogState();
+}
+
+class _SettingsPathDialogState extends State<_SettingsPathDialog> {
+  late final TextEditingController _controller =
+      TextEditingController(text: widget.initialPath);
+
+  @override
+  void dispose() {
+    _controller.dispose();
+    super.dispose();
+  }
+
+  void _submit() => Navigator.of(context).pop(_controller.text);
+
+  @override
+  Widget build(BuildContext context) {
+    return AlertDialog(
+      title: Text(
+        widget.forSave ? 'Export settings to file' : 'Import settings from file',
+      ),
+      content: TextField(
+        key: const ValueKey('settingsPathField'),
+        controller: _controller,
+        autofocus: true,
+        decoration: const InputDecoration(
+          border: OutlineInputBorder(),
+          labelText: 'File path',
+        ),
+        autocorrect: false,
+        enableSuggestions: false,
+        onSubmitted: (_) => _submit(),
+      ),
+      actions: [
+        TextButton(
+          onPressed: () => Navigator.of(context).pop(),
+          child: const Text('Cancel'),
+        ),
+        FilledButton(
+          onPressed: _submit,
+          child: Text(widget.forSave ? 'Save' : 'Open'),
+        ),
+      ],
     );
   }
 }

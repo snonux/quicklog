@@ -18,6 +18,13 @@ adb install -r build/app/outputs/flutter-apk/app-release.apk
 Or copy the APK to the phone and install it from a file manager (you'll need
 to allow "Install unknown apps" for that file manager once).
 
+Switching between a self-built APK and the F-Droid build means uninstalling
+first (they are signed with different keys), and that wipes Quicklog's
+settings and its default notes folder. Before uninstalling, use
+**Preferences → Export settings** and copy your notes out; after installing,
+**Import settings**. See
+[Back up and restore settings](../README.md#back-up-and-restore-settings).
+
 ## Do you need any of this?
 
 By default Quicklog writes to its app-specific external directory
