@@ -1,26 +1,42 @@
+import 'dart:async';
 import 'dart:io';
 
 import 'package:flutter/material.dart';
 
 import '../services/active_note_store.dart';
+import '../services/app_version.dart';
 import '../services/preferences.dart';
 import '../services/s3_session_controller.dart';
-import '../services/share_service.dart';
 import '../services/shared_text_handler.dart';
 import '../widgets/s3_degraded_banner.dart';
+import '../widgets/s3_retry.dart';
 import 'entry_browser_screen.dart';
 import 'preferences_screen.dart';
 
 const int kMaxTextLength = 5000;
 
 class HomeScreen extends StatefulWidget {
-  const HomeScreen({super.key, this.session, this.activeStore});
+  const HomeScreen({
+    super.key,
+    this.session,
+    this.activeStore,
+    this.preferences,
+    this.sharedTextCache,
+  });
 
   /// Optional override for tests; defaults to the process-wide session.
   final S3SessionController? session;
 
   /// Optional override for tests (inject fake S3).
   final ActiveNoteStore? activeStore;
+
+  /// Optional override for tests; defaults to a fresh [PreferencesService].
+  /// The running app passes the instance created in `main`.
+  final PreferencesService? preferences;
+
+  /// Optional override for tests: the share cache to drain on start-up and
+  /// resume. Defaults to the native cache, which exists on Android only.
+  final SharedTextCache? sharedTextCache;
 
   @override
   State<HomeScreen> createState() => _HomeScreenState();
@@ -29,16 +45,17 @@ class HomeScreen extends StatefulWidget {
 class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
   final TextEditingController _controller = TextEditingController();
   final FocusNode _focusNode = FocusNode();
-  final PreferencesService _prefs = PreferencesService();
+  late final PreferencesService _prefs =
+      widget.preferences ?? PreferencesService();
   bool _warnShown = false;
   bool _loadingShared = false;
   bool _logging = false;
+  late final SharedTextIntake? _sharedIntake = _createSharedIntake();
 
   S3SessionController get _session =>
       widget.session ?? S3SessionController.instance;
 
-  ActiveNoteStore get _active =>
-      widget.activeStore ?? ActiveNoteStore.instance;
+  ActiveNoteStore get _active => widget.activeStore ?? ActiveNoteStore.instance;
 
   @override
   void initState() {
@@ -47,9 +64,33 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
     _controller.addListener(_onTextChanged);
     // Session is loaded once in main(); do not re-load here — a racing
     // unawaited load can resurrect a degrade window cleared by retry/mode.
-    if (Platform.isAndroid) {
+    if (_sharedIntake != null) {
       WidgetsBinding.instance.addPostFrameCallback((_) => _loadSharedText());
     }
+  }
+
+  SharedTextIntake? _createSharedIntake() {
+    final cache =
+        widget.sharedTextCache ??
+        (Platform.isAndroid ? const NativeSharedTextCache() : null);
+    if (cache == null) return null;
+    return SharedTextIntake(
+      cache: cache,
+      handle: _handleSharedText,
+      onError: _showError,
+    );
+  }
+
+  /// Drains the share cache in the background; loads are serialized by the
+  /// intake, so this is safe to call on every resume.
+  void _loadSharedText() {
+    final intake = _sharedIntake;
+    if (intake == null) return;
+    unawaited(
+      intake.load().catchError((Object e, StackTrace st) {
+        FlutterError.reportError(FlutterErrorDetails(exception: e, stack: st));
+      }),
+    );
   }
 
   @override
@@ -63,7 +104,7 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
 
   @override
   void didChangeAppLifecycleState(AppLifecycleState state) {
-    if (state == AppLifecycleState.resumed && Platform.isAndroid) {
+    if (state == AppLifecycleState.resumed) {
       _loadSharedText();
     }
   }
@@ -94,7 +135,10 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
           'performance issues.',
         ),
         actions: [
-          TextButton(onPressed: () => Navigator.of(ctx).pop(), child: const Text('OK')),
+          TextButton(
+            onPressed: () => Navigator.of(ctx).pop(),
+            child: const Text('OK'),
+          ),
         ],
       ),
     );
@@ -131,12 +175,16 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
 
   /// User-visible note for a save that succeeded but did not reach every
   /// backend the mode targets; null when everything landed where expected.
-  static String? _outcomeMessage(NoteCreateOutcome outcome) => switch (outcome) {
+  static String? _outcomeMessage(NoteCreateOutcome outcome) =>
+      switch (outcome) {
         NoteCreateOutcome.saved => null,
         NoteCreateOutcome.savedLocalOnly =>
-            'S3 unavailable — the note was saved on this device.',
+          'S3 unavailable — the note was saved on this device.',
         NoteCreateOutcome.savedS3Only =>
-            'The local write failed — the note is in the S3 bucket only.',
+          'The local write failed — the note is in the S3 bucket only.',
+        NoteCreateOutcome.savedLocalS3SettingsInvalid =>
+          'S3 settings invalid — the note was saved on this device. '
+              'Check Preferences.',
       };
 
   void _showError(Object error) {
@@ -148,35 +196,48 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
 
   void _showInfo(String title, String message) {
     if (!mounted) return;
-    ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(message)));
+    ScaffoldMessenger.of(
+      context,
+    ).showSnackBar(SnackBar(content: Text(message)));
   }
 
-  Future<void> _loadSharedText() async {
-    final txt = await ShareService.readSharedTextFromCache();
-    if (txt == null || txt.isEmpty) return;
+  /// Handles one cached share; serialized by [_sharedIntake], so a resume
+  /// during a slow auto-log save never logs the same share twice.
+  Future<void> _handleSharedText(
+    String txt,
+    Future<void> Function() clearHandled,
+  ) async {
+    // A follow-up load can outlive the screen; leave the share cached.
+    if (!mounted) return;
     _loadingShared = true;
-    final dir = await _prefs.directory();
-    final autoLog = await _prefs.autoLogSharedText();
-    await handleSharedTextLoad(
-      text: txt,
-      autoLog: autoLog,
-      dir: dir,
-      prefill: (s) {
-        _controller.text = s;
-        _controller.selection = TextSelection.collapsed(offset: s.length);
-      },
-      focus: () => _focusNode.requestFocus(),
-      resetInput: _resetInput,
-      clearCache: ShareService.clearSharedTextCache,
-      logFn: (_, t) async =>
-          // Same save path as the main Log text button; an optional custom
-          // message tells the handler where the note landed.
-          _outcomeMessage((await _active.createNote(t)).outcome),
-      showInfo: _showInfo,
-      showError: _showError,
-    );
-    _loadingShared = false;
-    if (mounted) setState(() {});
+    try {
+      final dir = await _prefs.directory();
+      final autoLog = await _prefs.autoLogSharedText();
+      if (!mounted) return;
+      await handleSharedTextLoad(
+        text: txt,
+        autoLog: autoLog,
+        dir: dir,
+        prefill: (s) {
+          _controller.text = s;
+          _controller.selection = TextSelection.collapsed(offset: s.length);
+        },
+        focus: () => _focusNode.requestFocus(),
+        resetInput: () {
+          if (mounted) _resetInput();
+        },
+        clearCache: clearHandled,
+        logFn: (_, t) async =>
+            // Same save path as the main Log text button; an optional custom
+            // message tells the handler where the note landed.
+            _outcomeMessage((await _active.createNote(t)).outcome),
+        showInfo: _showInfo,
+        showError: _showError,
+      );
+    } finally {
+      _loadingShared = false;
+      if (mounted) setState(() {});
+    }
   }
 
   Future<void> _openPreferences() async {
@@ -185,6 +246,7 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
         builder: (_) => PreferencesScreen(
           session: _session,
           activeStore: _active,
+          preferences: _prefs,
         ),
       ),
     );
@@ -196,42 +258,37 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
         builder: (_) => EntryBrowserScreen(
           session: _session,
           activeStore: _active,
+          preferences: _prefs,
         ),
       ),
     );
   }
 
-  Future<void> _retryS3() async {
+  Future<void> _retryS3() => retryS3WithFeedback(context, _session);
+
+  Future<void> _showAbout() async {
+    // The version comes from the bundled pubspec.yaml, never a literal here:
+    // a hard-coded string silently went stale on every release bump.
+    String? version;
     try {
-      final result = await _session.retryS3();
-      if (!mounted) return;
-      final message = switch (result) {
-        S3RetryResult.reachable => 'S3 reachable again.',
-        S3RetryResult.armedWithoutProbe => _session.probe == null
-            ? 'S3 retry armed (no connectivity check yet).'
-            : 'S3 reachable again.',
-        S3RetryResult.unavailable => 'S3 still unavailable.',
-        S3RetryResult.ignored => 'S3 retry not applicable.',
-      };
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text(message)),
-      );
-    } catch (e) {
-      if (!mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(
-          content: Text('Retry failed: $e'),
-          backgroundColor: Colors.red,
+      version = await loadAppVersion(DefaultAssetBundle.of(context));
+    } catch (e, st) {
+      // Omit the version rather than fail to show About, but surface the
+      // cause: a missing asset or version: line is a packaging bug.
+      FlutterError.reportError(
+        FlutterErrorDetails(
+          exception: e,
+          stack: st,
+          library: 'quicklog',
+          context: ErrorDescription('while loading the app version for About'),
         ),
       );
     }
-  }
-
-  void _showAbout() {
+    if (!mounted) return;
     showAboutDialog(
       context: context,
       applicationName: 'Quicklog',
-      applicationVersion: '0.3.0',
+      applicationVersion: version,
       applicationIcon: Image.asset('logo-small.png', width: 48, height: 48),
       applicationLegalese:
           'Jot timestamped markdown notes. Optional S3; default is local-only.',

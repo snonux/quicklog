@@ -8,11 +8,11 @@ import 'package:quicklog/screens/home_screen.dart';
 import 'package:quicklog/services/active_note_store.dart';
 import 'package:quicklog/services/log_service.dart';
 import 'package:quicklog/services/preferences.dart';
-import 'package:quicklog/services/s3_object_client.dart';
 import 'package:quicklog/services/s3_session_controller.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
 import 'io_pump.dart';
+import 'support/memory_s3_object_client.dart';
 
 void main() {
   TestWidgetsFlutterBinding.ensureInitialized();

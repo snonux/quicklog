@@ -64,7 +64,10 @@ yourself instead, see [Build and Run](#android) and
 Versions live in a single place: the `version:` line of `pubspec.yaml`, written
 as `<semver>+<buildNumber>`. The build number is a plain counter — bump it by
 one per release. Android's `versionName` and `versionCode` are derived from it,
-and every release commit gets a matching `vX.Y.Z` git tag.
+and every release commit gets a matching `vX.Y.Z` git tag. The About dialog reads
+the same line at runtime: `pubspec.yaml` is bundled as an asset and parsed by
+`lib/services/app_version.dart`, so there is no version string to update by hand
+(`test/about_dialog_test.dart` fails if the dialog ever drifts from it).
 
 `.flutter-version` pins the Flutter SDK a release was built with; the F-Droid
 build recipe reads it, so bump it whenever the toolchain moves.
@@ -170,7 +173,10 @@ re-save it. The app then uses the local directory for new notes until you tap
 **Local + S3** (dual write) writes every note to the local directory *and*
 the bucket under the same `ql-*.md` name. If S3 is unavailable the note is
 still saved locally (and you are told), and S3 is skipped for an hour like
-above; editing and deleting an entry keeps both copies in sync.
+above; editing and deleting an entry keeps both copies in sync. Notes left
+local-only (e.g. by an outage) get **Copy to S3** in the entry browser, which
+uploads them and keeps the local file; only **S3 only** mode offers **Move to
+S3**, which deletes the local file after a successful upload.
 
 Default mode remains **Local only**. There is no analytics or background sync.
 `INTERNET` is declared for the optional S3 path and stays unused in local mode.

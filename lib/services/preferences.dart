@@ -1,12 +1,19 @@
+import 'dart:convert';
+
 import 'package:shared_preferences/shared_preferences.dart';
 
 import 's3_config.dart';
 import 'storage.dart';
 
 const _kDirectory = 'Directory';
+const _kScopedTreeUri = 'ScopedTreeUri';
+const _kScopedTreeName = 'ScopedTreeName';
 const _kAutoLogSharedText = 'AutoLogSharedText';
 const _kStorageMode = 'StorageMode';
 const _kDegradedUntil = 'S3DegradedUntil';
+const _kPendingUploads = 'DualWritePendingUploads';
+const _kPendingDeletes = 'DualWritePendingDeletes';
+const _kPending = 'DualWritePending';
 const _kS3Endpoint = 'S3Endpoint';
 const _kS3Region = 'S3Region';
 const _kS3Bucket = 'S3Bucket';
@@ -40,6 +47,34 @@ enum StorageMode {
 }
 
 class PreferencesService {
+  Future<({String uri, String name})?> scopedFolder() async {
+    final prefs = await SharedPreferences.getInstance();
+    final uri = prefs.getString(_kScopedTreeUri);
+    if (uri == null || uri.isEmpty) return null;
+    return (
+      uri: uri,
+      name: prefs.getString(_kScopedTreeName) ?? 'Selected folder',
+    );
+  }
+
+  Future<void> setScopedFolder(String uri, String name) async {
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setString(_kScopedTreeUri, uri);
+    await prefs.setString(_kScopedTreeName, name);
+  }
+
+  Future<void> clearScopedFolder() async {
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.remove(_kScopedTreeUri);
+    await prefs.remove(_kScopedTreeName);
+  }
+
+  /// A repair queue belongs to one local destination, never another.
+  Future<String> localStoreKey() async {
+    final folder = await scopedFolder();
+    return folder == null ? directory() : 'saf:${folder.uri}';
+  }
+
   Future<String> directory() async {
     final prefs = await SharedPreferences.getInstance();
     final stored = prefs.getString(_kDirectory);
@@ -108,25 +143,135 @@ class PreferencesService {
     }
   }
 
+  /// Dual-write note ids whose local text still needs to overwrite S3.
+  /// Transient, like [degradedUntil]: not part of a settings export.
+  Future<List<String>> dualWritePendingUploads() async {
+    final folders = await dualWritePendingFolders();
+    final ids = <String>{for (final queue in folders.values) ...queue.uploads};
+    return _sortedIds(ids);
+  }
+
+  /// Dual-write note ids removed on device whose S3 object is still there.
+  Future<List<String>> dualWritePendingDeletes() async {
+    final folders = await dualWritePendingFolders();
+    final ids = <String>{for (final queue in folders.values) ...queue.deletes};
+    return _sortedIds(ids);
+  }
+
+  /// Repair ids grouped by the notes directory they were queued in.
+  ///
+  /// One preference value, so a crash cannot save one folder's list without
+  /// the other. Ids from a later directory stay in their own group.
+  Future<Map<String, ({List<String> uploads, List<String> deletes})>>
+  dualWritePendingFolders() async {
+    final prefs = await SharedPreferences.getInstance();
+    final raw = prefs.getString(_kPending);
+    if (raw != null) return _decodeFolders(raw);
+    final uploads = List<String>.from(
+      prefs.getStringList(_kPendingUploads) ?? const <String>[],
+    );
+    final deletes = List<String>.from(
+      prefs.getStringList(_kPendingDeletes) ?? const <String>[],
+    );
+    if (uploads.isEmpty && deletes.isEmpty) return {};
+    return {await directory(): (uploads: uploads, deletes: deletes)};
+  }
+
+  Future<void> setDualWritePendingFolders(
+    Map<String, ({List<String> uploads, List<String> deletes})> folders,
+  ) async {
+    final prefs = await SharedPreferences.getInstance();
+    final kept = <String, Object>{};
+    for (final entry in folders.entries) {
+      if (entry.value.uploads.isEmpty && entry.value.deletes.isEmpty) {
+        continue;
+      }
+      kept[entry.key] = <String, Object>{
+        'uploads': entry.value.uploads,
+        'deletes': entry.value.deletes,
+      };
+    }
+    if (kept.isEmpty) {
+      await prefs.remove(_kPending);
+    } else {
+      await prefs.setString(
+        _kPending,
+        jsonEncode(<String, Object>{'folders': kept}),
+      );
+    }
+    await prefs.remove(_kPendingUploads);
+    await prefs.remove(_kPendingDeletes);
+  }
+
+  Map<String, ({List<String> uploads, List<String> deletes})> _decodeFolders(
+    String raw,
+  ) {
+    final Object? decoded = jsonDecode(raw);
+    if (decoded is! Map) {
+      throw const FormatException('DualWritePending is not an object');
+    }
+    final grouped = decoded['folders'];
+    if (grouped is Map) {
+      final folders =
+          <String, ({List<String> uploads, List<String> deletes})>{};
+      for (final entry in grouped.entries) {
+        if (entry.key is! String || entry.value is! Map) {
+          throw const FormatException(
+            'DualWritePending folder entry is unreadable',
+          );
+        }
+        final body = entry.value as Map;
+        folders[entry.key as String] = (
+          uploads: _stringList(body['uploads']),
+          deletes: _stringList(body['deletes']),
+        );
+      }
+      return folders;
+    }
+    if (grouped != null) {
+      throw const FormatException('DualWritePending folders is not an object');
+    }
+    final directory = decoded['directory'];
+    if (directory is! String ||
+        (!decoded.containsKey('uploads') && !decoded.containsKey('deletes'))) {
+      throw const FormatException('DualWritePending has no folders');
+    }
+    return {
+      directory: (
+        uploads: _stringList(decoded['uploads']),
+        deletes: _stringList(decoded['deletes']),
+      ),
+    };
+  }
+
+  List<String> _sortedIds(Set<String> ids) {
+    final list = ids.toList()..sort();
+    return list;
+  }
+
+  List<String> _stringList(Object? value) {
+    if (value == null) return const <String>[];
+    if (value is! List || value.any((item) => item is! String)) {
+      throw const FormatException('DualWritePending list is unreadable');
+    }
+    return [for (final item in value) item as String];
+  }
+
   Future<S3Config> s3Config() async {
     final prefs = await SharedPreferences.getInstance();
-    return S3Config(
-      endpoint: prefs.getString(_kS3Endpoint)?.trim().isNotEmpty == true
-          ? prefs.getString(_kS3Endpoint)!.trim()
-          : kDefaultS3Endpoint,
-      region: prefs.getString(_kS3Region)?.trim().isNotEmpty == true
-          ? prefs.getString(_kS3Region)!.trim()
-          : kDefaultS3Region,
-      bucket: prefs.getString(_kS3Bucket)?.trim().isNotEmpty == true
-          ? prefs.getString(_kS3Bucket)!.trim()
-          : kDefaultS3Bucket,
-      accessKeyId: prefs.getString(_kS3AccessKeyId) ?? '',
-      secretAccessKey: prefs.getString(_kS3SecretAccessKey) ?? '',
+    return S3Config.fromRaw(
+      endpoint: prefs.getString(_kS3Endpoint),
+      region: prefs.getString(_kS3Region),
+      bucket: prefs.getString(_kS3Bucket),
+      accessKeyId: prefs.getString(_kS3AccessKeyId),
+      secretAccessKey: prefs.getString(_kS3SecretAccessKey),
     );
   }
 
   Future<void> setS3Config(S3Config config) async {
     final prefs = await SharedPreferences.getInstance();
+    // Trim only, don't normalize: a blank field is stored as '' (not the
+    // default), so [s3Config] keeps applying the current default on read.
     await prefs.setString(_kS3Endpoint, config.endpoint.trim());
     await prefs.setString(_kS3Region, config.region.trim());
     await prefs.setString(_kS3Bucket, config.bucket.trim());

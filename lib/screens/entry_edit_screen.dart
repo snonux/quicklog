@@ -1,34 +1,30 @@
 import 'package:flutter/material.dart';
 
-import '../services/log_service.dart';
+import '../services/dual_write_s3_repair.dart';
+import '../services/entry_handle.dart';
 
-/// Pushes the full-screen editor for [entry] and reports whether it saved.
+/// Pushes the full-screen editor for [handle] and returns how it closed.
 ///
 /// A whole screen rather than an inline field: notes can be long, and the
-/// editor needs the same amount of room the compose screen gets. Returning
-/// only "saved or not" keeps the caller's job trivial — refresh what it shows
-/// when something changed, do nothing otherwise.
-Future<bool> editEntry(
-  BuildContext context,
-  NoteStore store,
-  LogEntry entry,
-) async {
-  final saved = await Navigator.of(context).push<bool>(
+/// editor needs the same amount of room the compose screen gets. `true` means
+/// the note was saved. `false` means the user left without a successful save
+/// after either discarding edits or attempting a save (which may have written
+/// one backend). `null` means no save was attempted.
+Future<bool?> editEntry(BuildContext context, EntryHandle handle) {
+  return Navigator.of(context).push<bool>(
     MaterialPageRoute(
-      builder: (_) => EntryEditScreen(store: store, entry: entry),
+      builder: (_) => EntryEditScreen(handle: handle),
     ),
   );
-  return saved ?? false;
 }
 
 /// Editor for an existing entry. It writes back to the same id, so the note
 /// keeps its creation timestamp (which is what the filename encodes) and its
 /// position in the browser list.
 class EntryEditScreen extends StatefulWidget {
-  const EntryEditScreen({super.key, required this.store, required this.entry});
+  const EntryEditScreen({super.key, required this.handle});
 
-  final NoteStore store;
-  final LogEntry entry;
+  final EntryHandle handle;
 
   @override
   State<EntryEditScreen> createState() => _EntryEditScreenState();
@@ -37,12 +33,18 @@ class EntryEditScreen extends StatefulWidget {
 class _EntryEditScreenState extends State<EntryEditScreen> {
   final TextEditingController _controller = TextEditingController();
 
-  /// Text as it is stored, used to tell "nothing changed" from "unsaved
-  /// changes" for both the Save button and the discard prompt.
+  /// Text loaded for this visit, used to tell "nothing changed" from "unsaved
+  /// changes" for both the Save button and the discard prompt. A failed save
+  /// can leave different text on disk; this stays the loaded value.
   String _original = '';
   bool _loading = true;
   Object? _loadError;
   bool _saving = false;
+
+  /// Set before [EntryHandle.update] is awaited. A throw after a partial write
+  /// still counts: a later back is not a clean exit, even if the field is
+  /// put back to [_original].
+  bool _saveAttempted = false;
 
   bool get _dirty => !_loading && _controller.text != _original;
 
@@ -66,7 +68,7 @@ class _EntryEditScreenState extends State<EntryEditScreen> {
 
   Future<void> _load() async {
     try {
-      final text = await widget.store.read(widget.entry.id);
+      final text = await widget.handle.read();
       _original = text;
       _controller.text = text;
     } catch (e) {
@@ -79,10 +81,25 @@ class _EntryEditScreenState extends State<EntryEditScreen> {
 
   Future<void> _save() async {
     if (_saving) return;
-    setState(() => _saving = true);
+    setState(() {
+      _saving = true;
+      // Before the await, so a throw after one backend was written still
+      // counts as an attempt.
+      _saveAttempted = true;
+    });
     final text = _controller.text;
     try {
-      await widget.store.update(widget.entry.id, text);
+      await widget.handle.update(text);
+    } on DualWriteS3Pending catch (e) {
+      // The device has the new text. Treat the field as saved so Back does
+      // not call it unsaved, and stay so the message remains visible.
+      // Don't prefix "Could not save". Leaving pops false; the browser
+      // replays the queued upload without re-listing every row.
+      if (!mounted) return;
+      _original = text;
+      setState(() => _saving = false);
+      _showSnack('$e', isError: true);
+      return;
     } catch (e) {
       // Writing can be denied for files outside the app's storage scope;
       // stay in the editor so the user does not lose what they typed.
@@ -96,18 +113,27 @@ class _EntryEditScreenState extends State<EntryEditScreen> {
     Navigator.of(context).pop(true);
   }
 
-  /// Restores the stored text. Nothing is written, so this is the cheap way
-  /// back out of an edit without leaving the screen.
+  /// Puts the field back to the text loaded for this visit. Nothing is
+  /// written, so a partial update from a failed save stays on disk.
   void _revert() {
     _controller.text = _original;
     _controller.selection = TextSelection.collapsed(offset: _original.length);
   }
 
-  /// Back navigation while dirty. [PopScope] blocks the pop (canPop is false
-  /// exactly then), so ask first and pop manually with `false`: the entry was
-  /// not saved, and the caller must not refresh as if it had been.
+  /// Back navigation. [PopScope] lets the route pop on its own only when the
+  /// field is clean, nothing is saving, and no update was attempted — that
+  /// result is `null`. While a save is in flight, back does nothing and does
+  /// not ask to discard: the editor stays until [EntryHandle.update] finishes,
+  /// and a successful save pops `true` itself. A failed save clears
+  /// [_saving], after which a dirty field still asks and Discard pops
+  /// `false`, and a clean field after an attempted save pops `false` with no
+  /// dialog (the attempt may have written one backend).
   Future<void> _handlePop(bool didPop) async {
-    if (didPop) return;
+    if (didPop || _saving) return;
+    if (!_dirty) {
+      if (mounted) Navigator.of(context).pop(false);
+      return;
+    }
     final discard = await _confirmDiscard();
     if (discard && mounted) Navigator.of(context).pop(false);
   }
@@ -145,10 +171,10 @@ class _EntryEditScreenState extends State<EntryEditScreen> {
   @override
   Widget build(BuildContext context) {
     return PopScope<bool>(
-      canPop: !_dirty && !_saving,
+      canPop: !_dirty && !_saving && !_saveAttempted,
       onPopInvokedWithResult: (didPop, _) => _handlePop(didPop),
       child: Scaffold(
-        appBar: AppBar(title: Text(widget.entry.id)),
+        appBar: AppBar(title: Text(widget.handle.id)),
         body: SafeArea(
           child: Padding(padding: const EdgeInsets.all(12), child: _body()),
         ),

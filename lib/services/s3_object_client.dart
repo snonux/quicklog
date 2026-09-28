@@ -1,4 +1,3 @@
-import 'dart:convert';
 import 'dart:typed_data';
 
 import 'package:minio/minio.dart';
@@ -7,8 +6,8 @@ import 's3_config.dart';
 
 /// Low-level path-style S3 object ops used by [S3NoteStore].
 ///
-/// Production uses [MinioS3ObjectClient]; tests inject [MemoryS3ObjectClient]
-/// so CI never needs a live Garage.
+/// Production uses [MinioS3ObjectClient]. Tests inject their own
+/// implementation so CI never needs a live Garage.
 abstract class S3ObjectClient {
   Future<void> putObject(String key, List<int> bytes, {String contentType});
   Future<List<int>> getObject(String key);
@@ -18,40 +17,106 @@ abstract class S3ObjectClient {
   Future<List<String>> listKeys({String prefix = ''});
 }
 
-/// True only for an absent *object* ([NoSuchKey]) — not wrong bucket, not a
-/// generic 404 / NotFound.
+/// Absent object key.
+///
+/// Test fakes throw this. Production Minio reports the same condition as
+/// [MinioS3Error] with code `NoSuchKey`. [isMissingObjectError] accepts both
+/// and nothing else — a message that merely contains the words is not a miss.
+class S3MissingObjectError implements Exception {
+  const S3MissingObjectError(this.key);
+
+  final String key;
+
+  @override
+  String toString() => 'S3MissingObjectError: $key';
+}
+
+/// True only for an absent object: [S3MissingObjectError], or [MinioS3Error]
+/// whose code is `NoSuchKey`. Not a wrong bucket, not a generic 404 / NotFound,
+/// and not a string that happens to mention NoSuchKey.
 ///
 /// [S3NoteStore] may skip its degrade hook for these on **read** only: a missing
 /// key is a normal miss. [NoSuchBucket], transport errors, and the same codes
 /// on create/list/probe must still call [S3NoteStore]'s onFailure.
 bool isMissingObjectError(Object error) {
-  if (error is StateError) {
-    return error.message.contains('NoSuchKey');
-  }
-  if (error is MinioS3Error) {
-    return error.error?.code == 'NoSuchKey';
-  }
-  return error.toString().contains('NoSuchKey');
+  if (error is S3MissingObjectError) return true;
+  if (error is MinioS3Error) return error.error?.code == 'NoSuchKey';
+  return false;
+}
+
+/// Saved [S3Config] values no client can be built from (malformed endpoint,
+/// host or port Minio rejects, invalid bucket name). Raised only while
+/// constructing [MinioS3ObjectClient], never by network I/O, so callers can
+/// tell a settings mistake from an outage.
+class S3ConfigException implements Exception {
+  const S3ConfigException(this.message);
+
+  /// User-facing reason, without an exception type prefix.
+  final String message;
+
+  @override
+  String toString() => message;
 }
 
 /// Minio client forced to path-style against [S3Config] (Garage-friendly).
+///
+/// Throws [S3ConfigException] when [config] cannot back a client.
 class MinioS3ObjectClient implements S3ObjectClient {
   MinioS3ObjectClient(this.config, {Minio? minio})
-      : _minio = minio ??
-            Minio(
-              endPoint: config.host,
-              port: config.port,
-              useSSL: config.useSSL,
-              accessKey: config.accessKeyId,
-              secretKey: config.secretAccessKey,
-              region: config.region,
-              pathStyle: true,
-            ),
-        _bucket = config.bucket;
+    : _minio = minio ?? _validated(() => _minioFor(config)),
+      _bucket = _validated(() {
+        MinioInvalidBucketNameError.check(config.bucket);
+        return config.bucket;
+      });
 
   final S3Config config;
   final Minio _minio;
   final String _bucket;
+
+  /// Why [config] cannot back a client, or null when it can.
+  ///
+  /// Runs the constructor's own checks ([S3Config.host], Minio's
+  /// endpoint/port validation, the bucket name) without any network I/O,
+  /// so bad settings can be rejected before they are saved or used.
+  static String? configError(S3Config config) {
+    try {
+      MinioS3ObjectClient(config);
+      return null;
+    } on S3ConfigException catch (e) {
+      return e.message;
+    }
+  }
+
+  /// Why saved or about-to-be-saved settings would be refused, or null.
+  ///
+  /// The one validation rule shared by Save/Export in Preferences, settings
+  /// import and the drain CLI: [config] is judged as it will be read back
+  /// ([S3Config.normalized]) by [configError]. Nothing is checked when
+  /// [usesS3] is false, so settings the storage mode ignores never block.
+  static String? settingsError(S3Config config, {bool usesS3 = true}) =>
+      usesS3 ? configError(config.normalized()) : null;
+
+  static Minio _minioFor(S3Config config) => Minio(
+    endPoint: config.host,
+    port: config.port,
+    useSSL: config.useSSL,
+    accessKey: config.accessKeyId,
+    secretKey: config.secretAccessKey,
+    region: config.region,
+    pathStyle: true,
+  );
+
+  /// Runs a construction-time check, mapping its validation errors (and
+  /// only those) to [S3ConfigException].
+  static T _validated<T>(T Function() build) {
+    try {
+      return build();
+    } on FormatException catch (e) {
+      throw S3ConfigException(e.message);
+    } on MinioError catch (e) {
+      throw S3ConfigException(e.message ?? e.toString());
+    }
+  }
 
   @override
   Future<void> putObject(
@@ -96,77 +161,4 @@ class MinioS3ObjectClient implements S3ObjectClient {
         if (o.key != null && o.key!.isNotEmpty) o.key!,
     ];
   }
-}
-
-/// In-memory fake used by unit tests (and widget smoke with fake-S3).
-class MemoryS3ObjectClient implements S3ObjectClient {
-  final Map<String, List<int>> objects = {};
-
-  /// Total calls made against any method; lets tests assert a backend was
-  /// never contacted at all (e.g. while the degrade window is active).
-  int calls = 0;
-
-  /// When non-null, the next call to any method throws this error then clears.
-  Object? failNext;
-
-  /// When set, every call throws this error.
-  Object? alwaysFail;
-
-  /// When non-null, the next [putObject] records the object and *then* throws
-  /// this error — an upload that landed but whose response was lost.
-  Object? putSucceedsButThrows;
-
-  void _maybeFail() {
-    calls++;
-    final always = alwaysFail;
-    if (always != null) throw always;
-    final once = failNext;
-    if (once != null) {
-      failNext = null;
-      throw once;
-    }
-  }
-
-  @override
-  Future<void> putObject(
-    String key,
-    List<int> bytes, {
-    String contentType = 'text/markdown',
-  }) async {
-    _maybeFail();
-    objects[key] = List<int>.from(bytes);
-    final lost = putSucceedsButThrows;
-    if (lost != null) {
-      putSucceedsButThrows = null;
-      throw lost;
-    }
-  }
-
-  @override
-  Future<List<int>> getObject(String key) async {
-    _maybeFail();
-    final data = objects[key];
-    if (data == null) {
-      throw StateError('NoSuchKey: $key');
-    }
-    return List<int>.from(data);
-  }
-
-  @override
-  Future<void> deleteObject(String key) async {
-    _maybeFail();
-    objects.remove(key);
-  }
-
-  @override
-  Future<List<String>> listKeys({String prefix = ''}) async {
-    _maybeFail();
-    final keys = objects.keys.where((k) => k.startsWith(prefix)).toList()
-      ..sort();
-    return keys;
-  }
-
-  /// Convenience for tests that put UTF-8 Markdown.
-  Future<void> putText(String key, String text) =>
-      putObject(key, utf8.encode(text));
 }

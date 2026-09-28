@@ -54,6 +54,15 @@ void main() {
   TestWidgetsFlutterBinding.ensureInitialized();
 
   group('encode / decode', () {
+    test('rejects a malformed scoped-folder marker', () {
+      final doc = validDoc();
+      (doc['settings'] as Map<String, Object?>)['scopedFolderNeedsSelection'] =
+          'yes';
+      expect(
+        () => decodeSettingsBackup(jsonEncode(doc)),
+        throwsA(isA<SettingsImportException>()),
+      );
+    });
     test('round-trips every setting with non-default values', () {
       final text = encodeSettingsBackup(
         nonDefaults,
@@ -336,5 +345,29 @@ void main() {
       );
       expectSameSettings(await service().collect(), nonDefaults);
     });
+
+    test(
+      'import stores a padded or blank region trimmed, not defaulted',
+      () async {
+        // setS3Config only trims: a blank region is stored as '', and the
+        // default is applied when it is read back.
+        await service().apply(
+          const QuicklogSettings(
+            storageMode: StorageMode.both,
+            s3Region: '   ',
+          ),
+        );
+        final prefs = await SharedPreferences.getInstance();
+        expect(prefs.getString('S3Region'), '');
+        expect(
+          (await PreferencesService().s3Config()).region,
+          kDefaultS3Region,
+        );
+
+        await service().apply(const QuicklogSettings(s3Region: ' eu-1 '));
+        expect(prefs.getString('S3Region'), 'eu-1');
+        expect((await PreferencesService().s3Config()).region, 'eu-1');
+      },
+    );
   });
 }

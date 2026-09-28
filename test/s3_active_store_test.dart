@@ -10,11 +10,11 @@ import 'package:quicklog/services/log_service.dart';
 import 'package:quicklog/services/merged_note_listing.dart';
 import 'package:quicklog/services/preferences.dart';
 import 'package:quicklog/services/s3_config.dart';
-import 'package:quicklog/services/s3_object_client.dart';
 import 'package:quicklog/services/s3_session_controller.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
 import 'io_pump.dart';
+import 'support/memory_s3_object_client.dart';
 
 void main() {
   TestWidgetsFlutterBinding.ensureInitialized();
@@ -753,6 +753,287 @@ void main() {
     );
   });
 
+  Future<void> configureS3(
+    StorageMode mode, {
+    bool withCredentials = true,
+  }) async {
+    await session.setPreferredMode(mode);
+    await prefs.setS3Config(
+      S3Config(
+        endpoint: kDefaultS3Endpoint,
+        region: kDefaultS3Region,
+        bucket: kDefaultS3Bucket,
+        accessKeyId: withCredentials ? 'AKIA_TEST' : '',
+        secretAccessKey: withCredentials ? 'secret_test' : '',
+      ),
+    );
+  }
+
+  Future<void> useDualWriteMode() => configureS3(StorageMode.both);
+
+  Future<void> pumpBrowser(WidgetTester tester) async {
+    await tester.pumpWidget(
+      MaterialApp(
+        home: EntryBrowserScreen(session: session, activeStore: active),
+      ),
+    );
+    await pumpWithIo(tester);
+  }
+
+  Future<void> writeLocal(WidgetTester tester, String id, String text) async {
+    await tester.runAsync(() async {
+      await File(p.join(tmp.path, id)).writeAsString(text);
+    });
+  }
+
+  test(
+    'resolveBrowserSources keeps local copies only in dual-write mode',
+    () async {
+      await configureS3(StorageMode.s3);
+      var sources = await active.resolveBrowserSources();
+      expect(sources.s3, isNotNull);
+      expect(sources.keepLocalCopies, isFalse);
+
+      await configureS3(StorageMode.both);
+      sources = await active.resolveBrowserSources();
+      expect(sources.s3, isNotNull);
+      expect(sources.keepLocalCopies, isTrue);
+
+      // Dual write without credentials: no S3 store to upload to at all.
+      await configureS3(StorageMode.both, withCredentials: false);
+      sources = await active.resolveBrowserSources();
+      expect(sources.s3, isNull);
+      expect(sources.keepLocalCopies, isFalse);
+    },
+  );
+
+  testWidgets('dual-write Copy to S3 is offered while S3 is degraded', (
+    tester,
+  ) async {
+    await useDualWriteMode();
+    // Real clock: the degrade expiry timer must not pend on the fake one.
+    await tester.runAsync(() => session.markS3Failed());
+    expect(session.isDegraded, isTrue);
+    const id = 'ql-260908-041000.md';
+    await writeLocal(tester, id, 'written during outage');
+
+    await pumpBrowser(tester);
+
+    expect(find.byTooltip('Move to S3'), findsNothing);
+    expect(find.byTooltip('Copy to S3'), findsOneWidget);
+
+    await tester.tap(find.byTooltip('Copy to S3'));
+    await pumpWithIo(tester);
+
+    expect(find.textContaining('Copied $id to S3'), findsOneWidget);
+    expect(
+      await tester.runAsync(() async => File(p.join(tmp.path, id)).exists()),
+      isTrue,
+    );
+    expect(fakeS3.objects.containsKey(id), isTrue);
+  });
+
+  testWidgets('dual-write Copy all aborts when a fresh S3 list fails', (
+    tester,
+  ) async {
+    await useDualWriteMode();
+    const id = 'ql-260908-042000.md';
+    await writeLocal(tester, id, 'stays put');
+
+    await pumpBrowser(tester);
+    expect(find.byTooltip('Copy all local to S3'), findsOneWidget);
+
+    fakeS3.alwaysFail = Exception('list failed mid copy-all');
+    await tester.tap(find.byTooltip('Copy all local to S3'));
+    await pumpWithIo(tester);
+
+    expect(
+      find.text('Could not list S3 notes; copy cancelled.'),
+      findsOneWidget,
+    );
+    expect(
+      await tester.runAsync(() async => File(p.join(tmp.path, id)).exists()),
+      isTrue,
+    );
+    expect(fakeS3.objects, isEmpty);
+  });
+
+  testWidgets('dual-write Copy all reports a partial failure', (tester) async {
+    await useDualWriteMode();
+    const okId = 'ql-260908-043000.md';
+    const badId = 'ql-260908-044000.md';
+    fakeS3 = _PutFailsForKeys({badId});
+    await writeLocal(tester, okId, 'uploads fine');
+    await writeLocal(tester, badId, 'upload fails');
+
+    await pumpBrowser(tester);
+    await tester.tap(find.byTooltip('Copy all local to S3'));
+    await pumpWithIo(tester, rounds: 30);
+
+    expect(find.text('Copied 1, failed 1'), findsOneWidget);
+    for (final id in [okId, badId]) {
+      expect(
+        await tester.runAsync(() async => File(p.join(tmp.path, id)).exists()),
+        isTrue,
+      );
+    }
+    expect(fakeS3.objects.keys, [okId]);
+  });
+
+  testWidgets('upload-all is hidden while a mode flip reloads the list', (
+    tester,
+  ) async {
+    await useDualWriteMode();
+    await writeLocal(tester, 'ql-260908-045000.md', 'local note');
+
+    await pumpBrowser(tester);
+    expect(find.byTooltip('Copy all local to S3'), findsOneWidget);
+
+    // The reload triggered by the flip is still waiting on real I/O, so the
+    // old (dual-write) sources must not be actionable in the meantime.
+    await session.setPreferredMode(StorageMode.s3);
+    await tester.pump();
+    expect(find.byTooltip('Copy all local to S3'), findsNothing);
+    expect(find.byTooltip('Move all local to S3'), findsNothing);
+
+    await pumpWithIo(tester);
+    expect(find.byTooltip('Move all local to S3'), findsOneWidget);
+  });
+
+  testWidgets('dual-write Copy to S3 uploads and keeps the local copy', (
+    tester,
+  ) async {
+    await useDualWriteMode();
+    const id = 'ql-260908-040000.md';
+    await tester.runAsync(() async {
+      await File(p.join(tmp.path, id)).writeAsString('outage leftover');
+    });
+
+    await tester.pumpWidget(
+      MaterialApp(
+        home: EntryBrowserScreen(session: session, activeStore: active),
+      ),
+    );
+    await pumpWithIo(tester);
+
+    expect(find.byTooltip('Move to S3'), findsNothing);
+    expect(find.byTooltip('Move all local to S3'), findsNothing);
+    expect(find.byTooltip('Copy to S3'), findsOneWidget);
+
+    await tester.tap(find.byTooltip('Copy to S3'));
+    await pumpWithIo(tester);
+
+    expect(find.textContaining('Copied $id to S3'), findsOneWidget);
+    expect(
+      await tester.runAsync(() async => File(p.join(tmp.path, id)).exists()),
+      isTrue,
+    );
+    expect(fakeS3.objects.containsKey(id), isTrue);
+    // The row is now in both places; dual mode offers no further action.
+    expect(find.byIcon(Icons.cloud_sync_outlined), findsOneWidget);
+    expect(find.byTooltip('Copy to S3'), findsNothing);
+    expect(find.byTooltip('Remove local copy'), findsNothing);
+  });
+
+  testWidgets('dual-write Copy all local to S3 keeps every local copy', (
+    tester,
+  ) async {
+    await useDualWriteMode();
+    const ids = ['ql-260908-030000.md', 'ql-260908-031000.md'];
+    await tester.runAsync(() async {
+      for (final id in ids) {
+        await File(p.join(tmp.path, id)).writeAsString('local $id');
+      }
+    });
+
+    await tester.pumpWidget(
+      MaterialApp(
+        home: EntryBrowserScreen(session: session, activeStore: active),
+      ),
+    );
+    await pumpWithIo(tester);
+
+    expect(find.byTooltip('Copy all local to S3'), findsOneWidget);
+    await tester.tap(find.byTooltip('Copy all local to S3'));
+    // A fresh LIST plus one read and put per note: allow extra I/O rounds.
+    await pumpWithIo(tester, rounds: 30);
+
+    expect(find.textContaining('Copied 2 local notes to S3'), findsOneWidget);
+    for (final id in ids) {
+      expect(
+        await tester.runAsync(() async => File(p.join(tmp.path, id)).exists()),
+        isTrue,
+      );
+      expect(String.fromCharCodes(fakeS3.objects[id]!), 'local $id');
+    }
+    expect(find.byIcon(Icons.cloud_sync_outlined), findsNWidgets(2));
+  });
+
+  testWidgets('dual-write Copy to S3 failure keeps the note local-only', (
+    tester,
+  ) async {
+    await useDualWriteMode();
+    const id = 'ql-260908-020000.md';
+    await tester.runAsync(() async {
+      await File(p.join(tmp.path, id)).writeAsString('copy will fail');
+    });
+
+    await tester.pumpWidget(
+      MaterialApp(
+        home: EntryBrowserScreen(session: session, activeStore: active),
+      ),
+    );
+    await pumpWithIo(tester);
+
+    fakeS3.alwaysFail = Exception('put failed');
+    await tester.tap(find.byTooltip('Copy to S3'));
+    await pumpWithIo(tester);
+
+    expect(find.textContaining('Could not copy $id to S3'), findsOneWidget);
+    expect(
+      await tester.runAsync(() async => File(p.join(tmp.path, id)).exists()),
+      isTrue,
+    );
+    expect(fakeS3.objects, isEmpty);
+  });
+
+  testWidgets('s3-only Move all local to S3 still removes local copies', (
+    tester,
+  ) async {
+    await session.setPreferredMode(StorageMode.s3);
+    await prefs.setS3Config(
+      S3Config(
+        endpoint: kDefaultS3Endpoint,
+        region: kDefaultS3Region,
+        bucket: kDefaultS3Bucket,
+        accessKeyId: 'AKIA_TEST',
+        secretAccessKey: 'secret_test',
+      ),
+    );
+    const id = 'ql-260908-010000.md';
+    await tester.runAsync(() async {
+      await File(p.join(tmp.path, id)).writeAsString('move off device');
+    });
+
+    await tester.pumpWidget(
+      MaterialApp(
+        home: EntryBrowserScreen(session: session, activeStore: active),
+      ),
+    );
+    await pumpWithIo(tester);
+
+    expect(find.byTooltip('Copy all local to S3'), findsNothing);
+    await tester.tap(find.byTooltip('Move all local to S3'));
+    await pumpWithIo(tester);
+
+    expect(find.textContaining('Moved 1 local note to S3'), findsOneWidget);
+    expect(
+      await tester.runAsync(() async => File(p.join(tmp.path, id)).exists()),
+      isFalse,
+    );
+    expect(String.fromCharCodes(fakeS3.objects[id]!), 'move off device');
+  });
+
   test('listForBrowser merges when S3 preferred and stays local-only otherwise',
       () async {
     await File(p.join(tmp.path, 'ql-260908-080000.md'))
@@ -846,4 +1127,21 @@ void main() {
     expect(saved.accessKeyId, isEmpty);
     expect(saved.secretAccessKey, isEmpty);
   });
+}
+
+/// Fake S3 whose puts fail for [failing] keys; every other call succeeds.
+class _PutFailsForKeys extends MemoryS3ObjectClient {
+  _PutFailsForKeys(this.failing);
+
+  final Set<String> failing;
+
+  @override
+  Future<void> putObject(
+    String key,
+    List<int> bytes, {
+    String contentType = 'text/markdown',
+  }) async {
+    if (failing.contains(key)) throw Exception('put failed for $key');
+    await super.putObject(key, bytes, contentType: contentType);
+  }
 }

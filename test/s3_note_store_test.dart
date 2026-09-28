@@ -1,9 +1,13 @@
 import 'package:flutter_test/flutter_test.dart';
+import 'package:minio/minio.dart';
+import 'package:minio/models.dart' as minio_models;
+import 'package:quicklog/services/preferences.dart';
 import 'package:quicklog/services/s3_note_store.dart';
 import 'package:quicklog/services/s3_object_client.dart';
 import 'package:quicklog/services/s3_session_controller.dart';
-import 'package:quicklog/services/preferences.dart';
 import 'package:shared_preferences/shared_preferences.dart';
+
+import 'support/memory_s3_object_client.dart';
 
 void main() {
   TestWidgetsFlutterBinding.ensureInitialized();
@@ -61,7 +65,7 @@ void main() {
       expect(await store.firstLine('ql-260908-000000.md'), '');
       expect(
         () => store.preview('ql-260908-000000.md'),
-        throwsA(isA<StateError>()),
+        throwsA(isA<S3MissingObjectError>()),
       );
     });
   });
@@ -106,12 +110,36 @@ void main() {
       expect(session.isDegraded, isFalse);
     });
 
-    test('NoSuchKey / missing object on read does not markS3Failed', () async {
+    test('missing object on read does not markS3Failed', () async {
       await expectLater(
         store.read('ql-260908-000000.md'),
-        throwsA(isA<StateError>()),
+        throwsA(isA<S3MissingObjectError>()),
       );
       expect(session.isDegraded, isFalse);
+    });
+
+    test('Minio NoSuchKey on read does not markS3Failed', () async {
+      client.failNext = MinioS3Error(
+        'missing',
+        minio_models.Error('NoSuchKey', 'k', 'missing', null),
+      );
+      await expectLater(
+        store.read('ql-260908-102230.md'),
+        throwsA(isA<MinioS3Error>()),
+      );
+      expect(session.isDegraded, isFalse);
+    });
+
+    test('Minio NoSuchBucket on read marks S3 failed', () async {
+      client.failNext = MinioS3Error(
+        'bucket',
+        minio_models.Error('NoSuchBucket', null, 'missing', null),
+      );
+      await expectLater(
+        store.read('ql-260908-102230.md'),
+        throwsA(isA<MinioS3Error>()),
+      );
+      expect(session.isDegraded, isTrue);
     });
 
     test('NoSuchBucket / NotFound / 404 on list marks S3 failed', () async {
@@ -142,10 +170,21 @@ void main() {
       expect(session.isDegraded, isTrue);
     });
 
-    test('NoSuchKey on create still marks S3 failed', () async {
-      client.failNext = StateError('NoSuchKey: unexpected');
-      await expectLater(store.create('x'), throwsA(isA<StateError>()));
-      expect(session.isDegraded, isTrue);
+    test('a missing object on create still marks S3 failed', () async {
+      for (final err in [
+        const S3MissingObjectError('unexpected'),
+        MinioS3Error(
+          'missing',
+          minio_models.Error('NoSuchKey', 'unexpected', 'missing', null),
+        ),
+      ]) {
+        await session.retryS3(probe: () async {}, now: now);
+        expect(session.isDegraded, isFalse);
+
+        client.failNext = err;
+        await expectLater(store.create('x'), throwsA(anything));
+        expect(session.isDegraded, isTrue, reason: '$err');
+      }
     });
 
     test('firstLine never marks S3 failed (missing or transport)', () async {
@@ -168,9 +207,30 @@ void main() {
   });
 
   group('isMissingObjectError', () {
-    test('matches NoSuchKey only, not NoSuchBucket / NotFound / 404', () {
-      expect(isMissingObjectError(StateError('NoSuchKey: k')), isTrue);
+    test('matches typed missing-object errors only', () {
+      expect(isMissingObjectError(const S3MissingObjectError('k')), isTrue);
+      expect(
+        isMissingObjectError(
+          MinioS3Error(
+            'missing',
+            minio_models.Error('NoSuchKey', 'k', 'missing', null),
+          ),
+        ),
+        isTrue,
+      );
+      expect(
+        isMissingObjectError(
+          MinioS3Error(
+            'bucket',
+            minio_models.Error('NoSuchBucket', null, 'missing', null),
+          ),
+        ),
+        isFalse,
+      );
+      expect(isMissingObjectError(MinioS3Error('bare')), isFalse);
+      expect(isMissingObjectError(StateError('NoSuchKey: k')), isFalse);
       expect(isMissingObjectError(StateError('NoSuchBucket: b')), isFalse);
+      expect(isMissingObjectError(Exception('NoSuchKey: k')), isFalse);
       expect(isMissingObjectError(Exception('NotFound')), isFalse);
       expect(isMissingObjectError(Exception('HTTP 404')), isFalse);
     });

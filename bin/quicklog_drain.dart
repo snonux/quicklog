@@ -38,73 +38,76 @@ void main(List<String> args) async {
     return;
   }
 
-  final config = S3Config.fromEnvironment();
-  if (!config.hasCredentials) {
-    stderr.writeln(
-      'quicklog_drain: missing GARAGE_ACCESS_KEY_ID / '
-      'GARAGE_SECRET_ACCESS_KEY (and related GARAGE_* env vars)',
-    );
+  final config = configFromEnv(Platform.environment);
+  final problem = configProblem(config);
+  if (problem != null) {
+    stderr.writeln('quicklog_drain: $problem');
     exitCode = 1;
     return;
   }
 
-  final client = MinioS3ObjectClient(config);
+  // Build from exactly what configProblem validated.
+  final client = MinioS3ObjectClient(config.normalized());
 
   void onError(String msg) => stderr.writeln('quicklog_drain: $msg');
 
   try {
     switch (opts.mode) {
-    case DrainMode.import:
-      if (opts.dryRun) {
-        final keys =
-            await listQuicklogKeys(client: client, limit: opts.limit, onlyKeys: _onlyKeySet(opts));
-        for (final key in keys) {
-          stderr.writeln('would import: $key');
+      case DrainMode.import:
+        if (opts.dryRun) {
+          final keys = await listQuicklogKeys(
+            client: client,
+            limit: opts.limit,
+            onlyKeys: _onlyKeySet(opts),
+          );
+          for (final key in keys) {
+            stderr.writeln('would import: $key');
+          }
+          stderr.writeln('dry-run: ${keys.length} note(s) would be imported');
+          return;
         }
-        stderr.writeln('dry-run: ${keys.length} note(s) would be imported');
-        return;
-      }
-      final summary = await streamQuicklogObjects(
-        client: client,
-        emitNote: (key, content) async {
-          // One JSON object per line; stdout carries only this protocol.
-          stdout.writeln(jsonEncode({'key': key, 'content': content}));
-          // Flush before waiting for the ack so a piped consumer never
-          // blocks on an empty buffer.
-          await stdout.flush();
-        },
-        readAck: (key) async => parseAckLine(_readLineSync(), expectedKey: key),
-        limit: opts.limit,
-        onlyKeys: _onlyKeySet(opts),
-        onError: onError,
-      );
-      stderr.writeln(summary);
-      if (!summary.ok) exitCode = 1;
-    case DrainMode.keys:
-      final keys = await listQuicklogKeys(client: client, limit: opts.limit);
-      for (final key in keys) {
-        stdout.writeln(key);
-      }
-    case DrainMode.delete:
-      final summary = await deleteQuicklogObjects(
-        client: client,
-        keys: opts.keys,
-        onError: onError,
-      );
-      stderr.writeln(summary);
-      if (!summary.ok) exitCode = 1;
-    case DrainMode.dest:
-      final summary = await drainQuicklogObjects(
-        client: client,
-        destDir: Directory(opts.dest),
-        dryRun: opts.dryRun,
-        force: opts.force,
-        limit: opts.limit,
-        onlyKeys: _onlyKeySet(opts),
-        onError: onError,
-      );
-      stderr.writeln(summary);
-      if (!summary.ok) exitCode = 1;
+        final summary = await streamQuicklogObjects(
+          client: client,
+          emitNote: (key, content) async {
+            // One JSON object per line; stdout carries only this protocol.
+            stdout.writeln(jsonEncode({'key': key, 'content': content}));
+            // Flush before waiting for the ack so a piped consumer never
+            // blocks on an empty buffer.
+            await stdout.flush();
+          },
+          readAck: (key) async =>
+              parseAckLine(_readLineSync(), expectedKey: key),
+          limit: opts.limit,
+          onlyKeys: _onlyKeySet(opts),
+          onError: onError,
+        );
+        stderr.writeln(summary);
+        if (!summary.ok) exitCode = 1;
+      case DrainMode.keys:
+        final keys = await listQuicklogKeys(client: client, limit: opts.limit);
+        for (final key in keys) {
+          stdout.writeln(key);
+        }
+      case DrainMode.delete:
+        final summary = await deleteQuicklogObjects(
+          client: client,
+          keys: opts.keys,
+          onError: onError,
+        );
+        stderr.writeln(summary);
+        if (!summary.ok) exitCode = 1;
+      case DrainMode.dest:
+        final summary = await drainQuicklogObjects(
+          client: client,
+          destDir: Directory(opts.dest),
+          dryRun: opts.dryRun,
+          force: opts.force,
+          limit: opts.limit,
+          onlyKeys: _onlyKeySet(opts),
+          onError: onError,
+        );
+        stderr.writeln(summary);
+        if (!summary.ok) exitCode = 1;
     }
   }
   // Bucket listing/transport errors surface here as a single loud failure;
@@ -133,6 +136,30 @@ void _usage() {
     '       dart run bin/quicklog_drain.dart --dest DIR [--dry-run] [--force] [--limit N] [--only K1,K2]\n'
     '       dart run bin/quicklog_drain.dart --keys [--limit N]\n'
     '       dart run bin/quicklog_drain.dart --delete KEY [KEY...]',
+  );
+}
+
+/// Why [config] cannot be drained from, or null when it can: the credentials
+/// are missing, or [config] as normalized ([S3Config.normalized], which is
+/// what main() builds its client from) cannot back a client. Checked before
+/// any client is built, so bad settings exit cleanly instead of throwing.
+String? configProblem(S3Config config) {
+  if (!config.hasCredentials) {
+    return 'missing GARAGE_ACCESS_KEY_ID / '
+        'GARAGE_SECRET_ACCESS_KEY (and related GARAGE_* env vars)';
+  }
+  final invalid = MinioS3ObjectClient.settingsError(config);
+  return invalid == null ? null : 'invalid S3 settings: $invalid';
+}
+
+/// [S3Config] from the `GARAGE_*` variables in [env], with defaults.
+S3Config configFromEnv(Map<String, String> env) {
+  return S3Config.fromRaw(
+    endpoint: env['GARAGE_ENDPOINT'],
+    region: env['GARAGE_REGION'],
+    bucket: env['GARAGE_BUCKET'],
+    accessKeyId: env['GARAGE_ACCESS_KEY_ID'],
+    secretAccessKey: env['GARAGE_SECRET_ACCESS_KEY'],
   );
 }
 
@@ -234,7 +261,8 @@ DrainOpts? parseDrainArgs(List<String> args) {
   if (dryRun && mode != DrainMode.import && mode != DrainMode.dest) return null;
   // --only restricts a drain (import or dest); it is meaningless — and
   // therefore rejected — for the read-only --keys mode and --delete.
-  if (onlyKeys.isNotEmpty && (mode == DrainMode.keys || mode == DrainMode.delete)) {
+  if (onlyKeys.isNotEmpty &&
+      (mode == DrainMode.keys || mode == DrainMode.delete)) {
     return null;
   }
 

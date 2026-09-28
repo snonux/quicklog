@@ -4,6 +4,9 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:path/path.dart' as p;
 import 'package:quicklog/services/s3_drain.dart';
 import 'package:quicklog/services/s3_object_client.dart';
+
+import 'support/memory_s3_object_client.dart';
+
 void main() {
   late Directory dest;
   late MemoryS3ObjectClient client;
@@ -71,17 +74,16 @@ void main() {
     expect(summary.fetched, 1);
     expect(summary.deleted, 1);
     expect(client.objects.containsKey('ql-260908-100003.md'), isTrue);
-    expect(await File(p.join(dest.path, 'ql-260908-100003.md')).exists(), isFalse);
+    expect(
+      await File(p.join(dest.path, 'ql-260908-100003.md')).exists(),
+      isFalse,
+    );
   });
 
   test('dry-run does not create missing dest directory', () async {
     final missing = Directory(p.join(dest.path, 'missing-subdir'));
     await client.putText('ql-260908-100004.md', 'dry');
-    await drainQuicklogObjects(
-      client: client,
-      destDir: missing,
-      dryRun: true,
-    );
+    await drainQuicklogObjects(client: client, destDir: missing, dryRun: true);
     expect(await missing.exists(), isFalse);
   });
 
@@ -146,23 +148,23 @@ void main() {
       expect(await listQuicklogKeys(client: client), isEmpty);
     });
 
-    test('onlyKeys filters after the ql-* filter and keeps sort order', () async {
-      await client.putText('ql-260908-100021.md', 'a');
-      await client.putText('ql-260908-100022.md', 'b');
-      await client.putText('readme.txt', 'nope');
+    test(
+      'onlyKeys filters after the ql-* filter and keeps sort order',
+      () async {
+        await client.putText('ql-260908-100021.md', 'a');
+        await client.putText('ql-260908-100022.md', 'b');
+        await client.putText('readme.txt', 'nope');
 
-      expect(
-        await listQuicklogKeys(
-          client: client,
-          onlyKeys: {'ql-260908-100022.md', 'not-in-bucket.md'},
-        ),
-        ['ql-260908-100022.md'],
-      );
-      expect(
-        await listQuicklogKeys(client: client, onlyKeys: {}),
-        isEmpty,
-      );
-    });
+        expect(
+          await listQuicklogKeys(
+            client: client,
+            onlyKeys: {'ql-260908-100022.md', 'not-in-bucket.md'},
+          ),
+          ['ql-260908-100022.md'],
+        );
+        expect(await listQuicklogKeys(client: client, onlyKeys: {}), isEmpty);
+      },
+    );
   });
 
   group('readQuicklogObject', () {
@@ -188,23 +190,30 @@ void main() {
     test('missing object surfaces the error', () async {
       await expectLater(
         readQuicklogObject(client: client, key: 'ql-260908-100031.md'),
-        throwsStateError,
+        throwsA(isA<S3MissingObjectError>()),
       );
     });
 
-    test('corrupt utf-8 decodes with replacement chars, not an error',
-        () async {
-      await client.putObject(
-        'ql-260908-100032.md',
-        [0x71, 0x6c, 0xff, 0xfe, 0x20, 0x6f, 0x6b],
-      );
-      final text = await readQuicklogObject(
-        client: client,
-        key: 'ql-260908-100032.md',
-      );
-      expect(text, contains('ok'));
-      expect(text, contains('\uFFFD'));
-    });
+    test(
+      'corrupt utf-8 decodes with replacement chars, not an error',
+      () async {
+        await client.putObject('ql-260908-100032.md', [
+          0x71,
+          0x6c,
+          0xff,
+          0xfe,
+          0x20,
+          0x6f,
+          0x6b,
+        ]);
+        final text = await readQuicklogObject(
+          client: client,
+          key: 'ql-260908-100032.md',
+        );
+        expect(text, contains('ok'));
+        expect(text, contains('\uFFFD'));
+      },
+    );
   });
 
   group('deleteQuicklogObjects', () {
@@ -255,10 +264,14 @@ void main() {
     const key = 'ql-260908-100050.md';
 
     test('accepts ok and fail acks for the expected key', () {
-      expect(parseAckLine('{"key":"$key","ok":true}', expectedKey: key)!.ok,
-          isTrue);
-      expect(parseAckLine('{"key":"$key","ok":false}', expectedKey: key)!.ok,
-          isFalse);
+      expect(
+        parseAckLine('{"key":"$key","ok":true}', expectedKey: key)!.ok,
+        isTrue,
+      );
+      expect(
+        parseAckLine('{"key":"$key","ok":false}', expectedKey: key)!.ok,
+        isFalse,
+      );
     });
 
     test('tolerates trailing whitespace and CRLF line endings', () {
@@ -335,8 +348,7 @@ void main() {
       final summary = await streamQuicklogObjects(
         client: client,
         emitNote: (_, _) async {},
-        readAck: (key) async =>
-            ImportAck(ok: key != 'ql-260908-100062.md'),
+        readAck: (key) async => ImportAck(ok: key != 'ql-260908-100062.md'),
         onError: messages.add,
       );
 
@@ -416,31 +428,34 @@ void main() {
       expect(client.objects.containsKey('ql-260908-100069.md'), isTrue);
     });
 
-    test('emit failure skips the note and continues without deleting', () async {
-      await client.putText('ql-260908-100072.md', 'a');
-      await client.putText('ql-260908-100073.md', 'b');
-      final messages = <String>[];
+    test(
+      'emit failure skips the note and continues without deleting',
+      () async {
+        await client.putText('ql-260908-100072.md', 'a');
+        await client.putText('ql-260908-100073.md', 'b');
+        final messages = <String>[];
 
-      final summary = await streamQuicklogObjects(
-        client: client,
-        emitNote: (key, _) async {
-          if (key == 'ql-260908-100072.md') {
-            throw StateError('simulated emit failure');
-          }
-        },
-        readAck: (key) async => ImportAck(ok: true),
-        onError: messages.add,
-      );
+        final summary = await streamQuicklogObjects(
+          client: client,
+          emitNote: (key, _) async {
+            if (key == 'ql-260908-100072.md') {
+              throw StateError('simulated emit failure');
+            }
+          },
+          readAck: (key) async => ImportAck(ok: true),
+          onError: messages.add,
+        );
 
-      expect(summary.fetched, 1);
-      expect(summary.deleted, 1);
-      expect(summary.failed, 1);
-      expect(summary.aborted, isFalse);
-      expect(messages.first, contains('emit failed'));
-      // The note whose emit failed was never acked or deleted.
-      expect(client.objects.containsKey('ql-260908-100072.md'), isTrue);
-      expect(client.objects.containsKey('ql-260908-100073.md'), isFalse);
-    });
+        expect(summary.fetched, 1);
+        expect(summary.deleted, 1);
+        expect(summary.failed, 1);
+        expect(summary.aborted, isFalse);
+        expect(messages.first, contains('emit failed'));
+        // The note whose emit failed was never acked or deleted.
+        expect(client.objects.containsKey('ql-260908-100072.md'), isTrue);
+        expect(client.objects.containsKey('ql-260908-100073.md'), isFalse);
+      },
+    );
 
     test(
       'delete failure after ok-ack keeps the object (documented duplicate window)',

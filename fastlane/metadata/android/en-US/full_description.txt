@@ -27,7 +27,8 @@ Features:
 * "Share to Quicklog" from any app that can share text. Depending on your
   preference the text is either prefilled in the editor or logged straight
   away.
-* Configurable log directory; optional S3 endpoint, region, bucket and keys.
+* Choose a local folder with Android's folder picker, or type a directory path;
+  optional S3 endpoint, region, bucket and keys.
 
 Storage and permissions:
 
@@ -36,13 +37,15 @@ By default Quicklog writes to its own app-specific external directory,
 storage permission at all. Point your sync app at that folder and you are
 done.
 
-If instead you want Quicklog to write into a folder it does not own -- an
-existing notes vault, say -- it asks for "All files access"
-(MANAGE_EXTERNAL_STORAGE), because the directory is one you type in rather
-than one picked through the system file picker. That permission is entirely
-optional: decline it and the default directory keeps working. On GrapheneOS
-you can use Storage Scopes instead of granting broad access; the project
-documentation explains how.
+For an existing notes vault, select it through the Android folder picker in
+Preferences. Quicklog keeps that folder's scoped grant; no broad storage
+permission is needed. If access is revoked, select the folder again in
+Preferences. Typed directory paths are still available. A typed path into
+shared storage may require "All files access" (MANAGE_EXTERNAL_STORAGE) on
+Android 11+, or Storage permission on Android 7-10. GrapheneOS users can also
+use Storage Scopes for typed paths. Switching folders does not move notes.
+Settings exports cannot transfer an Android folder grant; select the folder
+again after importing settings.
 
 Network access is only used if you turn on S3 mode and configure an endpoint.
 Credentials never leave SharedPreferences on the device. "Test connection"

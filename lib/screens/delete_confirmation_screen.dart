@@ -1,7 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:intl/intl.dart';
 
-import '../services/log_service.dart';
+import '../services/entry_handle.dart';
 
 final _displayFormat = DateFormat('yyyy-MM-dd HH:mm:ss');
 
@@ -19,26 +19,40 @@ const int kDeletePreviewChars = 800;
 /// refresh live in one place.
 Future<bool> confirmEntryDeletion(
   BuildContext context,
-  NoteStore store,
-  LogEntry entry,
+  EntryHandle handle,
 ) async {
   final confirmed = await Navigator.of(context).push<bool>(
-    MaterialPageRoute(
-      builder: (_) => DeleteConfirmationScreen(store: store, entry: entry),
-    ),
+    MaterialPageRoute(builder: (_) => DeleteConfirmationScreen(handle: handle)),
   );
   return confirmed ?? false;
 }
 
-class DeleteConfirmationScreen extends StatelessWidget {
-  const DeleteConfirmationScreen({
-    super.key,
-    required this.store,
-    required this.entry,
-  });
+class DeleteConfirmationScreen extends StatefulWidget {
+  const DeleteConfirmationScreen({super.key, required this.handle});
 
-  final NoteStore store;
-  final LogEntry entry;
+  final EntryHandle handle;
+
+  @override
+  State<DeleteConfirmationScreen> createState() =>
+      _DeleteConfirmationScreenState();
+}
+
+class _DeleteConfirmationScreenState extends State<DeleteConfirmationScreen> {
+  late Future<String> _previewContent;
+
+  @override
+  void initState() {
+    super.initState();
+    _previewContent = widget.handle.preview(maxChars: kDeletePreviewChars);
+  }
+
+  @override
+  void didUpdateWidget(DeleteConfirmationScreen oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (!identical(oldWidget.handle, widget.handle)) {
+      _previewContent = widget.handle.preview(maxChars: kDeletePreviewChars);
+    }
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -73,13 +87,10 @@ class DeleteConfirmationScreen extends StatelessWidget {
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
-              Text(
-                entry.id,
-                style: theme.textTheme.titleMedium,
-              ),
+              Text(widget.handle.id, style: theme.textTheme.titleMedium),
               const SizedBox(height: 4),
               Text(
-                _displayFormat.format(entry.timestamp),
+                _displayFormat.format(widget.handle.entry.timestamp),
                 style: theme.textTheme.bodySmall,
               ),
               const SizedBox(height: 8),
@@ -107,7 +118,7 @@ class DeleteConfirmationScreen extends StatelessWidget {
         borderRadius: BorderRadius.circular(8),
       ),
       child: FutureBuilder<String>(
-        future: store.preview(entry.id, maxChars: kDeletePreviewChars),
+        future: _previewContent,
         builder: (_, snap) {
           if (snap.connectionState != ConnectionState.done) {
             return const Center(child: CircularProgressIndicator());

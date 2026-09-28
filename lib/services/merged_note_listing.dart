@@ -8,8 +8,8 @@ enum NoteStorageLocation {
   /// Present only in the S3 bucket.
   s3,
 
-  /// Same id exists in both places (e.g. after a prior local write and an
-  /// independent S3 create, or a failed move).
+  /// Same id exists in both places (e.g. a dual-write note, a local note
+  /// copied to S3 in dual-write mode, or a failed move).
   both,
 }
 
@@ -63,6 +63,17 @@ List<LocatedLogEntry> mergeNoteLists({
   return merged;
 }
 
+/// Uploads a local note to S3 under the same id and keeps the local file
+/// (dual-write mode: the note ends up in both places).
+Future<void> copyLocalNoteToS3({
+  required NoteStore local,
+  required NoteStore s3,
+  required String id,
+}) async {
+  final text = await local.read(id);
+  await s3.update(id, text);
+}
+
 /// Uploads a local-only note to S3, then deletes the local file only after a
 /// successful put (mirrors drain's "delete after success" rule, opposite
 /// direction).
@@ -71,7 +82,6 @@ Future<void> moveLocalNoteToS3({
   required NoteStore s3,
   required String id,
 }) async {
-  final text = await local.read(id);
-  await s3.update(id, text);
+  await copyLocalNoteToS3(local: local, s3: s3, id: id);
   await local.delete(id);
 }

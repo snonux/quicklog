@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:io' show FileSystemException, Platform;
 
 import 'package:flutter/material.dart';
@@ -9,6 +10,8 @@ import '../services/s3_config.dart';
 import '../services/s3_note_store.dart';
 import '../services/s3_object_client.dart';
 import '../services/s3_session_controller.dart';
+import '../services/saf_note_store.dart';
+import '../services/scoped_folder_service.dart';
 import '../services/settings_backup.dart';
 import '../services/settings_file_service.dart';
 import '../services/storage.dart';
@@ -19,8 +22,10 @@ class PreferencesScreen extends StatefulWidget {
     super.key,
     this.session,
     this.activeStore,
+    this.preferences,
     this.s3ClientFactory,
     this.settingsFiles,
+    this.scopedFolderService,
   });
 
   /// Optional override for tests; defaults to the process-wide session.
@@ -29,6 +34,10 @@ class PreferencesScreen extends StatefulWidget {
   /// Optional override for tests (inject fake S3 factory).
   final ActiveNoteStore? activeStore;
 
+  /// Optional override for tests; defaults to a fresh [PreferencesService].
+  /// The running app passes the instance created in `main`.
+  final PreferencesService? preferences;
+
   /// Optional client factory for "Test connection" (defaults to Minio).
   /// Injected in tests so the probe never hits the network or prefs.
   final S3ObjectClientFactory? s3ClientFactory;
@@ -36,6 +45,7 @@ class PreferencesScreen extends StatefulWidget {
   /// Where Export / Import settings save and read the file. Defaults to the
   /// Android system file dialogs, or a typed path elsewhere (Linux).
   final SettingsFileGateway? settingsFiles;
+  final ScopedFolderService? scopedFolderService;
 
   @override
   State<PreferencesScreen> createState() => _PreferencesScreenState();
@@ -43,7 +53,8 @@ class PreferencesScreen extends StatefulWidget {
 
 class _PreferencesScreenState extends State<PreferencesScreen>
     with WidgetsBindingObserver {
-  final PreferencesService _prefs = PreferencesService();
+  late final PreferencesService _prefs =
+      widget.preferences ?? PreferencesService();
   final TextEditingController _dirController = TextEditingController();
   final TextEditingController _endpointController = TextEditingController();
   final TextEditingController _regionController = TextEditingController();
@@ -57,20 +68,26 @@ class _PreferencesScreenState extends State<PreferencesScreen>
   // Whether the configured directory is actually writable -- not whether the
   // All files access permission is held. See canWriteToDirectory().
   bool _directoryWritable = true;
+  ScopedFolder? _scopedFolder;
+  final Set<String> _unsavedTreeUris = {};
+  bool _scopedAccessible = true;
+  int? _androidStorageApiLevel;
   bool _transferring = false;
-  late final SettingsFileGateway _files = widget.settingsFiles ??
+  late final SettingsFileGateway _files =
+      widget.settingsFiles ??
       (Platform.isAndroid
           ? const AndroidSettingsFileGateway()
           : PathPromptSettingsFileGateway(
               _promptForPath,
               confirmOverwrite: _confirmOverwrite,
             ));
+  ScopedFolderService get _folderPicker =>
+      widget.scopedFolderService ?? const ScopedFolderService();
 
   S3SessionController get _session =>
       widget.session ?? S3SessionController.instance;
 
-  ActiveNoteStore get _active =>
-      widget.activeStore ?? ActiveNoteStore.instance;
+  ActiveNoteStore get _active => widget.activeStore ?? ActiveNoteStore.instance;
 
   @override
   void initState() {
@@ -84,14 +101,16 @@ class _PreferencesScreenState extends State<PreferencesScreen>
     if (state == AppLifecycleState.resumed) {
       // The user may have just granted access in Settings, so re-probe rather
       // than trust what we found when the screen opened.
-      canWriteToDirectory(_dirController.text).then((writable) {
-        if (mounted) setState(() => _directoryWritable = writable);
-      });
+      _checkLocalAccess();
     }
   }
 
   Future<void> _load() async {
     _dirController.text = await _prefs.directory();
+    final folder = await _prefs.scopedFolder();
+    _scopedFolder = folder == null
+        ? null
+        : ScopedFolder(folder.uri, folder.name);
     _autoLog = await _prefs.autoLogSharedText();
     _storageMode = await _prefs.storageMode();
     final s3 = await _prefs.s3Config();
@@ -100,50 +119,156 @@ class _PreferencesScreenState extends State<PreferencesScreen>
     _bucketController.text = s3.bucket;
     _accessKeyController.text = s3.accessKeyId;
     _secretController.text = s3.secretAccessKey;
-    _directoryWritable = await canWriteToDirectory(_dirController.text);
+    _androidStorageApiLevel = await StorageAccessService.storageApiLevel();
+    await _checkLocalAccess();
     if (!mounted) return;
     setState(() => _loaded = true);
   }
 
+  Future<void> _checkLocalAccess() async {
+    final folder = _scopedFolder;
+    if (folder == null) {
+      final writable = await canWriteToDirectory(_dirController.text);
+      if (mounted) setState(() => _directoryWritable = writable);
+      return;
+    }
+    var accessible = true;
+    try {
+      await SafNoteStore(folder.uri).list();
+    } catch (_) {
+      accessible = false;
+    }
+    if (mounted) setState(() => _scopedAccessible = accessible);
+  }
+
+  Future<void> _pickScopedFolder() async {
+    ScopedFolder? picked;
+    try {
+      picked = await _folderPicker.pick();
+      if (picked == null) return;
+      final saved = await _prefs.scopedFolder();
+      if (picked.uri != saved?.uri) _unsavedTreeUris.add(picked.uri);
+      if (!mounted) {
+        if (_unsavedTreeUris.remove(picked.uri)) await _releaseTree(picked.uri);
+        return;
+      }
+      await SafNoteStore(picked.uri).list();
+      if (!mounted) {
+        if (_unsavedTreeUris.remove(picked.uri)) await _releaseTree(picked.uri);
+        return;
+      }
+      for (final uri in _unsavedTreeUris.toList()) {
+        if (uri != picked.uri) {
+          _unsavedTreeUris.remove(uri);
+          await _releaseTree(uri);
+        }
+      }
+      setState(() {
+        _scopedFolder = picked;
+        _scopedAccessible = true;
+      });
+    } catch (e) {
+      if (picked != null && _unsavedTreeUris.remove(picked.uri)) {
+        await _releaseTree(picked.uri);
+      }
+      await _showFailure('Cannot use selected folder', e);
+    }
+  }
+
+  Future<void> _releaseTree(String uri) async {
+    try {
+      await _folderPicker.release(uri);
+    } catch (e, st) {
+      FlutterError.reportError(FlutterErrorDetails(exception: e, stack: st));
+    }
+  }
+
   S3Config _readS3Config() {
-    return S3Config(
-      endpoint: _endpointController.text.trim().isEmpty
-          ? kDefaultS3Endpoint
-          : _endpointController.text.trim(),
-      region: _regionController.text.trim().isEmpty
-          ? kDefaultS3Region
-          : _regionController.text.trim(),
-      bucket: _bucketController.text.trim().isEmpty
-          ? kDefaultS3Bucket
-          : _bucketController.text.trim(),
+    return S3Config.fromRaw(
+      endpoint: _endpointController.text,
+      region: _regionController.text,
+      bucket: _bucketController.text,
       accessKeyId: _accessKeyController.text,
       secretAccessKey: _secretController.text,
     );
   }
 
-  Future<void> _requestAllFilesAccess() async {
-    await StorageAccessService.requestAllFilesAccess();
+  Future<void> _requestStorageAccess() async {
+    try {
+      await StorageAccessService.requestStorageAccess();
+      final writable = await canWriteToDirectory(_dirController.text);
+      if (mounted) setState(() => _directoryWritable = writable);
+    } on PlatformException catch (error) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text(error.message ?? 'Cannot open storage permissions.'),
+        ),
+      );
+    }
   }
 
   Future<void> _resetToDefault() async {
     _dirController.text = await defaultLogDirectory();
-    setState(() {});
+    setState(() => _scopedFolder = null);
   }
 
   void _useQuickSwitchDirectory(String path) {
     _dirController.text = path;
-    setState(() {});
+    setState(() => _scopedFolder = null);
   }
 
   Future<void> _persist() async {
+    final previous = await _prefs.scopedFolder();
     await _prefs.setDirectory(_dirController.text);
+    final folder = _scopedFolder;
+    if (folder == null) {
+      await _prefs.clearScopedFolder();
+    } else {
+      await _prefs.setScopedFolder(folder.uri, folder.name);
+      _unsavedTreeUris.remove(folder.uri);
+    }
+    if (previous != null && previous.uri != folder?.uri) {
+      await _releaseTree(previous.uri);
+    }
+    for (final uri in _unsavedTreeUris.toList()) {
+      _unsavedTreeUris.remove(uri);
+      await _releaseTree(uri);
+    }
     await _prefs.setAutoLogSharedText(_autoLog);
     await _prefs.setS3Config(_readS3Config());
     await _session.setPreferredMode(_storageMode);
     _active.bindSessionProbe();
   }
 
+  /// Guards every path that persists the form ([_save], [_exportSettings]):
+  /// while S3 is in use, settings no client can be built from are refused
+  /// with a snackbar instead of surfacing later as a broken S3 listing.
+  /// Returns true when the form may be persisted.
+  bool _s3SettingsPersistable() {
+    final problem = MinioS3ObjectClient.settingsError(
+      _readS3Config(),
+      usesS3: _storageMode.writesToS3,
+    );
+    if (problem == null) return true;
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(
+        content: Text('Invalid S3 settings: $problem'),
+        backgroundColor: Colors.red,
+      ),
+    );
+    return false;
+  }
+
   Future<void> _save() async {
+    if (!_s3SettingsPersistable()) return;
+    if (_scopedFolder != null && !_scopedAccessible) {
+      await _showFailure(
+        'Folder access expired',
+        'Select the folder again, or switch to a path before saving.',
+      );
+      return;
+    }
     await _persist();
     if (!mounted) return;
     Navigator.of(context).pop();
@@ -153,6 +278,15 @@ class _PreferencesScreenState extends State<PreferencesScreen>
       SettingsBackupService(preferences: _prefs, session: _session);
 
   Future<void> _exportSettings() async {
+    // Export saves the form first; refuse before asking to confirm.
+    if (!_s3SettingsPersistable()) return;
+    if (_scopedFolder != null && !_scopedAccessible) {
+      await _showFailure(
+        'Folder access expired',
+        'Select the folder again, or switch to a path before exporting.',
+      );
+      return;
+    }
     final confirmed = await showDialog<bool>(
       context: context,
       builder: (ctx) => AlertDialog(
@@ -186,9 +320,9 @@ class _PreferencesScreenState extends State<PreferencesScreen>
         content: json,
       );
       if (where == null || !mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('Settings exported to $where')),
-      );
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(SnackBar(content: Text('Settings exported to $where')));
     } catch (e) {
       await _showFailure('Export failed', e);
     } finally {
@@ -210,7 +344,8 @@ class _PreferencesScreenState extends State<PreferencesScreen>
           content: Text(
             'Replace the current settings with the ones in this file'
             '${exportedAt == null ? '' : ' (exported ${exportedAt.toLocal()})'}?'
-            ' Unsaved changes on this screen are discarded.',
+            ' Unsaved changes on this screen are discarded.'
+            '${backup.settings.scopedFolderNeedsSelection == true ? ' The scoped folder grant cannot be imported; select that folder again after import.' : ''}',
           ),
           actions: [
             TextButton(
@@ -225,12 +360,26 @@ class _PreferencesScreenState extends State<PreferencesScreen>
         ),
       );
       if (confirmed != true || !mounted) return;
+      final oldFolder = await _prefs.scopedFolder();
       await _backup.apply(backup.settings);
+      if (oldFolder != null && await _prefs.scopedFolder() == null) {
+        await _releaseTree(oldFolder.uri);
+      }
+      for (final uri in _unsavedTreeUris.toList()) {
+        _unsavedTreeUris.remove(uri);
+        await _releaseTree(uri);
+      }
       _active.bindSessionProbe();
       await _load();
       if (!mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('Settings imported.')),
+        SnackBar(
+          content: Text(
+            backup.settings.scopedFolderNeedsSelection == true
+                ? 'Settings imported. Select the scoped folder again in Preferences.'
+                : 'Settings imported.',
+          ),
+        ),
       );
     } catch (e) {
       await _showFailure('Import failed', e);
@@ -303,14 +452,13 @@ class _PreferencesScreenState extends State<PreferencesScreen>
         throw StateError('Enter access key and secret first.');
       }
       // Probe in-memory only — never persist secrets before Save.
-      final factory =
-          widget.s3ClientFactory ?? ((c) => MinioS3ObjectClient(c));
+      final factory = widget.s3ClientFactory ?? ((c) => MinioS3ObjectClient(c));
       final store = S3NoteStore(factory(config));
       await store.probe();
       if (!mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('S3 connection OK.')),
-      );
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(const SnackBar(content: Text('S3 connection OK.')));
     } catch (e) {
       if (!mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(
@@ -327,6 +475,9 @@ class _PreferencesScreenState extends State<PreferencesScreen>
   @override
   void dispose() {
     WidgetsBinding.instance.removeObserver(this);
+    for (final uri in _unsavedTreeUris) {
+      unawaited(_releaseTree(uri));
+    }
     _dirController.dispose();
     _endpointController.dispose();
     _regionController.dispose();
@@ -355,26 +506,44 @@ class _PreferencesScreenState extends State<PreferencesScreen>
       body: ListView(
         padding: const EdgeInsets.all(12),
         children: [
-          if (!_directoryWritable) ...[
+          if (_scopedFolder != null && !_scopedAccessible) ...[
+            Card(
+              color: Theme.of(context).colorScheme.errorContainer,
+              child: ListTile(
+                leading: const Icon(Icons.folder_off),
+                title: const Text('Selected folder is unavailable'),
+                subtitle: const Text(
+                  'Access may have been revoked. Select the folder again to restore access.',
+                ),
+                onTap: Platform.isAndroid || widget.scopedFolderService != null
+                    ? _pickScopedFolder
+                    : null,
+              ),
+            ),
+          ],
+          if (_scopedFolder == null && !_directoryWritable) ...[
             Card(
               color: Theme.of(context).colorScheme.errorContainer,
               child: ListTile(
                 leading: const Icon(Icons.folder_off),
                 title: const Text('Cannot write to this folder'),
-                subtitle: const Text(
-                  'Quicklog needs "All files access" to write outside its own app '
-                  'folder (e.g. a synced notes vault). Tap to grant it in Settings.',
-                ),
-                onTap: _requestAllFilesAccess,
+                subtitle: Text(storageAccessWarning(_androidStorageApiLevel)),
+                onTap: _androidStorageApiLevel == null
+                    ? null
+                    : _requestStorageAccess,
               ),
             ),
             const SizedBox(height: 12),
           ],
-          const Text('Directory:', style: TextStyle(fontWeight: FontWeight.bold)),
+          const Text(
+            'Directory:',
+            style: TextStyle(fontWeight: FontWeight.bold),
+          ),
           const SizedBox(height: 4),
           TextField(
             key: const ValueKey('prefs.directory'),
             controller: _dirController,
+            onChanged: (_) => setState(() => _scopedFolder = null),
             decoration: InputDecoration(
               border: const OutlineInputBorder(),
               suffixIcon: Row(
@@ -399,13 +568,28 @@ class _PreferencesScreenState extends State<PreferencesScreen>
             ),
           ),
           const SizedBox(height: 8),
+          if (Platform.isAndroid || widget.scopedFolderService != null)
+            OutlinedButton.icon(
+              onPressed: _pickScopedFolder,
+              icon: const Icon(Icons.create_new_folder_outlined),
+              label: Text(
+                _scopedFolder == null
+                    ? 'Choose folder with Android picker'
+                    : 'Selected folder: ${_scopedFolder!.name} (change)',
+              ),
+            ),
+          if (_scopedFolder != null)
+            const Text(
+              'Android grants access only to this folder. Re-select it here if access is revoked.',
+            ),
+          const SizedBox(height: 8),
           Text(
             _storageMode == StorageMode.local
                 ? 'Notes are written here as Markdown files.'
                 : _storageMode == StorageMode.both
-                    ? 'Every note is written here and mirrored to S3.'
-                    : 'Local directory is used when S3 is unavailable '
-                        '(degraded fallback).',
+                ? 'Every note is written here and mirrored to S3.'
+                : 'Local directory is used when S3 is unavailable '
+                      '(degraded fallback).',
             style: Theme.of(context).textTheme.bodySmall,
           ),
           const SizedBox(height: 16),
@@ -435,26 +619,25 @@ class _PreferencesScreenState extends State<PreferencesScreen>
             },
           ),
           const SizedBox(height: 8),
-          Text(
-            switch (_storageMode) {
-              StorageMode.local =>
-                  'Notes stay on this device as Markdown files. Default.',
-              StorageMode.s3 =>
-                  'Notes go to a user-configured S3 endpoint only. On failure '
+          Text(switch (_storageMode) {
+            StorageMode.local =>
+              'Notes stay on this device as Markdown files. Default.',
+            StorageMode.s3 =>
+              'Notes go to a user-configured S3 endpoint only. On failure '
                   'the app falls back to local until you retry or the '
                   'degrade window ends. Credentials stay on this device; '
                   'nothing is telemetried.',
-              StorageMode.both =>
-                  'Every note is written to this directory and to S3. If S3 '
+            StorageMode.both =>
+              'Every note is written to this directory and to S3. If S3 '
                   'is unavailable the note is still saved locally. '
                   'Credentials stay on this device; nothing is telemetried.',
-            },
-            style: Theme.of(context).textTheme.bodySmall,
-          ),
+          }, style: Theme.of(context).textTheme.bodySmall),
           if (_storageMode.writesToS3) ...[
             const SizedBox(height: 16),
-            const Text('S3 endpoint:',
-                style: TextStyle(fontWeight: FontWeight.bold)),
+            const Text(
+              'S3 endpoint:',
+              style: TextStyle(fontWeight: FontWeight.bold),
+            ),
             const SizedBox(height: 4),
             TextField(
               key: const ValueKey('prefs.s3Endpoint'),
@@ -467,7 +650,10 @@ class _PreferencesScreenState extends State<PreferencesScreen>
               enableSuggestions: false,
             ),
             const SizedBox(height: 12),
-            const Text('Region:', style: TextStyle(fontWeight: FontWeight.bold)),
+            const Text(
+              'Region:',
+              style: TextStyle(fontWeight: FontWeight.bold),
+            ),
             const SizedBox(height: 4),
             TextField(
               key: const ValueKey('prefs.s3Region'),
@@ -480,7 +666,10 @@ class _PreferencesScreenState extends State<PreferencesScreen>
               enableSuggestions: false,
             ),
             const SizedBox(height: 12),
-            const Text('Bucket:', style: TextStyle(fontWeight: FontWeight.bold)),
+            const Text(
+              'Bucket:',
+              style: TextStyle(fontWeight: FontWeight.bold),
+            ),
             const SizedBox(height: 4),
             TextField(
               key: const ValueKey('prefs.s3Bucket'),
@@ -493,28 +682,28 @@ class _PreferencesScreenState extends State<PreferencesScreen>
               enableSuggestions: false,
             ),
             const SizedBox(height: 12),
-            const Text('Access key ID:',
-                style: TextStyle(fontWeight: FontWeight.bold)),
+            const Text(
+              'Access key ID:',
+              style: TextStyle(fontWeight: FontWeight.bold),
+            ),
             const SizedBox(height: 4),
             TextField(
               key: const ValueKey('prefs.s3AccessKeyId'),
               controller: _accessKeyController,
-              decoration: const InputDecoration(
-                border: OutlineInputBorder(),
-              ),
+              decoration: const InputDecoration(border: OutlineInputBorder()),
               autocorrect: false,
               enableSuggestions: false,
             ),
             const SizedBox(height: 12),
-            const Text('Secret access key:',
-                style: TextStyle(fontWeight: FontWeight.bold)),
+            const Text(
+              'Secret access key:',
+              style: TextStyle(fontWeight: FontWeight.bold),
+            ),
             const SizedBox(height: 4),
             TextField(
               key: const ValueKey('prefs.s3SecretAccessKey'),
               controller: _secretController,
-              decoration: const InputDecoration(
-                border: OutlineInputBorder(),
-              ),
+              decoration: const InputDecoration(border: OutlineInputBorder()),
               obscureText: true,
               autocorrect: false,
               enableSuggestions: false,
@@ -609,8 +798,9 @@ class _SettingsPathDialog extends StatefulWidget {
 }
 
 class _SettingsPathDialogState extends State<_SettingsPathDialog> {
-  late final TextEditingController _controller =
-      TextEditingController(text: widget.initialPath);
+  late final TextEditingController _controller = TextEditingController(
+    text: widget.initialPath,
+  );
 
   @override
   void dispose() {
@@ -624,7 +814,9 @@ class _SettingsPathDialogState extends State<_SettingsPathDialog> {
   Widget build(BuildContext context) {
     return AlertDialog(
       title: Text(
-        widget.forSave ? 'Export settings to file' : 'Import settings from file',
+        widget.forSave
+            ? 'Export settings to file'
+            : 'Import settings from file',
       ),
       content: TextField(
         key: const ValueKey('settingsPathField'),

@@ -26,6 +26,16 @@ void main() {
     expect(await tmp.list().isEmpty, isTrue);
   });
 
+  test('does not alter an existing file with the old probe name', () async {
+    final existing = File(p.join(tmp.path, '.quicklog-write-probe'));
+    await existing.writeAsString('user data');
+
+    expect(await canWriteToDirectory(tmp.path), isTrue);
+    expect(await existing.readAsString(), 'user data');
+    expect(await tmp.list().map((entry) => p.basename(entry.path)).toList(),
+        ['.quicklog-write-probe']);
+  });
+
   test('a directory that does not exist yet is writable if it can be created',
       () async {
     // The Storage Scopes flow in docs/installation.md depends on this: the user
@@ -40,6 +50,25 @@ void main() {
     expect(await Directory(fresh).exists(), isFalse);
     // ...and the parent it would have been created under is untouched too.
     expect(await tmp.list().isEmpty, isTrue);
+  });
+
+  test('checking a nested path removes only its newly created directories',
+      () async {
+    final existing = await Directory(p.join(tmp.path, 'existing')).create();
+    final keep = File(p.join(existing.path, 'keep.txt'));
+    await keep.writeAsString('keep');
+    final firstNew = p.join(existing.path, 'Notes');
+    final secondNew = p.join(firstNew, 'Vault');
+    final fresh = p.join(secondNew, 'Quicklog');
+
+    expect(await canWriteToDirectory(fresh), isTrue);
+    expect(await Directory(fresh).exists(), isFalse);
+    expect(await Directory(secondNew).exists(), isFalse);
+    expect(await Directory(firstNew).exists(), isFalse);
+    expect(await existing.exists(), isTrue);
+    expect(await keep.readAsString(), 'keep');
+    expect(await existing.list().map((entry) => p.basename(entry.path)).toList(),
+        ['keep.txt']);
   });
 
   test('a read-only directory is not writable', () async {

@@ -2,17 +2,39 @@ import 'package:flutter/material.dart';
 
 import 'screens/home_screen.dart';
 import 'services/active_note_store.dart';
+import 'services/preferences.dart';
 import 'services/s3_session_controller.dart';
 
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
-  await S3SessionController.instance.load();
-  ActiveNoteStore.instance.bindSessionProbe();
-  runApp(const QuickLoggerApp());
+  final preferences = PreferencesService();
+  final session = S3SessionController(preferences: preferences);
+  final activeStore = ActiveNoteStore(
+    preferences: preferences,
+    session: session,
+  );
+  await session.load();
+  activeStore.bindSessionProbe();
+  runApp(
+    QuickLoggerApp(
+      preferences: preferences,
+      session: session,
+      activeStore: activeStore,
+    ),
+  );
 }
 
 class QuickLoggerApp extends StatelessWidget {
-  const QuickLoggerApp({super.key});
+  const QuickLoggerApp({
+    super.key,
+    required this.preferences,
+    required this.session,
+    required this.activeStore,
+  });
+
+  final PreferencesService preferences;
+  final S3SessionController session;
+  final ActiveNoteStore activeStore;
 
   @override
   Widget build(BuildContext context) {
@@ -29,7 +51,11 @@ class QuickLoggerApp extends StatelessWidget {
         ),
         useMaterial3: true,
       ),
-      home: const HomeScreen(),
+      home: HomeScreen(
+        preferences: preferences,
+        session: session,
+        activeStore: activeStore,
+      ),
     );
   }
 }
