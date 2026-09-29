@@ -1,0 +1,7 @@
+Choose an Android folder for your Markdown notes.
+
+Local + S3 keeps a device copy and catches up edits and deletions after an S3 outage. The browser keeps local notes visible while offline.
+
+Export and import settings from Preferences. Backup files contain S3 credentials, so keep them private.
+
+Shared text is logged once, and the laptop drain can import S3 notes into Taskwarrior.
