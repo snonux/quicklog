@@ -149,6 +149,16 @@ flutter test
 flutter analyze
 ```
 
+The optional live Garage smoke test uses `~/.config/garage/quicklog.env`.
+To run it against an isolated S3 server instead, supply an env file with the
+`GARAGE_*` variables documented below:
+
+```sh
+QUICKLOG_S3_SMOKE_ENV=/path/to/test-garage.env flutter test
+```
+
+An explicitly selected file must exist; a missing fixture fails the test.
+
 ## Share with Quicklog on Android
 
 From any app that can share text, choose **Share** → **Quicklog**. With

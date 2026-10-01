@@ -6,11 +6,13 @@ import 'package:quicklog/services/s3_object_client.dart';
 
 import '../bin/quicklog_drain.dart' as drain;
 
-/// Optional live Garage smoke. Skipped unless ~/.config/garage/quicklog.env
-/// exists — CI and developer machines without credentials stay green.
+/// Optional live Garage smoke. QUICKLOG_S3_SMOKE_ENV selects an isolated
+/// server's env file; otherwise use ~/.config/garage/quicklog.env if present.
 void main() {
+  final explicitEnv = Platform.environment['QUICKLOG_S3_SMOKE_ENV'];
   final envFile = File(
-    '${Platform.environment['HOME']}/.config/garage/quicklog.env',
+    explicitEnv ??
+        '${Platform.environment['HOME']}/.config/garage/quicklog.env',
   );
   final hasEnv = envFile.existsSync();
 
@@ -32,7 +34,8 @@ void main() {
       expect(await store.read(entry.id), contains('quicklog smoke'));
       await store.delete(entry.id);
     },
-    skip: hasEnv
+    // An explicitly requested fixture must fail if missing, never skip.
+    skip: hasEnv || explicitEnv != null
         ? false
         : '~/.config/garage/quicklog.env not present; skipping live smoke',
   );
@@ -44,9 +47,7 @@ Map<String, String> _loadShEnv(String contents) {
   final assign = RegExp(
     r'''^\s*(?:export\s+)?([A-Z0-9_]+)=(?:"([^"]*)"|'([^']*)'|(\S+))\s*$''',
   );
-  final defaultAssign = RegExp(
-    r''':\s*"\$\{([A-Z0-9_]+):=([^}]*)\}"''',
-  );
+  final defaultAssign = RegExp(r''':\s*"\$\{([A-Z0-9_]+):=([^}]*)\}"''');
   for (final raw in contents.split('\n')) {
     final line = raw.trim();
     if (line.isEmpty || line.startsWith('#')) continue;
