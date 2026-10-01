@@ -257,7 +257,8 @@ void main() {
       final result = await active.createNote('to bucket', now: now);
 
       expect(result.outcome, NoteCreateOutcome.saved);
-      expect(fake.objects.keys, ['ql-$stamp.md']);
+      await active.replayS3OnlyLocalNotes();
+      expect(fake.objects.keys, unorderedEquals(['ql-$stamp.md', localId]));
     });
 
     testWidgets('home screen says to check Preferences', (tester) async {

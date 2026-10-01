@@ -1169,6 +1169,12 @@ void main() {
 
       await seedBoth('local old', 's3 old');
       final sources = await clockedActive.resolveBrowserSources();
+      final recovered = Completer<void>();
+      final replay = clocked.onRecovered!;
+      clocked.onRecovered = () async {
+        await replay();
+        recovered.complete();
+      };
       client.failNext = Exception('put failed');
       await expectLater(
         sources.update(both(id), 'edited'),
@@ -1178,7 +1184,7 @@ void main() {
 
       now = now.add(kS3DegradeDuration);
       expect(clocked.isDegraded, isFalse);
-      await pumpEventQueue();
+      await recovered.future;
 
       expect(utf8.decode(client.objects[id]!), 'edited');
       expect(await prefs.dualWritePendingUploads(), isEmpty);

@@ -170,6 +170,19 @@ while logging, Quicklog writes that note to the local directory immediately
 re-save it. The app then uses the local directory for new notes until you tap
 **Retry S3** or an hour elapses / the app cold-starts.
 
+In **S3 only** mode, recovery after an outage or a successful new S3 save also
+uploads local notes whose names are missing from the bucket. Existing S3 notes
+are skipped after a listing and a fresh read before each upload. This protects
+notes already present when checked; a concurrent write from another device
+between that check and upload can still race because the client does not
+support conditional writes. These automatic uploads keep the local copies;
+failed uploads remain on device for the next attempt.
+If a recovery read or upload is busy, new notes save locally immediately
+instead of waiting for it. These saves carry a persisted repair so their latest
+text can replace an earlier write of the same note name, even after restart.
+Use the browser's explicit move or local-copy cleanup
+actions to remove local copies.
+
 **Local + S3** (dual write) writes every note to the local directory *and*
 the bucket under the same `ql-*.md` name. If S3 is unavailable the note is
 still saved locally (and you are told), and S3 is skipped for an hour like
@@ -178,7 +191,7 @@ local-only (e.g. by an outage) get **Copy to S3** in the entry browser, which
 uploads them and keeps the local file; only **S3 only** mode offers **Move to
 S3**, which deletes the local file after a successful upload.
 
-Default mode remains **Local only**. There is no analytics or background sync.
+Default mode remains **Local only**. There is no analytics. Outage recovery copies local notes in the background.
 `INTERNET` is declared for the optional S3 path and stays unused in local mode.
 
 ### Drain CLI (laptop)

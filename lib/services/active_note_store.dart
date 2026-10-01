@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'browser_note_sources.dart';
 import 'dual_write_s3_repair.dart';
 import 'lazy_s3_note_store.dart';
@@ -9,6 +11,8 @@ import 's3_note_store.dart';
 import 's3_object_client.dart';
 import 's3_session_controller.dart';
 import 'saf_note_store.dart';
+
+typedef _NoteScope = ({String folderKey, String id});
 
 typedef S3ObjectClientFactory = S3ObjectClient Function(S3Config config);
 
@@ -65,6 +69,21 @@ final class _LocalFailed extends _LocalAttempt {
   LogEntry entryOrRethrow() => Error.throwWithStackTrace(error, stackTrace);
 }
 
+class _BusyFallback {
+  _BusyFallback(
+    this.text,
+    this.config,
+    this.saved,
+    this.revision,
+    this.folderKey,
+  );
+  final String text;
+  final S3Config config;
+  final Future<LogEntry> saved;
+  final int revision;
+  final String folderKey;
+}
+
 /// Resolves the process-active [NoteStore] from prefs + [S3SessionController].
 ///
 /// S3-only preferred (and not degraded) → [S3NoteStore]; otherwise
@@ -101,14 +120,129 @@ class ActiveNoteStore {
   final NoteStore Function(String uri) _safStoreFactory;
   final DualWriteS3Repair _repairs;
   bool _probeBound = false;
+  Future<void>? _s3OnlyReplay;
+  Future<void> _s3OnlyWriteChain = Future<void>.value();
+  int _s3OnlyWritesPending = 0;
+  final Map<_NoteScope, _BusyFallback> _busyFallbacks = {};
+  int _noteIntentRevision = 0;
+  final Map<_NoteScope, int> _acknowledgedNoteRevisions = {};
+
+  void _acknowledgeNote(String id, int revision, {required String folderKey}) {
+    final scope = (folderKey: folderKey, id: id);
+    if ((_acknowledgedNoteRevisions[scope] ?? 0) < revision) {
+      _acknowledgedNoteRevisions[scope] = revision;
+    }
+    final earlier = _busyFallbacks[scope];
+    if (earlier != null &&
+        earlier.revision < _acknowledgedNoteRevisions[scope]!) {
+      // Every acknowledged save supersedes older captured text, regardless
+      // of mode/config branch. Keep its durable repair until a PUT succeeds.
+      _busyFallbacks.remove(scope);
+    }
+  }
+
+  bool _isCurrentS3Fallback(_NoteScope scope, _BusyFallback fallback) =>
+      identical(_busyFallbacks[scope], fallback) &&
+      (_acknowledgedNoteRevisions[scope] ?? 0) <= fallback.revision &&
+      _session.preferredMode == StorageMode.s3;
+
+  /// Serialize creates with each recovery existence-check/PUT pair. Local
+  /// listing and reads stay outside this queue, and each note releases it.
+  Future<T> _serializeS3OnlyWrite<T>(Future<T> Function() action) {
+    _s3OnlyWritesPending++;
+    final result = _s3OnlyWriteChain.then((_) => action());
+    final finalized = result
+        .then(
+          (_) => _reconcileBusyFallbacks(),
+          onError: (Object _, StackTrace _) => _reconcileBusyFallbacks(),
+        )
+        .whenComplete(() {
+          _s3OnlyWritesPending--;
+        });
+    _s3OnlyWriteChain = finalized.then(
+      (_) {},
+      onError: (Object _, StackTrace _) {},
+    );
+    return result;
+  }
+
+  Future<void> _reconcileBusyFallbacks() async {
+    final attempted = <_BusyFallback>{};
+    while (_session.preferredMode == StorageMode.s3) {
+      final pending = _busyFallbacks.entries
+          .where((e) => !attempted.contains(e.value))
+          .toList();
+      if (pending.isEmpty) return;
+      for (final item in pending) {
+        final fallback = item.value;
+        attempted.add(fallback);
+        try {
+          await fallback.saved;
+          if (!_isCurrentS3Fallback(item.key, fallback)) {
+            continue;
+          }
+          final s3 = _s3StoreFor(fallback.config, markFailures: false);
+          String? remoteText;
+          try {
+            remoteText = await s3.read(item.key.id);
+          } catch (error) {
+            if (!isMissingObjectError(error)) rethrow;
+          }
+          if (!_isCurrentS3Fallback(item.key, fallback)) {
+            continue;
+          }
+          if (remoteText != fallback.text) {
+            await s3.update(item.key.id, fallback.text);
+          }
+          if (!_isCurrentS3Fallback(item.key, fallback)) continue;
+          await _repairs.clear(item.key.id, folderKey: fallback.folderKey);
+          if (_isCurrentS3Fallback(item.key, fallback)) {
+            _busyFallbacks.remove(item.key);
+          }
+        } catch (_) {
+          // The acknowledged local write and durable repair remain safe.
+        }
+      }
+    }
+  }
+
+  Future<bool> _preserveBusyLocal(String id, String folderKey) async {
+    final scope = (folderKey: folderKey, id: id);
+    while (true) {
+      final fallback = _busyFallbacks[scope];
+      if (fallback == null) return false;
+      try {
+        await fallback.saved;
+      } catch (_) {
+        return false;
+      }
+      if (identical(_busyFallbacks[scope], fallback)) return true;
+    }
+  }
+
+  Future<void> _runS3OnlyBrowserMutation(
+    String id,
+    Future<void> Function() action,
+    String folderKey,
+  ) {
+    final scope = (folderKey: folderKey, id: id);
+    final earlierFallback = _busyFallbacks[scope];
+    return _serializeS3OnlyWrite(() async {
+      if (identical(_busyFallbacks[scope], earlierFallback)) {
+        _busyFallbacks.remove(scope);
+        await _repairs.clear(id, folderKey: folderKey);
+      }
+      await action();
+    });
+  }
 
   S3SessionController get session => _session;
 
   static S3ObjectClient _defaultMinioFactory(S3Config config) =>
       MinioS3ObjectClient(config);
 
-  /// Bind a LIST probe onto the session once (idempotent). Call after
-  /// [S3SessionController.load] in [main].
+  /// Bind a LIST probe and recovery hook once (idempotent). Call before
+  /// [S3SessionController.load] so cold-start expiry can replay local notes.
   void bindSessionProbe() {
     if (_probeBound) return;
     _probeBound = true;
@@ -116,7 +250,84 @@ class ActiveNoteStore {
       final store = await _buildS3Store(markFailures: true);
       await store.probe();
     };
-    _session.onRecovered = replayDualWriteRepairs;
+    _session.onRecovered = () {
+      if (_session.preferredMode == StorageMode.s3) {
+        return replayS3OnlyLocalNotes();
+      }
+      return replayDualWriteRepairs();
+    };
+  }
+
+  /// On S3-only recovery, copy every local note absent from the bucket.
+  /// A failed replay must not turn a successful probe or new save into a
+  /// failure. Local files remain available; keys found in the bucket are
+  /// skipped (the client cannot make the check and PUT atomic).
+  Future<void> replayS3OnlyLocalNotes() {
+    return _s3OnlyReplay ??= _replayS3OnlyLocalNotes().whenComplete(() {
+      _s3OnlyReplay = null;
+    });
+  }
+
+  Future<void> _replayS3OnlyLocalNotes() async {
+    if (_session.preferredMode != StorageMode.s3 || !_session.shouldAttemptS3) {
+      return;
+    }
+    try {
+      final location = await _resolveLocalWithKey();
+      final local = location.store;
+      final folderKey = location.key;
+      final localEntries = await local.list();
+      if (localEntries.isEmpty) return;
+      final s3 = await _buildS3Store(markFailures: false);
+      if (await _repairs.hasPending()) {
+        final uploads =
+            (await _prefs.dualWritePendingFolders())[folderKey]?.uploads ??
+            <String>[];
+        for (final id in uploads) {
+          final scope = (folderKey: folderKey, id: id);
+          try {
+            await _serializeS3OnlyWrite(() async {
+              final earlierFallback = _busyFallbacks[scope];
+              final revision = _acknowledgedNoteRevisions[scope];
+              final text = await local.read(id);
+              if (_session.preferredMode != StorageMode.s3) return;
+              await s3.update(id, text);
+              if (identical(_busyFallbacks[scope], earlierFallback) &&
+                  _acknowledgedNoteRevisions[scope] == revision) {
+                await _repairs.clear(id, folderKey: folderKey);
+              }
+            });
+          } catch (_) {
+            // Network I/O must not hold the persistence queue: new local
+            // fallbacks need to become durable before acknowledgment.
+          }
+        }
+      }
+      final remoteEntries = await s3.list();
+      await uploadMissingLocalNotes(
+        local: local,
+        s3: s3,
+        localEntries: localEntries,
+        s3Entries: remoteEntries,
+        shouldContinue: () => _session.preferredMode == StorageMode.s3,
+        writeMissing: (id, text) => _serializeS3OnlyWrite(() {
+          if (_session.preferredMode != StorageMode.s3) {
+            return Future<bool>.value(false);
+          }
+          return copyTextToS3IfMissing(
+            s3: s3,
+            id: id,
+            text: text,
+            readCurrentText: () => local.read(id),
+            shouldContinue: () => _session.preferredMode == StorageMode.s3,
+          );
+        }),
+      );
+    } catch (_) {
+      // Nothing is removed locally; another successful attempt retries.
+    } finally {
+      await _s3OnlyWriteChain;
+    }
   }
 
   /// Replays dual-write repairs once, when the preferred mode is dual-write
@@ -168,10 +379,16 @@ class ActiveNoteStore {
 
   /// Selected local store. A revoked SAF grant stays selected and fails
   /// visibly; silently writing to the old path could lose notes.
-  Future<NoteStore> resolveLocal() async {
+  Future<NoteStore> resolveLocal() async =>
+      (await _resolveLocalWithKey()).store;
+
+  Future<({NoteStore store, String key})> _resolveLocalWithKey() async {
     final folder = await _prefs.scopedFolder();
-    if (folder != null) return _safStoreFactory(folder.uri);
-    return LocalNoteStore(await _prefs.directory());
+    if (folder != null) {
+      return (store: _safStoreFactory(folder.uri), key: 'saf:${folder.uri}');
+    }
+    final directory = await _prefs.directory();
+    return (store: LocalNoteStore(directory), key: directory);
   }
 
   /// Creates a new note per the preferred [StorageMode]:
@@ -201,19 +418,50 @@ class ActiveNoteStore {
   /// the local error is rethrown with its original stack trace — the note is
   /// nowhere.
   Future<NoteCreateResult> createNote(String text, {DateTime? now}) async {
+    final stamp = now ?? DateTime.now();
+    final revision = ++_noteIntentRevision;
     bindSessionProbe();
-    final local = await resolveLocal();
+    final location = await _resolveLocalWithKey();
+    final result = await _createNote(
+      text,
+      stamp,
+      revision,
+      location.store,
+      location.key,
+    );
+    final id = result.entry.id;
+    _acknowledgeNote(id, revision, folderKey: location.key);
+    return result;
+  }
+
+  Future<NoteCreateResult> _createNote(
+    String text,
+    DateTime stamp,
+    int revision,
+    NoteStore local,
+    String folderKey,
+  ) async {
     if (_session.preferredMode == StorageMode.local) {
-      return _createLocal(local, text, now, NoteCreateOutcome.saved);
+      return _createLocal(local, text, stamp, NoteCreateOutcome.saved);
     }
     final config = await _s3ConfigForCreate();
     if (config == null) {
-      return _createLocal(local, text, now, NoteCreateOutcome.savedLocalOnly);
+      if (_session.preferredMode == StorageMode.s3 &&
+          _s3OnlyWritesPending > 0) {
+        return _createBusyS3Fallback(
+          local,
+          await _prefs.s3Config(),
+          text,
+          stamp,
+          revision,
+          folderKey,
+        );
+      }
+      return _createLocal(local, text, stamp, NoteCreateOutcome.savedLocalOnly);
     }
-    final stamp = now ?? DateTime.now();
     return _session.preferredMode == StorageMode.both
         ? _createDual(local, config, text, stamp)
-        : _createS3Only(local, config, text, stamp);
+        : _createS3Only(local, config, text, stamp, revision, folderKey);
   }
 
   /// Writes the note to the local directory only and reports [outcome].
@@ -239,24 +487,88 @@ class ActiveNoteStore {
 
   /// [StorageMode.s3]: the bucket first; when S3 cannot take the note it is
   /// written locally right away with the same [stamp] (hence the same id).
+  Future<NoteCreateResult> _createBusyS3Fallback(
+    NoteStore local,
+    S3Config config,
+    String text,
+    DateTime stamp,
+    int revision,
+    String folderKey,
+  ) async {
+    final id = logEntryIdFor(stamp);
+    final scope = (folderKey: folderKey, id: id);
+    final saved = () async {
+      final entry = await local.create(text, now: stamp);
+      await _repairs.enqueueUpload(entry.id, folderKey: folderKey);
+      _acknowledgeNote(id, revision, folderKey: folderKey);
+      return entry;
+    }();
+    final fallback = _BusyFallback(text, config, saved, revision, folderKey);
+    _busyFallbacks[scope] = fallback;
+    try {
+      return (entry: await saved, outcome: NoteCreateOutcome.savedLocalOnly);
+    } catch (_) {
+      if (identical(_busyFallbacks[scope], fallback)) {
+        _busyFallbacks.remove(scope);
+      }
+      rethrow;
+    }
+  }
+
   Future<NoteCreateResult> _createS3Only(
     NoteStore local,
     S3Config config,
     String text,
     DateTime stamp,
+    int revision,
+    String folderKey,
   ) async {
+    final id = logEntryIdFor(stamp);
+    final scope = (folderKey: folderKey, id: id);
+    if (_s3OnlyWritesPending > 0) {
+      return _createBusyS3Fallback(
+        local,
+        config,
+        text,
+        stamp,
+        revision,
+        folderKey,
+      );
+    }
     try {
       final s3 = _s3StoreFor(config, markFailures: true);
-      return (
-        entry: await s3.create(text, now: stamp),
-        outcome: NoteCreateOutcome.saved,
-      );
+      final entry = await _serializeS3OnlyWrite(() async {
+        final olderFallback = _busyFallbacks[scope];
+        if (olderFallback != null && olderFallback.revision < revision) {
+          // The new intent supersedes this in-memory repair. Its durable
+          // queue remains until PUT succeeds, preserving recovery on error.
+          _busyFallbacks.remove(scope);
+        }
+        final entry = await s3.create(text, now: stamp);
+        final newerFallback = _busyFallbacks[scope];
+        if ((newerFallback == null || newerFallback.revision <= revision) &&
+            (_acknowledgedNoteRevisions[scope] ?? 0) <= revision) {
+          await _repairs.clear(id, folderKey: folderKey);
+        }
+        return entry;
+      });
+      unawaited(replayS3OnlyLocalNotes());
+      return (entry: entry, outcome: NoteCreateOutcome.saved);
     } on ArgumentError {
       // Bad input (or broken config) before anything was written: surface
       // it; there is no copy to fall back to.
       rethrow;
     } catch (e) {
-      return _fallbackLocal(e, () => local.create(text, now: stamp));
+      return _fallbackLocal(e, () {
+        if ((_acknowledgedNoteRevisions[scope] ?? 0) > revision) {
+          // A newer same-id local save was already acknowledged while this
+          // older request failed. Never replace its durable text with ours.
+          return Future.value(
+            LogEntry(id: id, timestamp: parseLogEntryId(id)!),
+          );
+        }
+        return local.create(text, now: stamp);
+      });
     }
   }
 
@@ -335,7 +647,9 @@ class ActiveNoteStore {
   /// target (s3-only or dual, even while degraded, so remote notes appear).
   Future<BrowserNoteSources> resolveBrowserSources() async {
     bindSessionProbe();
-    final local = await resolveLocal();
+    final location = await _resolveLocalWithKey();
+    final local = location.store;
+    final folderKey = location.key;
     final merge = _session.preferredMode.writesToS3;
     if (!merge) {
       return BrowserNoteSources(local: local, mergeWhenS3Preferred: false);
@@ -367,6 +681,12 @@ class ActiveNoteStore {
       preferLocalReads: dualWrite,
       keepLocalCopies: dualWrite,
       pendingRepairs: dualWrite ? _repairs : null,
+      runMutation: dualWrite
+          ? null
+          : (id, action) => _runS3OnlyBrowserMutation(id, action, folderKey),
+      preserveNewerLocal: dualWrite
+          ? null
+          : (id) => _preserveBusyLocal(id, folderKey),
     );
   }
 

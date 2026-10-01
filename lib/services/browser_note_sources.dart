@@ -19,6 +19,8 @@ class BrowserNoteSources {
     this.keepLocalCopies = false,
     this.s3SetupError,
     this.pendingRepairs,
+    this.runMutation,
+    this.preserveNewerLocal,
   });
 
   final NoteStore local;
@@ -47,6 +49,32 @@ class BrowserNoteSources {
   /// later [replayPendingS3] can catch the bucket up. Null in s3-only mode,
   /// which keeps its existing failure behaviour.
   final DualWriteS3Repair? pendingRepairs;
+
+  /// S3-only stores share recovery's write queue so a stale browser row
+  /// cannot edit/delete a local file while an older upload is still pending.
+  final Future<void> Function(String id, Future<void> Function() action)?
+  runMutation;
+  final Future<bool> Function(String id)? preserveNewerLocal;
+
+  Future<LocatedLogEntry> _reconcileS3OnlyLocation(
+    LocatedLogEntry located,
+  ) async {
+    final remote = s3;
+    if (runMutation == null || !located.isLocalOnly || remote == null) {
+      return located;
+    }
+    try {
+      await remote.read(located.id);
+    } catch (error) {
+      if (isMissingObjectError(error)) return located;
+      // Unknown remote state: try both sides. A transport failure must not
+      // prevent the local edit/delete, and the existing error path reports it.
+    }
+    return LocatedLogEntry(
+      entry: located.entry,
+      location: NoteStorageLocation.both,
+    );
+  }
 
   /// Set by [list] when an S3 LIST fails; local rows are still returned.
   bool s3ListFailed = false;
@@ -96,6 +124,13 @@ class BrowserNoteSources {
   /// the raw S3 error. The attempt shares the repair lock with [replay] so a
   /// save cannot land after a replay has already read older text.
   Future<void> update(LocatedLogEntry located, String text) {
+    final gate = runMutation;
+    if (gate != null) {
+      return gate(
+        located.id,
+        () async => _update(await _reconcileS3OnlyLocation(located), text),
+      );
+    }
     final repairs = pendingRepairs;
     if (repairs == null) return _update(located, text);
     return repairs.run(() => _update(located, text));
@@ -114,7 +149,8 @@ class BrowserNoteSources {
         s3Error = e;
       }
     }
-    if (located.hasLocal) {
+    if (located.hasLocal &&
+        !(await preserveNewerLocal?.call(located.id) ?? false)) {
       try {
         await local.update(located.id, text);
       } catch (e) {
@@ -144,6 +180,13 @@ class BrowserNoteSources {
   /// failed LIST is treated the same way: the row looks local-only, but the
   /// object may still be in the bucket.
   Future<void> delete(LocatedLogEntry located) {
+    final gate = runMutation;
+    if (gate != null) {
+      return gate(
+        located.id,
+        () async => _delete(await _reconcileS3OnlyLocation(located)),
+      );
+    }
     final repairs = pendingRepairs;
     if (repairs == null) return _delete(located);
     return repairs.run(() => _delete(located));
@@ -162,7 +205,8 @@ class BrowserNoteSources {
         s3Error = e;
       }
     }
-    if (located.hasLocal) {
+    if (located.hasLocal &&
+        !(await preserveNewerLocal?.call(located.id) ?? false)) {
       try {
         await local.delete(located.id);
       } catch (e) {
@@ -324,19 +368,35 @@ class BrowserNoteSources {
 
   /// Drops the local copy of a note that already exists in S3 (finishes a
   /// partial move, or clears a duplicate after a failed local delete).
-  Future<void> removeLocalCopy(LocatedLogEntry located) async {
+  Future<void> removeLocalCopy(LocatedLogEntry located) {
+    final gate = runMutation;
+    return gate == null
+        ? _removeLocalCopy(located)
+        : gate(located.id, () => _removeLocalCopy(located));
+  }
+
+  Future<void> _removeLocalCopy(LocatedLogEntry located) async {
     if (located.location != NoteStorageLocation.both) {
       throw StateError(
         'Only notes present in both places can drop the local copy.',
       );
     }
-    await local.delete(located.id);
+    if (!(await preserveNewerLocal?.call(located.id) ?? false)) {
+      await local.delete(located.id);
+    }
   }
 
   /// Uploads a local-only note to S3: a copy when [keepLocalCopies] (the
   /// note ends up in both places), otherwise a move (local file deleted only
   /// after a successful put).
-  Future<void> uploadLocalToS3(LocatedLogEntry located) async {
+  Future<void> uploadLocalToS3(LocatedLogEntry located) {
+    final gate = runMutation;
+    return gate == null
+        ? _uploadLocalToS3(located)
+        : gate(located.id, () => _uploadLocalToS3(located));
+  }
+
+  Future<void> _uploadLocalToS3(LocatedLogEntry located) async {
     final remote = s3;
     if (remote == null) {
       throw StateError('S3 is not available to receive the note.');
@@ -344,8 +404,11 @@ class BrowserNoteSources {
     if (!located.isLocalOnly) {
       throw StateError('Only local-only notes can be uploaded to S3.');
     }
-    final upload = keepLocalCopies ? copyLocalNoteToS3 : moveLocalNoteToS3;
-    await upload(local: local, s3: remote, id: located.id);
+    await copyLocalNoteToS3(local: local, s3: remote, id: located.id);
+    if (!keepLocalCopies &&
+        !(await preserveNewerLocal?.call(located.id) ?? false)) {
+      await local.delete(located.id);
+    }
   }
 
   /// Lists notes from these sources (merged when [mergeWhenS3Preferred]).

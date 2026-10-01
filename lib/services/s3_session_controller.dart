@@ -41,8 +41,8 @@ class S3SessionController extends ChangeNotifier {
     PreferencesService? preferences,
     DateTime Function()? clock,
     this.probe,
-  })  : _prefs = preferences ?? PreferencesService(),
-        _clock = clock ?? DateTime.now;
+  }) : _prefs = preferences ?? PreferencesService(),
+       _clock = clock ?? DateTime.now;
 
   static final S3SessionController instance = S3SessionController();
 
@@ -63,6 +63,7 @@ class S3SessionController extends ChangeNotifier {
   DateTime? _degradedUntil;
   bool _loaded = false;
   Timer? _expiryTimer;
+
   /// Bumped whenever degrade state is intentionally rewritten so an in-flight
   /// async prefs clear from expiry cannot wipe a newer window.
   int _degradeGeneration = 0;
@@ -86,8 +87,7 @@ class S3SessionController extends ChangeNotifier {
 
   /// True when the local store is part of the I/O path: local-only preferred,
   /// dual write (local is always written), or S3-only preferred but degraded.
-  bool get usesLocalFallback =>
-      preferredMode != StorageMode.s3 || isDegraded;
+  bool get usesLocalFallback => preferredMode != StorageMode.s3 || isDegraded;
 
   /// True when preferred mode uses S3 and the degrade window is not active.
   bool get shouldAttemptS3 => _preferredMode.writesToS3 && !isDegraded;
@@ -107,14 +107,16 @@ class S3SessionController extends ChangeNotifier {
   ///
   /// Idempotent: once [loaded], subsequent calls only re-check expiry and do
   /// not re-read prefs (avoids resurrecting a window cleared mid-session).
-  Future<void> load({DateTime? now}) async {
+  /// Startup can set [waitForRecovery] false to show the app while queued
+  /// notes recover in the background. Manual retry still awaits recovery.
+  Future<void> load({DateTime? now, bool waitForRecovery = true}) async {
     if (_loaded) {
-      await _clearIfExpired(now: now);
+      await _clearIfExpired(now: now, waitForRecovery: waitForRecovery);
       return;
     }
     _preferredMode = await _prefs.storageMode();
     _degradedUntil = await _prefs.degradedUntil();
-    await _clearIfExpired(now: now);
+    await _clearIfExpired(now: now, waitForRecovery: waitForRecovery);
     _loaded = true;
     _scheduleExpiryTimer();
     notifyListeners();
@@ -221,13 +223,20 @@ class S3SessionController extends ChangeNotifier {
     });
   }
 
-  Future<void> _clearIfExpired({DateTime? now}) async {
+  Future<void> _clearIfExpired({
+    DateTime? now,
+    bool waitForRecovery = true,
+  }) async {
     final until = _degradedUntil;
     if (until == null) return;
     final t = now ?? _clock();
     if (!t.isBefore(until)) {
       await _clearDegraded();
-      await _notifyRecovered();
+      if (waitForRecovery) {
+        await _notifyRecovered();
+      } else {
+        unawaited(_notifyRecovered());
+      }
     }
   }
 

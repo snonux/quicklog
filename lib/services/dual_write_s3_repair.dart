@@ -39,7 +39,9 @@ class DualWriteS3Pending implements Exception {
 ///
 /// The local file is the primary. When an S3 put or delete fails after the
 /// local side has landed, the id is remembered and [replay] tries each id
-/// once. A failure stays queued. S3-only mode does not use this queue.
+/// once. A failure stays queued. S3-only also uses upload repairs for new
+/// notes saved locally while another own writer is busy, so a same-id newer
+/// save can replace the older write after a restart.
 ///
 /// Persisted when [preferences] is set, so a restart does not drop the
 /// repair. A null [preferences] keeps the sets in memory (tests).
@@ -72,10 +74,12 @@ class DualWriteS3Repair {
     return result;
   }
 
-  Future<void> enqueueUpload(String id) {
+  /// [folderKey] pins an operation to the folder selected before async I/O.
+  /// When omitted, use the current preference (the dual-write default).
+  Future<void> enqueueUpload(String id, {String? folderKey}) {
     return run(() async {
       await _ensureLoaded();
-      _active = await _folderKey();
+      _active = folderKey ?? await _folderKey();
       await _enqueueUpload(id);
     });
   }
@@ -88,11 +92,11 @@ class DualWriteS3Repair {
     });
   }
 
-  /// Drops either pending op for [id] in the notes directory in use now.
-  Future<void> clear(String id) {
+  /// Drops either pending op in [folderKey], or the currently selected folder.
+  Future<void> clear(String id, {String? folderKey}) {
     return run(() async {
       await _ensureLoaded();
-      _active = await _folderKey();
+      _active = folderKey ?? await _folderKey();
       await _clear(id);
     });
   }

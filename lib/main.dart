@@ -13,8 +13,8 @@ Future<void> main() async {
     preferences: preferences,
     session: session,
   );
-  await session.load();
   activeStore.bindSessionProbe();
+  await session.load(waitForRecovery: false);
   runApp(
     QuickLoggerApp(
       preferences: preferences,
