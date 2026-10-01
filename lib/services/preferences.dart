@@ -1,8 +1,12 @@
 import 'dart:convert';
+import 'dart:io';
+
+import 'package:flutter/services.dart';
 
 import 'package:shared_preferences/shared_preferences.dart';
 
 import 's3_config.dart';
+import 's3_retry_schedule.dart';
 import 'storage.dart';
 
 const _kDirectory = 'Directory';
@@ -11,6 +15,9 @@ const _kScopedTreeName = 'ScopedTreeName';
 const _kAutoLogSharedText = 'AutoLogSharedText';
 const _kStorageMode = 'StorageMode';
 const _kDegradedUntil = 'S3DegradedUntil';
+const _kRetryTimes = 'S3RetryTimes';
+const _kRetryInBackground = 'S3RetryInBackground';
+const _kUploadReceipts = 'S3UploadReceipts';
 const _kPendingUploads = 'DualWritePendingUploads';
 const _kPendingDeletes = 'DualWritePendingDeletes';
 const _kPending = 'DualWritePending';
@@ -47,6 +54,168 @@ enum StorageMode {
 }
 
 class PreferencesService {
+  PreferencesService({
+    MethodChannel? atomicStateChannel,
+    bool? useAtomicS3State,
+  }) : _atomicState =
+           atomicStateChannel ??
+           const MethodChannel('org.buetow.quicklog/s3-state'),
+       usesAtomicS3State = useAtomicS3State ?? Platform.isAndroid;
+
+  final MethodChannel _atomicState;
+  final bool usesAtomicS3State;
+
+  Future<String> _legacyRepairDocument() async {
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.reload();
+    final raw = prefs.getString(_kPending);
+    if (raw != null) return raw;
+    return jsonEncode({
+      'folders': {
+        await directory(): {
+          'uploads': prefs.getStringList(_kPendingUploads) ?? <String>[],
+          'deletes': prefs.getStringList(_kPendingDeletes) ?? <String>[],
+        },
+      },
+    });
+  }
+
+  Future<String> atomicRepairDocument() async {
+    try {
+      return (await _atomicState.invokeMethod<String>('repairRead', {
+        'legacy': await _legacyRepairDocument(),
+      }))!;
+    } on PlatformException {
+      throw const FormatException('S3 repairs could not be read.');
+    }
+  }
+
+  Future<String?> repairRevision(String folder, String id) async {
+    if (!usesAtomicS3State) return null;
+    final root = jsonDecode(await atomicRepairDocument()) as Map;
+    return ((root['folders'] as Map)[folder] as Map?)?['revisions']?[id]
+        as String?;
+  }
+
+  Future<Map<String, ({List<String> uploads, List<String> deletes})>>
+  mutateRepair(
+    String folder,
+    String id,
+    String operation, {
+    String? expectedRevision,
+    bool checkRevision = false,
+  }) async {
+    try {
+      final result = (await _atomicState
+          .invokeMapMethod<String, dynamic>('repairMutate', {
+            'legacy': await _legacyRepairDocument(),
+            'folder': folder,
+            'id': id,
+            'operation': operation,
+            'expectedRevision': expectedRevision,
+            'checkRevision': checkRevision,
+          }))!;
+      await reload();
+      return _decodeFolders(result['document'] as String);
+    } on PlatformException {
+      throw const FormatException('S3 repairs could not be updated.');
+    }
+  }
+
+  Future<bool> clearCapturedFailure(DateTime? expected) async {
+    if (usesAtomicS3State) {
+      return await _atomicState.invokeMethod<bool>('clearFailure', {
+            'expected': expected?.toUtc().toIso8601String(),
+          }) ??
+          false;
+    }
+    await reload();
+    final current = await degradedUntil();
+    if (await storageMode() != StorageMode.s3 ||
+        (current?.microsecondsSinceEpoch != expected?.microsecondsSinceEpoch)) {
+      return false;
+    }
+    await setDegradedUntil(null);
+    return true;
+  }
+
+  Future<void> confirmAtomicReceipt(
+    String scope,
+    String id,
+    String digest,
+  ) async {
+    await _atomicState.invokeMethod<void>('receiptConfirm', {
+      'scope': scope,
+      'id': id,
+      'digest': digest,
+    });
+    await reload();
+  }
+
+  /// Background engines have their own preference cache. Refresh before
+  /// deciding whether a queued job still targets the selected settings.
+  Future<void> reload() async {
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.reload();
+  }
+
+  Future<S3RetrySchedule> s3RetrySchedule() async {
+    final prefs = await SharedPreferences.getInstance();
+    try {
+      return S3RetrySchedule.parse(
+        prefs.getStringList(_kRetryTimes) ?? const [],
+      );
+    } on FormatException {
+      // A damaged schedule is disabled rather than making startup fail.
+      return S3RetrySchedule(const []);
+    }
+  }
+
+  Future<void> setS3RetrySchedule(S3RetrySchedule schedule) async {
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setStringList(_kRetryTimes, schedule.times);
+  }
+
+  Future<bool> s3RetryInBackground() async {
+    final prefs = await SharedPreferences.getInstance();
+    return prefs.getBool(_kRetryInBackground) ?? false;
+  }
+
+  Future<void> setS3RetryInBackground(bool enabled) async {
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setBool(_kRetryInBackground, enabled);
+  }
+
+  /// Receipt keys and content hashes are transient state, never exported.
+  Future<Map<String, Map<String, String>>> s3UploadReceipts() async {
+    final prefs = await SharedPreferences.getInstance();
+    final raw = prefs.getString(_kUploadReceipts);
+    if (raw == null) return {};
+    final decoded = jsonDecode(raw);
+    if (decoded is! Map) throw const FormatException('Invalid S3 receipts.');
+    return decoded.map((scope, notes) {
+      if (scope is! String || notes is! Map) {
+        throw const FormatException('Invalid S3 receipts.');
+      }
+      return MapEntry(
+        scope,
+        notes.map((id, digest) {
+          if (id is! String || digest is! String) {
+            throw const FormatException('Invalid S3 receipt.');
+          }
+          return MapEntry(id, digest);
+        }),
+      );
+    });
+  }
+
+  Future<void> setS3UploadReceipts(
+    Map<String, Map<String, String>> receipts,
+  ) async {
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setString(_kUploadReceipts, jsonEncode(receipts));
+  }
+
   Future<({String uri, String name})?> scopedFolder() async {
     final prefs = await SharedPreferences.getInstance();
     final uri = prefs.getString(_kScopedTreeUri);
@@ -165,6 +334,7 @@ class PreferencesService {
   Future<Map<String, ({List<String> uploads, List<String> deletes})>>
   dualWritePendingFolders() async {
     final prefs = await SharedPreferences.getInstance();
+    if (usesAtomicS3State) return _decodeFolders(await atomicRepairDocument());
     final raw = prefs.getString(_kPending);
     if (raw != null) return _decodeFolders(raw);
     final uploads = List<String>.from(
@@ -180,6 +350,11 @@ class PreferencesService {
   Future<void> setDualWritePendingFolders(
     Map<String, ({List<String> uploads, List<String> deletes})> folders,
   ) async {
+    if (usesAtomicS3State) {
+      throw StateError(
+        'Android repairs must be changed through atomic per-note operations.',
+      );
+    }
     final prefs = await SharedPreferences.getInstance();
     final kept = <String, Object>{};
     for (final entry in folders.entries) {

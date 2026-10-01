@@ -116,16 +116,22 @@ Future<bool> copyTextToS3IfMissing({
   required String text,
   Future<String> Function()? readCurrentText,
   bool Function()? shouldContinue,
+  Future<bool> Function()? shouldContinueAsync,
+  Future<void> Function(String payload)? onConfirmed,
+  Future<void> Function()? onExisting,
 }) async {
   try {
     await s3.read(id);
+    await onExisting?.call();
     return false;
   } catch (error) {
     if (!isMissingObjectError(error)) rethrow;
   }
   final currentText = readCurrentText == null ? text : await readCurrentText();
   if (shouldContinue != null && !shouldContinue()) return false;
+  if (shouldContinueAsync != null && !await shouldContinueAsync()) return false;
   await s3.update(id, currentText);
+  await onConfirmed?.call(currentText);
   return true;
 }
 

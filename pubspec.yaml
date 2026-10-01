@@ -20,6 +20,10 @@ dependencies:
   intl: ^0.20.0
   minio: ^3.5.8
   http: ^1.6.0
+  crypto: ^3.0.7
+  workmanager: ^0.10.10
+  quicklog_platform:
+    path: packages/quicklog_platform
 
 dev_dependencies:
   flutter_test:

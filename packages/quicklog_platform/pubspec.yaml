@@ -1,0 +1,15 @@
+name: quicklog_platform
+description: Engine-safe Android document access for Quicklog.
+version: 0.1.0
+publish_to: none
+environment:
+  sdk: ^3.11.5
+dependencies:
+  flutter:
+    sdk: flutter
+flutter:
+  plugin:
+    platforms:
+      android:
+        package: org.buetow.quicklog
+        pluginClass: QuicklogPlatformPlugin

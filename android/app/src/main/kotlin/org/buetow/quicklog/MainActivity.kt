@@ -8,25 +8,14 @@ import android.content.pm.PackageManager
 import android.net.Uri
 import android.os.Build
 import android.os.Bundle
-import android.os.Handler
-import android.os.Looper
 import android.provider.DocumentsContract
 import android.provider.OpenableColumns
 import android.provider.Settings
 import io.flutter.embedding.android.FlutterActivity
 import io.flutter.embedding.engine.FlutterEngine
-import io.flutter.plugin.common.MethodCall
 import io.flutter.plugin.common.MethodChannel
 import java.io.File
 import java.io.IOException
-import java.util.concurrent.ArrayBlockingQueue
-import java.util.concurrent.RejectedExecutionException
-import java.util.concurrent.ThreadFactory
-import java.util.concurrent.ThreadPoolExecutor
-import java.util.concurrent.TimeUnit
-
-private fun MethodCall.requireString(key: String): String =
-    argument<String>(key) ?: throw IllegalArgumentException("$key is required.")
 
 class MainActivity : FlutterActivity() {
     private val channelName = "org.buetow.quicklog/share"
@@ -39,15 +28,6 @@ class MainActivity : FlutterActivity() {
     private val requestNoteTree = 4204
     private var pendingStorageResult: MethodChannel.Result? = null
     private var pendingTreeResult: MethodChannel.Result? = null
-    private val mainHandler = Handler(Looper.getMainLooper())
-    // A single worker preserves call order (create followed by read, for
-    // example). Bound the queue so a stalled cloud provider cannot retain an
-    // unlimited number of requests or block Flutter's UI thread.
-    private val safExecutor = ThreadPoolExecutor(
-        1, 1, 0, TimeUnit.MILLISECONDS, ArrayBlockingQueue<Runnable>(32),
-        ThreadFactory { task -> Thread(task, "quicklog-saf") },
-    )
-
     // Settings export/import goes through the system file dialogs (Storage
     // Access Framework): no storage permission and no picker library needed.
     // One dialog at a time; the Dart side awaits the stored result.
@@ -113,7 +93,6 @@ class MainActivity : FlutterActivity() {
                     else -> result.notImplemented()
                 }
             }
-        val saf = SafTreeDocuments(contentResolver)
         MethodChannel(flutterEngine.dartExecutor.binaryMessenger, safChannelName)
             .setMethodCallHandler { call, result ->
                 if (call.method == "pickTree") {
@@ -150,44 +129,8 @@ class MainActivity : FlutterActivity() {
                             result.error("access_denied", e.message ?: e.toString(), null)
                         }
                     }
-                } else if (call.method !in setOf("list", "read", "firstLine", "create", "update", "delete")) {
-                    result.notImplemented()
                 } else {
-                    try {
-                        safExecutor.execute {
-                            try {
-                                val treeUri = call.requireString("treeUri")
-                                val value = when (call.method) {
-                                    "list" -> saf.list(treeUri)
-                                    "read" -> saf.read(treeUri, call.requireString("id"))
-                                    "firstLine" -> saf.firstLine(treeUri, call.requireString("id"))
-                                    "create" -> {
-                                        saf.create(treeUri, call.requireString("id"), call.requireString("text"))
-                                        null
-                                    }
-                                    "update" -> {
-                                        saf.update(treeUri, call.requireString("id"), call.requireString("text"))
-                                        null
-                                    }
-                                    else -> {
-                                        saf.delete(treeUri, call.requireString("id"))
-                                        null
-                                    }
-                                }
-                                mainHandler.post { result.success(value) }
-                            } catch (e: IllegalArgumentException) {
-                                mainHandler.post { result.error("bad_args", e.message, null) }
-                            } catch (e: SecurityException) {
-                                mainHandler.post { result.error("access_denied", e.message, null) }
-                            } catch (e: NoteMissingException) {
-                                mainHandler.post { result.error("not_found", e.message, null) }
-                            } catch (e: Exception) {
-                                mainHandler.post { result.error("io", e.message ?: e.toString(), null) }
-                            }
-                        }
-                    } catch (_: RejectedExecutionException) {
-                        result.error("busy", "The document provider has too many pending requests.", null)
-                    }
+                    result.notImplemented()
                 }
             }
     }
@@ -370,14 +313,6 @@ class MainActivity : FlutterActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         captureSendIntent(intent)
-    }
-
-    override fun onDestroy() {
-        // Stop accepting requests without interrupting writes already handed
-        // to the provider. Android may still kill the process before they
-        // finish; SafNoteWorkflow leaves staged/backup documents recoverable.
-        safExecutor.shutdown()
-        super.onDestroy()
     }
 
     override fun onNewIntent(intent: Intent) {

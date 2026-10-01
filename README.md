@@ -176,12 +176,26 @@ are skipped after a listing and a fresh read before each upload. This protects
 notes already present when checked; a concurrent write from another device
 between that check and upload can still race because the client does not
 support conditional writes. These automatic uploads keep the local copies;
-failed uploads remain on device for the next attempt.
+failed uploads remain on device for the next attempt. On-device receipts remember
+confirmed uploads and inspected existing keys, scoped to the bucket, account and
+local folder. Unchanged retained files are not uploaded again after the laptop
+drains the bucket. A changed local file becomes eligible again; an existing
+remote key still wins.
 If a recovery read or upload is busy, new notes save locally immediately
 instead of waiting for it. These saves carry a persisted repair so their latest
 text can replace an earlier write of the same note name, even after restart.
 Use the browser's explicit move or local-copy cleanup
 actions to remove local copies.
+
+In **S3 only** mode, Preferences → **Retry local notes daily** lets you add or
+remove daily times in your device's time zone. By default retries run only while
+Quicklog is open. On Android, enable **Retry while Quicklog is closed** to opt in
+to persistent background jobs. Android may delay these jobs for network access
+or battery management; the times are approximate. Empty schedules disable
+scheduled retries. Switching off background retries cancels queued jobs.
+Retries contact S3 only when local notes need attention; an empty local folder
+or unchanged acknowledged copies cause no S3 requests. Desktop retries require
+the app to remain open.
 
 **Local + S3** (dual write) writes every note to the local directory *and*
 the bucket under the same `ql-*.md` name. If S3 is unavailable the note is
@@ -191,7 +205,8 @@ local-only (e.g. by an outage) get **Copy to S3** in the entry browser, which
 uploads them and keeps the local file; only **S3 only** mode offers **Move to
 S3**, which deletes the local file after a successful upload.
 
-Default mode remains **Local only**. There is no analytics. Outage recovery copies local notes in the background.
+Default mode remains **Local only**. There is no analytics. Automatic outage
+recovery runs while the app is open; closed-app scheduled retries are optional.
 `INTERNET` is declared for the optional S3 path and stays unused in local mode.
 
 ### Drain CLI (laptop)
@@ -244,9 +259,10 @@ data).
 The file holds every setting: the log directory (an untouched default stays
 "default", so the new install resolves its own), the storage mode, the S3
 endpoint, region, bucket, **access key ID and secret access key**, and
-"Auto-log shared text". The credentials are in plain text, so keep the file
+"Auto-log shared text", daily retry times, and the background retry preference.
+The credentials are in plain text, so keep the file
 private and delete it once restored. The transient "S3 degraded for an hour"
-state is not exported.
+state, pending repairs, and upload receipts are not exported.
 
 Notes are **not** in the file: they are the `ql-*.md` files in the log
 directory or objects in the bucket. The default Android directory

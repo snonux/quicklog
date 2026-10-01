@@ -3,6 +3,8 @@ import 'dart:convert';
 import 'preferences.dart';
 import 's3_config.dart';
 import 's3_object_client.dart';
+import 's3_retry_schedule.dart';
+import 's3_retry_scheduler.dart';
 import 's3_session_controller.dart';
 import 'storage.dart';
 
@@ -46,6 +48,8 @@ class QuicklogSettings {
     this.scopedFolderNeedsSelection,
     this.autoLogSharedText,
     this.storageMode,
+    this.s3RetryTimes,
+    this.s3RetryInBackground,
     this.s3Endpoint,
     this.s3Region,
     this.s3Bucket,
@@ -60,6 +64,8 @@ class QuicklogSettings {
   final bool? scopedFolderNeedsSelection;
   final bool? autoLogSharedText;
   final StorageMode? storageMode;
+  final List<String>? s3RetryTimes;
+  final bool? s3RetryInBackground;
   final String? s3Endpoint;
   final String? s3Region;
   final String? s3Bucket;
@@ -83,6 +89,8 @@ class QuicklogSettings {
       'scopedFolderNeedsSelection': ?scopedFolderNeedsSelection,
       'autoLogSharedText': ?autoLogSharedText,
       'storageMode': ?storageMode?.wireName,
+      's3RetryTimes': ?s3RetryTimes,
+      's3RetryInBackground': ?s3RetryInBackground,
       if (s3.isNotEmpty) 's3': s3,
     };
   }
@@ -105,12 +113,29 @@ class QuicklogSettings {
       scopedFolderNeedsSelection: _optBool(json, 'scopedFolderNeedsSelection'),
       autoLogSharedText: _optBool(json, 'autoLogSharedText'),
       storageMode: _optStorageMode(json, 'storageMode'),
+      s3RetryTimes: _optRetryTimes(json),
+      s3RetryInBackground: _optBool(json, 's3RetryInBackground'),
       s3Endpoint: _optString(s3, 'endpoint', prefix: 's3.'),
       s3Region: _optString(s3, 'region', prefix: 's3.'),
       s3Bucket: _optString(s3, 'bucket', prefix: 's3.'),
       s3AccessKeyId: _optString(s3, 'accessKeyId', prefix: 's3.'),
       s3SecretAccessKey: _optString(s3, 'secretAccessKey', prefix: 's3.'),
     );
+  }
+
+  static List<String>? _optRetryTimes(Map<String, Object?> json) {
+    final raw = json['s3RetryTimes'];
+    if (raw == null) return null;
+    if (raw is! List || raw.any((time) => time is! String)) {
+      throw const SettingsImportException(
+        'Invalid settings file: "s3RetryTimes" must be a list of HH:mm times.',
+      );
+    }
+    try {
+      return S3RetrySchedule.parse(raw.cast<String>()).times;
+    } on FormatException catch (error) {
+      throw SettingsImportException('Invalid settings file: ${error.message}');
+    }
   }
 
   static String? _optString(
@@ -266,6 +291,8 @@ class SettingsBackupService {
       scopedFolderNeedsSelection: scoped == null ? null : true,
       autoLogSharedText: await _prefs.autoLogSharedText(),
       storageMode: await _prefs.storageMode(),
+      s3RetryTimes: (await _prefs.s3RetrySchedule()).times,
+      s3RetryInBackground: await _prefs.s3RetryInBackground(),
       s3Endpoint: s3.endpoint,
       s3Region: s3.region,
       s3Bucket: s3.bucket,
@@ -286,6 +313,10 @@ class SettingsBackupService {
   /// invalid endpoint) when the resulting storage mode uses S3: throws
   /// [SettingsImportException] before anything is written.
   Future<void> apply(QuicklogSettings settings) async {
+    // Validate programmatically constructed settings before writing any field.
+    final retrySchedule = settings.s3RetryTimes == null
+        ? null
+        : S3RetrySchedule.parse(settings.s3RetryTimes!);
     final current = await _prefs.s3Config();
     final s3 = S3Config(
       endpoint: settings.s3Endpoint ?? current.endpoint,
@@ -322,9 +353,15 @@ class SettingsBackupService {
     if (autoLog != null) await _prefs.setAutoLogSharedText(autoLog);
 
     await _prefs.setS3Config(s3);
+    if (retrySchedule != null) await _prefs.setS3RetrySchedule(retrySchedule);
+    final retryInBackground = settings.s3RetryInBackground;
+    if (retryInBackground != null) {
+      await _prefs.setS3RetryInBackground(retryInBackground);
+    }
 
     final importedMode = settings.storageMode;
     if (importedMode != null) await _session.setPreferredMode(importedMode);
+    await S3RetryScheduler.current?.refresh(replace: true);
   }
 
   /// Validates [text] and applies it. Nothing is written when validation

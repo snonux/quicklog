@@ -9,7 +9,8 @@ import 'log_service.dart';
 /// a filesystem path. Missing or revoked grants fail visibly, including list.
 class SafNoteStore implements NoteStore {
   SafNoteStore(this.treeUri, {MethodChannel? channel})
-    : _channel = channel ?? const MethodChannel('org.buetow.quicklog/saf') {
+    : _channel =
+          channel ?? const MethodChannel('org.buetow.quicklog/saf-notes') {
     if (treeUri.isEmpty) throw ArgumentError.value(treeUri, 'treeUri');
   }
 

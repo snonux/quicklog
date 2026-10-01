@@ -64,6 +64,7 @@ void main() {
     tester,
   ) async {
     const channel = MethodChannel('org.buetow.quicklog/saf');
+    const notesChannel = MethodChannel('org.buetow.quicklog/saf-notes');
     const oldUri = 'content://notes/tree/old';
     const newUri = 'content://notes/tree/new';
     SharedPreferences.setMockInitialValues(<String, Object>{
@@ -77,18 +78,30 @@ void main() {
       if (call.method == 'pickTree') {
         return <String, String>{'uri': newUri, 'name': 'New vault'};
       }
-      if (call.method == 'list') {
-        final uri = (call.arguments as Map)['treeUri'];
-        if (uri == oldUri) {
-          throw PlatformException(code: 'access_denied', message: 'Revoked');
-        }
-        return <String>[];
-      }
       throw MissingPluginException();
     });
+    tester.binding.defaultBinaryMessenger.setMockMethodCallHandler(
+      notesChannel,
+      (call) async {
+        if (call.method == 'list') {
+          final uri = (call.arguments as Map)['treeUri'];
+          if (uri == oldUri) {
+            throw PlatformException(code: 'access_denied', message: 'Revoked');
+          }
+          return <String>[];
+        }
+        throw MissingPluginException();
+      },
+    );
     addTearDown(
       () => tester.binding.defaultBinaryMessenger.setMockMethodCallHandler(
         channel,
+        null,
+      ),
+    );
+    addTearDown(
+      () => tester.binding.defaultBinaryMessenger.setMockMethodCallHandler(
+        notesChannel,
         null,
       ),
     );

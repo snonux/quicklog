@@ -10,6 +10,8 @@ import '../services/s3_config.dart';
 import '../services/s3_note_store.dart';
 import '../services/s3_object_client.dart';
 import '../services/s3_session_controller.dart';
+import '../services/s3_retry_schedule.dart';
+import '../services/s3_retry_scheduler.dart';
 import '../services/saf_note_store.dart';
 import '../services/scoped_folder_service.dart';
 import '../services/settings_backup.dart';
@@ -63,6 +65,8 @@ class _PreferencesScreenState extends State<PreferencesScreen>
   final TextEditingController _secretController = TextEditingController();
   bool _autoLog = false;
   StorageMode _storageMode = StorageMode.local;
+  List<int> _retryMinutes = [];
+  bool _retryInBackground = false;
   bool _loaded = false;
   bool _testing = false;
   // Whether the configured directory is actually writable -- not whether the
@@ -113,6 +117,8 @@ class _PreferencesScreenState extends State<PreferencesScreen>
         : ScopedFolder(folder.uri, folder.name);
     _autoLog = await _prefs.autoLogSharedText();
     _storageMode = await _prefs.storageMode();
+    _retryMinutes = (await _prefs.s3RetrySchedule()).minutes.toList();
+    _retryInBackground = await _prefs.s3RetryInBackground();
     final s3 = await _prefs.s3Config();
     _endpointController.text = s3.endpoint;
     _regionController.text = s3.region;
@@ -237,8 +243,11 @@ class _PreferencesScreenState extends State<PreferencesScreen>
     }
     await _prefs.setAutoLogSharedText(_autoLog);
     await _prefs.setS3Config(_readS3Config());
+    await _prefs.setS3RetrySchedule(S3RetrySchedule(_retryMinutes));
+    await _prefs.setS3RetryInBackground(_retryInBackground);
     await _session.setPreferredMode(_storageMode);
     _active.bindSessionProbe();
+    await S3RetryScheduler.current?.refresh(replace: true);
   }
 
   /// Guards every path that persists the form ([_save], [_exportSettings]):
@@ -258,6 +267,20 @@ class _PreferencesScreenState extends State<PreferencesScreen>
       ),
     );
     return false;
+  }
+
+  Future<void> _addRetryTime() async {
+    final selected = await showTimePicker(
+      context: context,
+      initialTime: const TimeOfDay(hour: 9, minute: 0),
+    );
+    if (selected == null || !mounted) return;
+    setState(() {
+      _retryMinutes = S3RetrySchedule([
+        ..._retryMinutes,
+        selected.hour * 60 + selected.minute,
+      ]).minutes.toList();
+    });
   }
 
   Future<void> _save() async {
@@ -727,6 +750,57 @@ class _PreferencesScreenState extends State<PreferencesScreen>
                       )
                     : const Icon(Icons.wifi_tethering),
                 label: Text(_testing ? 'Testing…' : 'Test connection'),
+              ),
+            ),
+          ],
+          if (_storageMode == StorageMode.s3) ...[
+            const SizedBox(height: 16),
+            const Text(
+              'Retry local notes daily',
+              style: TextStyle(fontWeight: FontWeight.bold),
+            ),
+            const SizedBox(height: 4),
+            Text(
+              Platform.isAndroid && _retryInBackground
+                  ? 'Retries pending local notes even when Quicklog is closed. Android may delay retries to save battery. Times use your device time zone.'
+                  : 'Retries pending local notes while Quicklog is open. Times use your device time zone.',
+              style: Theme.of(context).textTheme.bodySmall,
+            ),
+            const SizedBox(height: 8),
+            SwitchListTile(
+              key: const ValueKey('prefs.retryInBackground'),
+              contentPadding: EdgeInsets.zero,
+              title: const Text('Retry while Quicklog is closed'),
+              subtitle: Text(
+                Platform.isAndroid
+                    ? 'Optional background retries; Android may delay them.'
+                    : 'Background retries are supported on Android. Desktop retries run while Quicklog is open.',
+              ),
+              value: _retryInBackground,
+              onChanged: Platform.isAndroid
+                  ? (value) => setState(() => _retryInBackground = value)
+                  : null,
+            ),
+            if (_retryMinutes.isEmpty) const Text('No scheduled retries'),
+            Wrap(
+              spacing: 8,
+              children: [
+                for (final minute in _retryMinutes)
+                  InputChip(
+                    key: ValueKey('prefs.retryTime.$minute'),
+                    label: Text(S3RetrySchedule.formatMinute(minute)),
+                    onDeleted: () =>
+                        setState(() => _retryMinutes.remove(minute)),
+                  ),
+              ],
+            ),
+            Align(
+              alignment: Alignment.centerLeft,
+              child: TextButton.icon(
+                key: const ValueKey('prefs.addRetryTime'),
+                onPressed: _addRetryTime,
+                icon: const Icon(Icons.add),
+                label: const Text('Add retry time'),
               ),
             ),
           ],

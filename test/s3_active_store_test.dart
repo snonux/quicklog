@@ -1024,7 +1024,8 @@ void main() {
 
     expect(find.byTooltip('Copy all local to S3'), findsNothing);
     await tester.tap(find.byTooltip('Move all local to S3'));
-    await pumpWithIo(tester);
+    // The write lease and receipt/repair checks add asynchronous I/O rounds.
+    await pumpWithIo(tester, rounds: 30);
 
     expect(find.textContaining('Moved 1 local note to S3'), findsOneWidget);
     expect(

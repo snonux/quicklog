@@ -169,6 +169,27 @@ class S3SessionController extends ChangeNotifier {
     }
   }
 
+  /// A scheduled LIST already reached S3, so clear the captured failure
+  /// without invoking recovery again. Preserve any newer failure window.
+  Future<void> markS3Reachable({
+    required DateTime? expectedDegradedUntil,
+  }) async {
+    if (_preferredMode != StorageMode.s3 ||
+        _degradedUntil != expectedDegradedUntil) {
+      return;
+    }
+    final generation = _degradeGeneration;
+    if (!await _prefs.clearCapturedFailure(expectedDegradedUntil)) return;
+    if (generation != _degradeGeneration || _preferredMode != StorageMode.s3) {
+      return;
+    }
+    _degradeGeneration++;
+    _expiryTimer?.cancel();
+    _expiryTimer = null;
+    _degradedUntil = null;
+    notifyListeners();
+  }
+
   Future<void> _notifyRecovered() async {
     final hook = onRecovered;
     if (hook == null) return;

@@ -7,6 +7,7 @@ import 'package:path/path.dart' as p;
 import 'package:quicklog/screens/home_screen.dart';
 import 'package:quicklog/services/active_note_store.dart';
 import 'package:quicklog/services/preferences.dart';
+import 'package:quicklog/services/s3_retry_schedule.dart';
 import 'package:quicklog/services/s3_session_controller.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
@@ -139,6 +140,12 @@ void main() {
   }
 
   testWidgets('every option survives export, wipe and import', (tester) async {
+    // Desktop preserves the Android-only background preference in backups.
+    final preferences = PreferencesService();
+    await preferences.setS3RetrySchedule(
+      S3RetrySchedule.parse(['09:00', '18:00']),
+    );
+    await preferences.setS3RetryInBackground(true);
     // 1. Set every option through the Preferences UI.
     await pumpApp(tester);
     await openPreferences(tester);
@@ -187,6 +194,8 @@ void main() {
       'directory': notesDir,
       'autoLogSharedText': true,
       'storageMode': 'both',
+      's3RetryTimes': ['09:00', '18:00'],
+      's3RetryInBackground': true,
       's3': {
         'endpoint': endpoint,
         'region': region,
@@ -234,6 +243,8 @@ void main() {
     expect(restored.getString('Directory'), notesDir);
     expect(restored.getBool('AutoLogSharedText'), isTrue);
     expect(restored.getString('StorageMode'), 'both');
+    expect((await preferences.s3RetrySchedule()).times, ['09:00', '18:00']);
+    expect(await preferences.s3RetryInBackground(), isTrue);
     expect(restored.getString('S3Endpoint'), endpoint);
     expect(restored.getString('S3Region'), region);
     expect(restored.getString('S3Bucket'), bucket);

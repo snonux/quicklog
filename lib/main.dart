@@ -1,9 +1,14 @@
+import 'dart:io';
+
 import 'package:flutter/material.dart';
+import 'package:workmanager/workmanager.dart';
 
 import 'screens/home_screen.dart';
 import 'services/active_note_store.dart';
 import 'services/preferences.dart';
 import 'services/s3_session_controller.dart';
+import 'services/s3_background_retry.dart';
+import 'services/s3_retry_scheduler.dart';
 
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
@@ -15,6 +20,30 @@ Future<void> main() async {
   );
   activeStore.bindSessionProbe();
   await session.load(waitForRecovery: false);
+  if (Platform.isAndroid) {
+    await Workmanager().initialize(s3RetryCallbackDispatcher);
+  }
+  late final S3RetryScheduler scheduler;
+  scheduler = S3RetryScheduler(
+    preferences: preferences,
+    retry: () async {
+      final identity = await scheduler.identity();
+      await activeStore.replayS3OnlyLocalNotes(
+        retryWhileDegraded: true,
+        stillCurrent: () async {
+          await preferences.reload();
+          return scheduler.isForeground &&
+              await scheduler.identity() == identity;
+        },
+      );
+    },
+    onResumed: () => activeStore.replayS3OnlyLocalNotes(),
+  );
+  // UI-engine expiry recovery stays foreground-only. Closed-app work is
+  // exclusively dispatched at the opted-in WorkManager schedule.
+  activeStore.automaticRecoveryAllowed = () => scheduler.isForeground;
+  S3RetryScheduler.current = scheduler;
+  await scheduler.start();
   runApp(
     QuickLoggerApp(
       preferences: preferences,

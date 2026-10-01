@@ -93,11 +93,20 @@ class DualWriteS3Repair {
   }
 
   /// Drops either pending op in [folderKey], or the currently selected folder.
-  Future<void> clear(String id, {String? folderKey}) {
+  Future<void> clear(
+    String id, {
+    String? folderKey,
+    String? expectedRevision,
+    bool checkRevision = false,
+  }) {
     return run(() async {
       await _ensureLoaded();
       _active = folderKey ?? await _folderKey();
-      await _clear(id);
+      await _clear(
+        id,
+        expectedRevision: expectedRevision,
+        checkRevision: checkRevision,
+      );
     });
   }
 
@@ -119,8 +128,8 @@ class DualWriteS3Repair {
   }
 
   Future<void> _ensureLoaded() async {
-    if (_loaded) return;
     final prefs = _prefs;
+    if (_loaded && !(prefs?.usesAtomicS3State ?? false)) return;
     if (prefs == null) {
       _loaded = true;
       return;
@@ -130,6 +139,7 @@ class DualWriteS3Repair {
     // must not fail every later read of the note list.
     try {
       final folders = await prefs.dualWritePendingFolders();
+      if (prefs.usesAtomicS3State) _queues.clear();
       for (final entry in folders.entries) {
         final queue = _queues.putIfAbsent(entry.key, _RepairQueue.new);
         queue.uploads.addAll(_noteIds(entry.value.uploads));
@@ -139,6 +149,17 @@ class DualWriteS3Repair {
       _persistBlocked = true;
     }
     _loaded = true;
+  }
+
+  void _replaceQueues(
+    Map<String, ({List<String> uploads, List<String> deletes})> folders,
+  ) {
+    _queues.clear();
+    for (final entry in folders.entries) {
+      _queues[entry.key] = _RepairQueue()
+        ..uploads.addAll(_noteIds(entry.value.uploads))
+        ..deletes.addAll(_noteIds(entry.value.deletes));
+    }
   }
 
   Future<void> _persist() async {
@@ -213,6 +234,11 @@ class DualWriteS3Repair {
         'Dual-write repairs could not be read and were not queued.',
       );
     }
+    final prefs = _prefs;
+    if (prefs?.usesAtomicS3State ?? false) {
+      _replaceQueues(await prefs!.mutateRepair(_active, id, 'upload'));
+      return;
+    }
     final queue = _queue();
     queue.deletes.remove(id);
     queue.uploads.add(id);
@@ -227,14 +253,36 @@ class DualWriteS3Repair {
         'Dual-write repairs could not be read and were not queued.',
       );
     }
+    final prefs = _prefs;
+    if (prefs?.usesAtomicS3State ?? false) {
+      _replaceQueues(await prefs!.mutateRepair(_active, id, 'delete'));
+      return;
+    }
     final queue = _queue();
     queue.uploads.remove(id);
     queue.deletes.add(id);
     await _persist();
   }
 
-  Future<void> _clear(String id) async {
+  Future<void> _clear(
+    String id, {
+    String? expectedRevision,
+    bool checkRevision = false,
+  }) async {
     await _ensureLoaded();
+    final prefs = _prefs;
+    if (prefs?.usesAtomicS3State ?? false) {
+      _replaceQueues(
+        await prefs!.mutateRepair(
+          _active,
+          id,
+          'clear',
+          expectedRevision: expectedRevision,
+          checkRevision: checkRevision,
+        ),
+      );
+      return;
+    }
     if (!_queues.containsKey(_active)) return;
     final queue = _queue();
     final changed = queue.uploads.remove(id) || queue.deletes.remove(id);

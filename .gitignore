@@ -25,6 +25,7 @@ keys/
 
 # Android
 android/.gradle/
+android/.kotlin/
 android/local.properties
 android/captures/
 android/.cxx/

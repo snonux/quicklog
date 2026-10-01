@@ -2,14 +2,13 @@ import 'dart:convert';
 
 import 'log_service.dart';
 import 's3_object_client.dart';
+import 's3_operation_lease.dart';
 
 /// S3-backed [NoteStore]: object keys are `ql-YYMMDD-HHmmss.md` (same contract
 /// as [LocalNoteStore]). Edit overwrites the same key.
 class S3NoteStore implements NoteStore {
-  S3NoteStore(
-    this.client, {
-    Future<void> Function()? onFailure,
-  }) : _onFailure = onFailure;
+  S3NoteStore(this.client, {Future<void> Function()? onFailure})
+    : _onFailure = onFailure;
 
   final S3ObjectClient client;
   final Future<void> Function()? _onFailure;
@@ -17,11 +16,8 @@ class S3NoteStore implements NoteStore {
   /// Degrade on real transport / S3 service failures — not bad ids
   /// ([ArgumentError]). Missing-object ([isMissingObjectError]) is skipped only
   /// when [allowMissingObject] is true (read path).
-  bool _shouldMarkFailure(
-    Object error, {
-    required bool allowMissingObject,
-  }) {
-    if (error is ArgumentError) return false;
+  bool _shouldMarkFailure(Object error, {required bool allowMissingObject}) {
+    if (error is ArgumentError || error is S3OperationBusy) return false;
     if (allowMissingObject && isMissingObjectError(error)) return false;
     return true;
   }
@@ -80,14 +76,11 @@ class S3NoteStore implements NoteStore {
 
   @override
   Future<String> read(String id) {
-    return _guard(
-      () async {
-        _requireId(id);
-        final bytes = await client.getObject(id);
-        return utf8.decode(bytes);
-      },
-      allowMissingObject: true,
-    );
+    return _guard(() async {
+      _requireId(id);
+      final bytes = await client.getObject(id);
+      return utf8.decode(bytes);
+    }, allowMissingObject: true);
   }
 
   @override
