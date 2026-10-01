@@ -1,0 +1,7 @@
+Choose daily retry times for locally saved notes in S3-only mode.
+
+Opt in to Android background retries, or retry only while Quicklog is open.
+
+Recover local notes after an S3 outage. Uploaded copies are remembered so drained notes stay drained.
+
+Background retries can read your chosen Android folder even when Quicklog is closed.
