@@ -1,0 +1,3 @@
+After sharing text with auto-log on, Quicklog returns to the background so you stay in the app you shared from.
+
+The shared note is still saved as usual.
