@@ -7,6 +7,7 @@ import '../services/active_note_store.dart';
 import '../services/app_version.dart';
 import '../services/preferences.dart';
 import '../services/s3_session_controller.dart';
+import '../services/share_service.dart';
 import '../services/shared_text_handler.dart';
 import '../widgets/s3_degraded_banner.dart';
 import '../widgets/s3_retry.dart';
@@ -49,6 +50,17 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
       widget.preferences ?? PreferencesService();
   bool _warnShown = false;
   bool _loadingShared = false;
+  /// User typed or navigated away while an auto-log share was in flight —
+  /// do not moveTaskToBack when that save finishes.
+  bool _touchedDuringShareLoad = false;
+  /// Last auto-log leave decision in the current intake drain; applied only
+  /// after the drain finishes so a queued follow-up share is handled first.
+  /// Null means no successful auto-log asked to leave or stay.
+  bool? _leaveAfterShareDrain;
+  /// True when a success snackbar was skipped because a leave was intended.
+  bool _skippedLeaveSnackbar = false;
+  Future<void>? _shareDrainInFlight;
+  bool _shareDrainNeedsRerun = false;
   bool _logging = false;
   late final SharedTextIntake? _sharedIntake = _createSharedIntake();
 
@@ -86,11 +98,66 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
   void _loadSharedText() {
     final intake = _sharedIntake;
     if (intake == null) return;
-    unawaited(
-      intake.load().catchError((Object e, StackTrace st) {
-        FlutterError.reportError(FlutterErrorDetails(exception: e, stack: st));
-      }),
-    );
+    // One drain wrapper at a time — a second resume must not null out
+    // _leaveAfterShareDrain while the first drain is still mid-intake.
+    if (_shareDrainInFlight != null) {
+      _shareDrainNeedsRerun = true;
+      unawaited(intake.load());
+      return;
+    }
+    _shareDrainInFlight = _drainSharedText(intake).whenComplete(() {
+      _shareDrainInFlight = null;
+    });
+    unawaited(_shareDrainInFlight!);
+  }
+
+  Future<void> _drainSharedText(SharedTextIntake intake) async {
+    while (mounted) {
+      _shareDrainNeedsRerun = false;
+      // A follow-up auto-log during moveTaskToBack may already have set leave;
+      // do not clear it or re-load an empty cache — just apply leave again.
+      if (_leaveAfterShareDrain != true) {
+        _leaveAfterShareDrain = null;
+        _skippedLeaveSnackbar = false;
+        try {
+          await intake.load();
+        } catch (e, st) {
+          FlutterError.reportError(
+            FlutterErrorDetails(exception: e, stack: st),
+          );
+        }
+      }
+      final leave = _leaveAfterShareDrain;
+      _leaveAfterShareDrain = null;
+      if (leave != true) {
+        // A later failure may have cancelled leave after an earlier success
+        // already skipped its snackbar.
+        if (_skippedLeaveSnackbar && mounted) {
+          _showInfo('Logged', 'Shared text has been logged.');
+        }
+        if (_shareDrainNeedsRerun) continue;
+        return;
+      }
+      if (!mounted ||
+          _touchedDuringShareLoad ||
+          ModalRoute.of(context)?.isCurrent != true) {
+        if (mounted) {
+          _showInfo('Logged', 'Shared text has been logged.');
+        }
+        if (_shareDrainNeedsRerun) continue;
+        return;
+      }
+      final moved = await ShareService.moveTaskToBack();
+      if (!moved && mounted) {
+        _showInfo('Logged', 'Shared text has been logged.');
+      }
+      // Follow-up share during move set leave again, or a resume needs another
+      // intake pass — loop without dropping a pending leave flag.
+      if (_leaveAfterShareDrain == true || _shareDrainNeedsRerun) {
+        continue;
+      }
+      return;
+    }
   }
 
   @override
@@ -112,6 +179,11 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
   void _onTextChanged() {
     final length = _controller.text.length;
     if (_loadingShared) {
+      // resetInput at the end of auto-log also fires this; only non-empty
+      // text counts as the user taking over the field.
+      if (_controller.text.trim().isNotEmpty) {
+        _touchedDuringShareLoad = true;
+      }
       _warnShown = false;
       setState(() {});
       return;
@@ -151,6 +223,7 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
   }
 
   Future<void> _logText() async {
+    if (_loadingShared) _touchedDuringShareLoad = true;
     if (_logging) return;
     setState(() => _logging = true);
     final text = _controller.text;
@@ -207,9 +280,13 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
     String txt,
     Future<void> Function() clearHandled,
   ) async {
+    // Consume before the mounted check so a disposed screen still clears the
+    // process-local handoff (cache is left for the next open).
+    final shareHandoff = await ShareService.consumeShareHandoff();
     // A follow-up load can outlive the screen; leave the share cached.
     if (!mounted) return;
     _loadingShared = true;
+    _touchedDuringShareLoad = false;
     try {
       final dir = await _prefs.directory();
       final autoLog = await _prefs.autoLogSharedText();
@@ -227,12 +304,31 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
           if (mounted) _resetInput();
         },
         clearCache: clearHandled,
-        logFn: (_, t) async =>
+        logFn: (_, t) async {
+          try {
             // Same save path as the main Log text button; an optional custom
             // message tells the handler where the note landed.
-            _outcomeMessage((await _active.createNote(t)).outcome),
+            return _outcomeMessage((await _active.createNote(t)).outcome);
+          } catch (e) {
+            // A failed follow-up must not leave using an earlier leave=true.
+            _leaveAfterShareDrain = false;
+            rethrow;
+          }
+        },
         showInfo: _showInfo,
         showError: _showError,
+        afterAutoLogSuccess: ({required bool degraded}) async {
+          final leave = shouldLeaveAfterShareAutoLog(
+            handoff: shareHandoff,
+            degraded: degraded,
+            touchedDuringLoad: _touchedDuringShareLoad,
+            routeIsCurrent: mounted && ModalRoute.of(context)?.isCurrent == true,
+          );
+          // Last share in the drain wins; moveTaskToBack runs after load().
+          _leaveAfterShareDrain = leave;
+          if (leave) _skippedLeaveSnackbar = true;
+          return leave;
+        },
       );
     } finally {
       _loadingShared = false;
@@ -241,6 +337,7 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
   }
 
   Future<void> _openPreferences() async {
+    if (_loadingShared) _touchedDuringShareLoad = true;
     await Navigator.of(context).push(
       MaterialPageRoute(
         builder: (_) => PreferencesScreen(
@@ -253,6 +350,7 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
   }
 
   Future<void> _openEntryBrowser() async {
+    if (_loadingShared) _touchedDuringShareLoad = true;
     await Navigator.of(context).push(
       MaterialPageRoute(
         builder: (_) => EntryBrowserScreen(
@@ -264,9 +362,13 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
     );
   }
 
-  Future<void> _retryS3() => retryS3WithFeedback(context, _session);
+  Future<void> _retryS3() {
+    if (_loadingShared) _touchedDuringShareLoad = true;
+    return retryS3WithFeedback(context, _session);
+  }
 
   Future<void> _showAbout() async {
+    if (_loadingShared) _touchedDuringShareLoad = true;
     // The version comes from the bundled pubspec.yaml, never a literal here:
     // a hard-coded string silently went stale on every release bump.
     String? version;
@@ -356,6 +458,9 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
                         onPressed: _logging
                             ? null
                             : () {
+                                if (_loadingShared) {
+                                  _touchedDuringShareLoad = true;
+                                }
                                 _resetInput();
                                 _focusNode.requestFocus();
                               },

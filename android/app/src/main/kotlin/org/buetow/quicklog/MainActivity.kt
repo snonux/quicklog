@@ -20,6 +20,10 @@ import java.io.IOException
 class MainActivity : FlutterActivity() {
     private val channelName = "org.buetow.quicklog/share"
     private val cacheFilename = "quicklog-shared.txt"
+    // Set from a share Intent / ShareActivity launch; cleared by
+    // consumeShareHandoff. Not persisted — a cold start after kill must not
+    // look like a fresh share handoff.
+    private var pendingShareHandoff = false
     private val settingsChannelName = "org.buetow.quicklog/settings"
     private val safChannelName = "org.buetow.quicklog/saf"
     private val requestExportSettings = 4201
@@ -60,6 +64,15 @@ class MainActivity : FlutterActivity() {
                     "storageApiLevel" -> result.success(Build.VERSION.SDK_INT)
                     "requestStorageAccess" -> {
                         requestStorageAccess(result)
+                    }
+                    "consumeShareHandoff" -> {
+                        // One-shot process-local flag from the share Intent.
+                        result.success(consumeShareHandoff())
+                    }
+                    "moveTaskToBack" -> {
+                        // After auto-logging a share, return to the previous
+                        // app instead of leaving Quicklog in the foreground.
+                        result.success(moveTaskToBack(true))
                     }
                     else -> result.notImplemented()
                 }
@@ -312,20 +325,42 @@ class MainActivity : FlutterActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        noteShareHandoff(intent)
         captureSendIntent(intent)
     }
 
     override fun onNewIntent(intent: Intent) {
         super.onNewIntent(intent)
+        noteShareHandoff(intent)
         captureSendIntent(intent)
     }
 
+    private fun noteShareHandoff(intent: Intent?) {
+        if (intent == null) return
+        // Recents / task restore redelivers the start Intent; that must not
+        // look like a fresh share after process death.
+        if (intent.flags and Intent.FLAG_ACTIVITY_LAUNCHED_FROM_HISTORY != 0) return
+        if (intent.getBooleanExtra(ShareActivity.EXTRA_SHARE_HANDOFF, false)) {
+            pendingShareHandoff = true
+            intent.removeExtra(ShareActivity.EXTRA_SHARE_HANDOFF)
+        }
+    }
+
     private fun captureSendIntent(intent: Intent?) {
-        if (intent?.action == Intent.ACTION_SEND && intent.type?.startsWith("text/") == true) {
+        if (intent == null) return
+        if (intent.flags and Intent.FLAG_ACTIVITY_LAUNCHED_FROM_HISTORY != 0) return
+        if (intent.action == Intent.ACTION_SEND && intent.type?.startsWith("text/") == true) {
             intent.getStringExtra(Intent.EXTRA_TEXT)?.let { text ->
                 File(cacheDir, cacheFilename).writeText(text)
+                pendingShareHandoff = true
             }
         }
+    }
+
+    private fun consumeShareHandoff(): Boolean {
+        val had = pendingShareHandoff
+        pendingShareHandoff = false
+        return had
     }
 
     private fun readCache(): String? {

@@ -15,6 +15,17 @@ class SharedTextDecision {
   final bool proceed;
 }
 
+/// Whether HomeScreen should call [ShareService.moveTaskToBack] after a
+/// successful share auto-log. Pure so unit tests can cover the leave policy
+/// without Android or a widget tree.
+bool shouldLeaveAfterShareAutoLog({
+  required bool handoff,
+  required bool degraded,
+  required bool touchedDuringLoad,
+  required bool routeIsCurrent,
+}) =>
+    handoff && !degraded && !touchedDuringLoad && routeIsCurrent;
+
 SharedTextDecision prepareSharedTextLoad(String text, bool autoLog) {
   if (text.trim().isEmpty) {
     return const SharedTextDecision(
@@ -48,6 +59,11 @@ Future<void> handleSharedTextLoad({
   required LogFn logFn,
   required ShowInfo showInfo,
   required ShowError showError,
+  /// After a successful auto-log (cache cleared). [degraded] is true when a
+  /// custom success message will be shown (caller should stay foreground).
+  /// Return true only when the app actually left the foreground — then the
+  /// default success snackbar is skipped.
+  Future<bool> Function({required bool degraded})? afterAutoLogSuccess,
 }) async {
   final decision = prepareSharedTextLoad(text, autoLog);
   if (!decision.proceed) {
@@ -62,9 +78,18 @@ Future<void> handleSharedTextLoad({
       showError(e);
       return;
     }
-    showInfo('Logged', customMessage ?? 'Shared text has been logged.');
     resetInput();
     await clearCache();
+    final degraded = customMessage != null;
+    var leftForeground = false;
+    if (afterAutoLogSuccess != null) {
+      leftForeground = await afterAutoLogSuccess(degraded: degraded);
+    }
+    if (customMessage != null) {
+      showInfo('Logged', customMessage);
+    } else if (!leftForeground) {
+      showInfo('Logged', 'Shared text has been logged.');
+    }
     return;
   }
   prefill(decision.text);

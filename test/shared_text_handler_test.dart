@@ -5,6 +5,68 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:quicklog/services/shared_text_handler.dart';
 
 void main() {
+  group('shouldLeaveAfterShareAutoLog', () {
+    test('leaves only on clean handoff with current route and no touch', () {
+      expect(
+        shouldLeaveAfterShareAutoLog(
+          handoff: true,
+          degraded: false,
+          touchedDuringLoad: false,
+          routeIsCurrent: true,
+        ),
+        isTrue,
+      );
+    });
+
+    test('stays when there was no share handoff', () {
+      expect(
+        shouldLeaveAfterShareAutoLog(
+          handoff: false,
+          degraded: false,
+          touchedDuringLoad: false,
+          routeIsCurrent: true,
+        ),
+        isFalse,
+      );
+    });
+
+    test('stays when the save was degraded', () {
+      expect(
+        shouldLeaveAfterShareAutoLog(
+          handoff: true,
+          degraded: true,
+          touchedDuringLoad: false,
+          routeIsCurrent: true,
+        ),
+        isFalse,
+      );
+    });
+
+    test('stays when the user touched the UI during the load', () {
+      expect(
+        shouldLeaveAfterShareAutoLog(
+          handoff: true,
+          degraded: false,
+          touchedDuringLoad: true,
+          routeIsCurrent: true,
+        ),
+        isFalse,
+      );
+    });
+
+    test('stays when HomeScreen is not the current route', () {
+      expect(
+        shouldLeaveAfterShareAutoLog(
+          handoff: true,
+          degraded: false,
+          touchedDuringLoad: false,
+          routeIsCurrent: false,
+        ),
+        isFalse,
+      );
+    });
+  });
+
   group('prepareSharedTextLoad', () {
     test('rejects whitespace-only input', () {
       final d = prepareSharedTextLoad('   \n\t', false);
@@ -35,7 +97,7 @@ void main() {
     late _Probe p;
     setUp(() => p = _Probe());
 
-    test('autoLog success: logs, shows info, resets, clears cache', () async {
+    test('autoLog success without afterAutoLogSuccess: shows info', () async {
       await handleSharedTextLoad(
         text: 'note',
         autoLog: true,
@@ -55,10 +117,83 @@ void main() {
       expect(p.info, ['Shared text has been logged.']);
       expect(p.didReset, true);
       expect(p.cleared, true);
+      expect(p.afterCalls, isEmpty);
       expect(p.errors, isEmpty);
     });
 
-    test('autoLog uses the custom message when logFn returns one', () async {
+    test('autoLog success leaving foreground skips default snackbar', () async {
+      await handleSharedTextLoad(
+        text: 'note',
+        autoLog: true,
+        dir: '/tmp',
+        prefill: p.prefill,
+        focus: p.focus,
+        resetInput: p.resetInput,
+        clearCache: p.clearCache,
+        logFn: (_, _) async {
+          p.logged = true;
+          return null;
+        },
+        showInfo: p.showInfo,
+        showError: p.showError,
+        afterAutoLogSuccess: p.afterAutoLogSuccess(leave: true),
+      );
+      expect(p.logged, true);
+      expect(p.info, isEmpty);
+      expect(p.didReset, true);
+      expect(p.cleared, true);
+      expect(p.afterCalls, [(degraded: false)]);
+      expect(p.errors, isEmpty);
+    });
+
+    test('autoLog success staying foreground still shows snackbar', () async {
+      await handleSharedTextLoad(
+        text: 'note',
+        autoLog: true,
+        dir: '/tmp',
+        prefill: p.prefill,
+        focus: p.focus,
+        resetInput: p.resetInput,
+        clearCache: p.clearCache,
+        logFn: (_, _) async {
+          p.logged = true;
+          return null;
+        },
+        showInfo: p.showInfo,
+        showError: p.showError,
+        afterAutoLogSuccess: p.afterAutoLogSuccess(leave: false),
+      );
+      expect(p.info, ['Shared text has been logged.']);
+      expect(p.afterCalls, [(degraded: false)]);
+    });
+
+    test('autoLog success calls afterAutoLogSuccess only after clearCache',
+        () async {
+      final order = <String>[];
+      await handleSharedTextLoad(
+        text: 'note',
+        autoLog: true,
+        dir: '/tmp',
+        prefill: p.prefill,
+        focus: p.focus,
+        resetInput: () => order.add('reset'),
+        clearCache: () async => order.add('clear'),
+        logFn: (_, _) async {
+          order.add('log');
+          return null;
+        },
+        showInfo: (_, _) => order.add('info'),
+        showError: p.showError,
+        afterAutoLogSuccess: ({required bool degraded}) async {
+          order.add('after:$degraded');
+          return true;
+        },
+      );
+      expect(order, ['log', 'reset', 'clear', 'after:false']);
+    });
+
+    test('autoLog degraded message shows and passes degraded to callback',
+        () async {
       await handleSharedTextLoad(
         text: 'note',
         autoLog: true,
@@ -73,6 +208,7 @@ void main() {
         },
         showInfo: p.showInfo,
         showError: p.showError,
+        afterAutoLogSuccess: p.afterAutoLogSuccess(leave: true),
       );
       expect(p.logged, true);
       expect(p.info, [
@@ -80,6 +216,10 @@ void main() {
       ]);
       expect(p.didReset, true);
       expect(p.cleared, true);
+      // Custom snackbar is always shown for degraded saves; HomeScreen's leave
+      // policy uses degraded:true to refuse moveTaskToBack.
+      expect(p.afterCalls, [(degraded: true)]);
+      expect(p.info, isNotEmpty);
     });
 
     test('autoLog failure: shows error, keeps cache, does not reset', () async {
@@ -94,10 +234,12 @@ void main() {
         logFn: (_, _) async => throw Exception('boom'),
         showInfo: p.showInfo,
         showError: p.showError,
+        afterAutoLogSuccess: p.afterAutoLogSuccess(leave: true),
       );
       expect(p.errors.length, 1);
       expect(p.cleared, false);
       expect(p.didReset, false);
+      expect(p.afterCalls, isEmpty);
     });
 
     test('empty text: clears cache and skips everything else', () async {
@@ -137,11 +279,13 @@ void main() {
         },
         showInfo: p.showInfo,
         showError: p.showError,
+        afterAutoLogSuccess: p.afterAutoLogSuccess(leave: true),
       );
       expect(p.prefilled, 'note');
       expect(p.focused, true);
       expect(p.cleared, true);
       expect(p.logged, false);
+      expect(p.afterCalls, isEmpty);
     });
   });
 
@@ -448,6 +592,7 @@ class _Probe {
   bool didReset = false;
   bool cleared = false;
   bool logged = false;
+  final List<({bool degraded})> afterCalls = [];
   final List<String> info = [];
   final List<Object> errors = [];
 
@@ -465,6 +610,15 @@ class _Probe {
 
   Future<void> clearCache() async {
     cleared = true;
+  }
+
+  Future<bool> Function({required bool degraded}) afterAutoLogSuccess({
+    required bool leave,
+  }) {
+    return ({required bool degraded}) async {
+      afterCalls.add((degraded: degraded));
+      return leave;
+    };
   }
 
   void showInfo(String title, String msg) {
