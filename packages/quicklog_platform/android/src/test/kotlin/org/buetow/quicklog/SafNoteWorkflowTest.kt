@@ -25,6 +25,11 @@ class SafNoteWorkflowTest {
         var failNextList = false
         var listingError: String? = null
         var loading = false
+        var failAfterMove = false
+        override var recoverMovedRename = false
+        var failBeforeMove = false
+        var corruptFailedMove = false
+        var duplicateFailedMove = false
 
         fun add(name: String, text: String, renameable: Boolean = true): SafDocument {
             val id = (++nextId).toString()
@@ -54,6 +59,7 @@ class SafNoteWorkflowTest {
         }
 
         override fun rename(document: SafDocument, name: String): SafDocument? {
+            if (failBeforeMove) throw java.io.FileNotFoundException("not moved")
             if (failPublish && document.name.startsWith(".quicklog-pending-") && name.startsWith("ql-")) {
                 return null
             }
@@ -62,11 +68,16 @@ class SafNoteWorkflowTest {
             if (corruptPublished && document.name.startsWith(".quicklog-pending-") && name.startsWith("ql-")) {
                 record.text = record.text.take(2)
             }
-            val returnedId = if (rotateIdOnBackup && name.startsWith(".quicklog-backup-")) {
+            val returnedId = if (failAfterMove || (rotateIdOnBackup && name.startsWith(".quicklog-backup-"))) {
                 records.remove(document.id)
                 (++nextId).toString().also { records[it] = record }
             } else {
                 document.id
+            }
+            if (failAfterMove) {
+                if (corruptFailedMove) record.text = "corrupt"
+                if (duplicateFailedMove) add(name, record.text)
+                throw java.io.FileNotFoundException("old path is gone after rename")
             }
             if (failBackupMetadata && name.startsWith(".quicklog-backup-")) {
                 if (rotateIdOnBackup) failNextList = true
@@ -257,5 +268,54 @@ class SafNoteWorkflowTest {
         expectIo { SafNoteWorkflow(provider).update(note, "replacement") }
         assertEquals("original", provider.textAt(note))
         assertFalse(provider.records.values.any { it.name.startsWith(".quicklog-backup-") })
+    }
+
+    @Test
+    fun movedDocumentIsVerifiedWhenProviderThrowsForOldPath() {
+        val provider = FakeGateway().apply {
+            failAfterMove = true
+            recoverMovedRename = true
+        }
+        val workflow = SafNoteWorkflow(provider)
+        workflow.create(note, "original")
+        workflow.update(note, "replacement")
+        assertEquals(listOf(note), workflow.list())
+        assertEquals("replacement", workflow.read(note))
+        assertEquals(1, provider.records.size)
+        workflow.delete(note)
+        assertTrue(provider.records.isEmpty())
+    }
+
+    @Test
+    fun missingSourceWithoutMoveNeverClaimsSuccessOrChangesOriginal() {
+        val provider = FakeGateway().apply {
+            failBeforeMove = true
+            recoverMovedRename = true
+        }
+        provider.add(note, "original")
+        expectIo { SafNoteWorkflow(provider).update(note, "replacement") }
+        assertEquals("original", provider.textAt(note))
+        assertFalse(provider.records.values.any { it.name.startsWith(".quicklog-backup-") })
+    }
+
+    @Test
+    fun failedMoveWithCorruptBytesOrAmbiguousTargetNeverClaimsSuccess() {
+        for (duplicate in listOf(false, true)) {
+            val provider = FakeGateway().apply {
+                failAfterMove = true
+                recoverMovedRename = true
+                corruptFailedMove = !duplicate
+                duplicateFailedMove = duplicate
+            }
+            expectIo { SafNoteWorkflow(provider).create(note, "original") }
+            assertEquals(if (duplicate) 2 else 1, provider.records.size)
+        }
+    }
+
+    @Test
+    fun ordinaryProvidersDoNotRecoverAnUnreportedRename() {
+        val provider = FakeGateway().apply { failAfterMove = true }
+        expectIo { SafNoteWorkflow(provider).create(note, "original") }
+        assertEquals("original", provider.textAt(note))
     }
 }

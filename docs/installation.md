@@ -72,6 +72,15 @@ Open **Preferences**. If the directory you've chosen isn't writable, a red
 "Cannot write to this folder" card appears — tap it. This opens the system
 "All files access" toggle for Quicklog; enable it there and come back.
 
+Android may allow Quicklog to create and read its own notes in a shared folder
+without that toggle, while hiding notes created outside Quicklog. A successful
+write check does not establish access to every existing note. For an existing
+vault, use the Android folder picker. If you prefer a typed path and existing
+notes are missing, open **Settings → Apps → Special app access → All files
+access → Quicklog** and enable access there, even if no red card appears.
+All files access does not make Android's protected system or other apps'
+private directories writable.
+
 On GrapheneOS you'll instead see a three-way choice: **Allow (in Settings)**,
 **Don't allow**, or **Setup Storage Scopes**. Plain "Allow" grants the same
 broad `MANAGE_EXTERNAL_STORAGE` permission as stock Android. If you'd rather

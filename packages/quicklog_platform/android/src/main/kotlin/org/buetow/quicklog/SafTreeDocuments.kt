@@ -2,6 +2,7 @@ package org.buetow.quicklog
 
 import android.content.ContentResolver
 import android.net.Uri
+import android.os.Build
 import android.provider.DocumentsContract
 import java.io.FileNotFoundException
 import java.io.IOException
@@ -35,6 +36,10 @@ internal class SafTreeDocuments(private val resolver: ContentResolver) {
     fun delete(raw: String, name: String) = workflow(raw, write = true).delete(name)
 
     private inner class ProviderGateway(private val tree: Uri) : SafDocumentGateway {
+        override val recoverMovedRename: Boolean
+            get() = Build.VERSION.SDK_INT == Build.VERSION_CODES.P &&
+                tree.authority == "com.android.externalstorage.documents"
+
         private fun documentUri(id: String): Uri = DocumentsContract.buildDocumentUriUsingTree(tree, id)
 
         override fun list(): List<SafDocument> {

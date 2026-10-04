@@ -1,6 +1,7 @@
 package org.buetow.quicklog
 
 import java.io.IOException
+import java.io.FileNotFoundException
 import java.util.UUID
 
 internal data class SafDocument(val id: String, val name: String, val canRename: Boolean)
@@ -14,6 +15,7 @@ internal class SafRenameOutcomeException(
 
 /** Small provider boundary so failure and recovery paths can be tested without Android. */
 internal interface SafDocumentGateway {
+    val recoverMovedRename: Boolean get() = false
     fun list(): List<SafDocument>
     fun create(name: String): SafDocument
     fun read(document: SafDocument): String
@@ -43,8 +45,27 @@ internal class SafNoteWorkflow(private val gateway: SafDocumentGateway) {
 
     private fun renamed(document: SafDocument, name: String): SafDocument {
         if (!document.canRename) throw IOException("This document provider cannot safely rename $name.")
-        val result = gateway.rename(document, name)
-            ?: throw IOException("The document provider could not rename $name.")
+        val before = if (gateway.recoverMovedRename) gateway.list() else null
+        if (before?.any { it.name == name } == true) throw IOException("A document named $name already exists.")
+        val bytes = before?.let { gateway.read(document) }
+        val result = try {
+            gateway.rename(document, name)
+                ?: throw IOException("The document provider could not rename $name.")
+        } catch (e: FileNotFoundException) {
+            // Android 9's external-storage provider can move the file and then
+            // throw while looking up its old path for the media-store update.
+            // Accept that outcome only after verifying a new, unique document
+            // with the requested name and unchanged bytes, with the old id gone.
+            // Document ids remain opaque: never manufacture a new id from a path.
+            if (before == null) throw e
+            val after = try { gateway.list() } catch (_: Exception) { throw e }
+            val candidate = after.singleOrNull { it.name == name }
+            if (candidate == null || before.any { it.id == candidate.id } ||
+                after.any { it.id == document.id } || gateway.read(candidate) != bytes) {
+                throw e
+            }
+            candidate
+        }
         if (result.name != name) {
             throw SafRenameOutcomeException(result, "The document provider renamed $name to ${result.name}.")
         }

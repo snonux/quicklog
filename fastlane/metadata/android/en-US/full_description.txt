@@ -44,6 +44,8 @@ Preferences. Typed directory paths are still available. A typed path into
 shared storage may require "All files access" (MANAGE_EXTERNAL_STORAGE) on
 Android 11+, or Storage permission on Android 7-10. GrapheneOS users can also
 use Storage Scopes for typed paths. Switching folders does not move notes.
+On Android 11+, writing new notes may work while notes created outside Quicklog
+remain hidden. Use the folder picker for an existing vault.
 Settings exports cannot transfer an Android folder grant; select the folder
 again after importing settings.
 
