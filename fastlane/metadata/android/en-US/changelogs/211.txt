@@ -1,0 +1,4 @@
+Images in notes:
+
+* The new image button next to Log text, and in the note editor, adds a picture from the gallery or takes one with the camera.
+* The picture is saved as its own file next to the notes (same folder, or the S3 bucket in S3 mode) and a Markdown image link is inserted at the cursor.
