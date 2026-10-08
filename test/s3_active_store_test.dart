@@ -997,6 +997,43 @@ void main() {
     expect(fakeS3.objects, isEmpty);
   });
 
+  testWidgets('deleting a local note while S3 is unreachable is no error', (
+    tester,
+  ) async {
+    await useDualWriteMode();
+    const id = 'ql-260908-010000.md';
+    await writeLocal(tester, id, 'delete while s3 is down');
+    await tester.runAsync(() async {
+      await fakeS3.putText(id, 'bucket copy');
+    });
+
+    fakeS3.alwaysFail = Exception('network down');
+    await pumpBrowser(tester);
+
+    await tester.tap(find.byIcon(Icons.delete_outline));
+    await pumpWithIo(tester);
+    await tester.tap(find.widgetWithText(FilledButton, 'Delete'));
+    await pumpWithIo(tester);
+
+    // The local delete the user asked for succeeded.
+    expect(
+      await tester.runAsync(() async => File(p.join(tmp.path, id)).exists()),
+      isFalse,
+    );
+    // The unreachable bucket is reported, but as a notice, not an error.
+    expect(find.textContaining('Removed the on-device copy'), findsOneWidget);
+    expect(
+      tester.widget<SnackBar>(find.byType(SnackBar)).backgroundColor,
+      isNull,
+    );
+    expect(
+      find.textContaining('Could not delete $id'),
+      findsNothing,
+    );
+    // The bucket copy survives for the queued replay.
+    expect(fakeS3.objects.containsKey(id), isTrue);
+  });
+
   testWidgets('s3-only Move all local to S3 still removes local copies', (
     tester,
   ) async {

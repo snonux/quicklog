@@ -344,9 +344,11 @@ class EntryBrowserController extends ChangeNotifier {
     } on DualWriteS3Pending catch (e) {
       // The on-device file is already gone. Say so, then re-list: the
       // refresh replays the S3 delete when the bucket is up, and otherwise
-      // shows the leftover as an S3 row until a later retry.
+      // shows the leftover as an S3 row until a later retry. Not an error:
+      // the delete the user asked for landed, so S3 being unreachable is at
+      // most a warning, not a failure of the delete itself.
       if (!context.mounted) return;
-      _showSnack(context, '$e', isError: true);
+      _showSnack(context, '$e');
       refresh();
       return;
     } catch (e) {
