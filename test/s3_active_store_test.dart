@@ -677,6 +677,50 @@ void main() {
     expect(session.isDegraded, isFalse);
   });
 
+  testWidgets('unreachable S3 during list shows one warning, not two errors', (
+    tester,
+  ) async {
+    await session.setPreferredMode(StorageMode.both);
+    await prefs.setS3Config(
+      S3Config(
+        endpoint: kDefaultS3Endpoint,
+        region: kDefaultS3Region,
+        bucket: kDefaultS3Bucket,
+        accessKeyId: 'AKIA_TEST',
+        secretAccessKey: 'secret_test',
+      ),
+    );
+    const id = 'ql-260908-073000.md';
+    await tester.runAsync(() async {
+      await File(p.join(tmp.path, id)).writeAsString('local while s3 down');
+    });
+    // A failed S3 write earlier (e.g. the last note save) armed the degrade
+    // window: the session knows S3 is unreachable.
+    await session.markS3Failed();
+    fakeS3.alwaysFail = Exception('list failed');
+
+    await tester.pumpWidget(
+      MaterialApp(
+        home: EntryBrowserScreen(session: session, activeStore: active),
+      ),
+    );
+    await pumpWithIo(tester);
+
+    // Local notes are still listed and usable.
+    expect(find.textContaining('local while s3 down'), findsWidgets);
+    expect(find.byTooltip('Copy to S3'), findsNothing);
+    // Exactly one warning: the degraded-session banner...
+    expect(find.textContaining('S3 unavailable'), findsOneWidget);
+    // ...and no second, error-styled list-failure banner for the same
+    // outage, and no error snack.
+    expect(find.textContaining('Could not list S3 notes'), findsNothing);
+    expect(find.byType(SnackBar), findsNothing);
+
+    // Drain the 1-hour degrade expiry Timer (armed by markS3Failed above)
+    // so no fake-clock timer is pending when the test ends.
+    await tester.pump(const Duration(hours: 1));
+  });
+
   testWidgets('both-location row can remove the local copy', (tester) async {
     await session.setPreferredMode(StorageMode.s3);
     await prefs.setS3Config(

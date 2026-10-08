@@ -82,7 +82,10 @@ class _EntryBrowserScreenState extends State<EntryBrowserScreen> {
             session: _browser.session,
             onRetry: () => _browser.retryS3(context),
           ),
-          if (_browser.s3ListFailed)
+          // While the session is degraded, S3DegradedBanner above already
+          // reports the outage as the single warning; a second, error-styled
+          // banner for the same unreachable bucket would double the message.
+          if (_browser.s3ListFailed && !_browser.session.isDegraded)
             ColoredBox(
               color: Theme.of(context).colorScheme.errorContainer,
               child: ListTile(
