@@ -240,6 +240,7 @@ class EntryBrowserController extends ChangeNotifier {
         builder: (_) => EntryDetailScreen(
           handle: store,
           location: showLocation ? located.location : null,
+          saveImage: _active.saveImage,
         ),
       ),
     );
@@ -260,7 +261,11 @@ class EntryBrowserController extends ChangeNotifier {
   Future<void> edit(BuildContext context, LocatedLogEntry located) async {
     final sources = _sources;
     if (sources == null) return;
-    final saved = await editEntry(context, sources.entryStore(located));
+    final saved = await editEntry(
+      context,
+      sources.entryStore(located),
+      saveImage: _active.saveImage,
+    );
     if (!context.mounted) return;
     if (saved == true) {
       refresh();

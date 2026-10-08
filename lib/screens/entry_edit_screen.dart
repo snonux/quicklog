@@ -2,6 +2,8 @@ import 'package:flutter/material.dart';
 
 import '../services/dual_write_s3_repair.dart';
 import '../services/entry_handle.dart';
+import '../services/image_attachments.dart';
+import '../widgets/image_insert_buttons.dart';
 
 /// Pushes the full-screen editor for [handle] and returns how it closed.
 ///
@@ -10,10 +12,16 @@ import '../services/entry_handle.dart';
 /// the note was saved. `false` means the user left without a successful save
 /// after either discarding edits or attempting a save (which may have written
 /// one backend). `null` means no save was attempted.
-Future<bool?> editEntry(BuildContext context, EntryHandle handle) {
+///
+/// With [saveImage] the editor offers "Add image" (gallery or camera).
+Future<bool?> editEntry(
+  BuildContext context,
+  EntryHandle handle, {
+  ImageSaver? saveImage,
+}) {
   return Navigator.of(context).push<bool>(
     MaterialPageRoute(
-      builder: (_) => EntryEditScreen(handle: handle),
+      builder: (_) => EntryEditScreen(handle: handle, saveImage: saveImage),
     ),
   );
 }
@@ -22,9 +30,22 @@ Future<bool?> editEntry(BuildContext context, EntryHandle handle) {
 /// keeps its creation timestamp (which is what the filename encodes) and its
 /// position in the browser list.
 class EntryEditScreen extends StatefulWidget {
-  const EntryEditScreen({super.key, required this.handle});
+  const EntryEditScreen({
+    super.key,
+    required this.handle,
+    this.saveImage,
+    this.pickImage,
+    this.cameraSupported,
+  });
 
   final EntryHandle handle;
+
+  /// Saves an added image next to the notes; null hides "Add image".
+  final ImageSaver? saveImage;
+
+  /// Optional overrides for tests, see [ImageInsertButtons].
+  final ImagePickFn? pickImage;
+  final bool? cameraSupported;
 
   @override
   State<EntryEditScreen> createState() => _EntryEditScreenState();
@@ -226,8 +247,22 @@ class _EntryEditScreenState extends State<EntryEditScreen> {
           onPressed: _dirty && !_saving ? _revert : null,
           child: const Text('Revert'),
         ),
-        const Spacer(),
-        Text('${_controller.text.length} chars'),
+        if (widget.saveImage case final saveImage?)
+          ImageInsertButtons(
+            controller: _controller,
+            saveImage: saveImage,
+            enabled: !_saving,
+            pickImage: widget.pickImage ?? pickWithImagePicker,
+            cameraSupported: widget.cameraSupported,
+          ),
+        Expanded(
+          child: Text(
+            '${_controller.text.length} chars',
+            textAlign: TextAlign.end,
+            maxLines: 1,
+            overflow: TextOverflow.ellipsis,
+          ),
+        ),
       ],
     );
   }
