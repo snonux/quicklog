@@ -78,14 +78,22 @@ class _EntryBrowserScreenState extends State<EntryBrowserScreen> {
       ),
       body: Column(
         children: [
-          S3DegradedBanner(
-            session: _browser.session,
-            onRetry: () => _browser.retryS3(context),
-          ),
+          // The setup-error banner below (invalid saved settings) is the
+          // one message that says what to fix, so while it is up the
+          // session-wide degrade banner would only repeat the outage.
+          if (_browser.sources?.s3SetupError == null)
+            S3DegradedBanner(
+              session: _browser.session,
+              onRetry: () => _browser.retryS3(context),
+            ),
           // While the session is degraded, S3DegradedBanner above already
           // reports the outage as the single warning; a second, error-styled
           // banner for the same unreachable bucket would double the message.
-          if (_browser.s3ListFailed && !_browser.session.isDegraded)
+          // A setup error (invalid saved settings) still shows even while
+          // degraded: it says what to fix, which the degrade banner cannot.
+          if (_browser.s3ListFailed &&
+              (!_browser.session.isDegraded ||
+                  _browser.sources?.s3SetupError != null))
             ColoredBox(
               color: Theme.of(context).colorScheme.errorContainer,
               child: ListTile(
