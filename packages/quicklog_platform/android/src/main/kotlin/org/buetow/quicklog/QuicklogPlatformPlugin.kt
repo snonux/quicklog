@@ -80,7 +80,7 @@ class QuicklogPlatformPlugin : FlutterPlugin {
         executor = worker
         channel = MethodChannel(binding.binaryMessenger, "org.buetow.quicklog/saf-notes").also {
             it.setMethodCallHandler { call, result ->
-                if (call.method !in setOf("list", "read", "firstLine", "create", "update", "delete")) {
+                if (call.method !in setOf("list", "read", "firstLine", "create", "update", "delete", "writeImage")) {
                     result.notImplemented()
                     return@setMethodCallHandler
                 }
@@ -94,6 +94,17 @@ class QuicklogPlatformPlugin : FlutterPlugin {
                                 "firstLine" -> saf.firstLine(treeUri, call.requireString("id"))
                                 "create" -> {
                                     saf.create(treeUri, call.requireString("id"), call.requireString("text"))
+                                    null
+                                }
+                                "writeImage" -> {
+                                    val bytes = call.argument<ByteArray>("bytes")
+                                        ?: throw IllegalArgumentException("Missing bytes.")
+                                    saf.writeImage(
+                                        treeUri,
+                                        call.requireString("id"),
+                                        call.requireString("mimeType"),
+                                        bytes,
+                                    )
                                     null
                                 }
                                 "update" -> {

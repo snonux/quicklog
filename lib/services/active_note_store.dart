@@ -1,7 +1,9 @@
 import 'dart:async';
+import 'dart:typed_data';
 
 import 'browser_note_sources.dart';
 import 'dual_write_s3_repair.dart';
+import 'image_attachments.dart';
 import 'lazy_s3_note_store.dart';
 import 'log_service.dart';
 import 'merged_note_listing.dart';
@@ -121,12 +123,14 @@ class ActiveNoteStore {
     S3ObjectClientFactory? s3ClientFactory,
     NoteStore Function(String uri)? safStoreFactory,
     S3OperationLease Function()? operationLeaseFactory,
+    ImageAttachmentStore Function(String uri)? safImageStoreFactory,
   }) : this._(
          preferences ?? PreferencesService(),
          session ?? S3SessionController.instance,
          s3ClientFactory ?? _defaultMinioFactory,
          safStoreFactory ?? SafNoteStore.new,
          operationLeaseFactory ?? S3OperationLease.new,
+         safImageStoreFactory ?? SafImageAttachmentStore.new,
        );
 
   ActiveNoteStore._(
@@ -135,6 +139,7 @@ class ActiveNoteStore {
     this._s3ClientFactory,
     this._safStoreFactory,
     this._operationLeaseFactory,
+    this._safImageStoreFactory,
   ) : _repairs = DualWriteS3Repair(preferences: _prefs),
       _receipts = S3UploadReceipts(preferences: _prefs);
 
@@ -147,6 +152,7 @@ class ActiveNoteStore {
   final DualWriteS3Repair _repairs;
   final S3UploadReceipts _receipts;
   final S3OperationLease Function() _operationLeaseFactory;
+  final ImageAttachmentStore Function(String uri) _safImageStoreFactory;
   bool _probeBound = false;
   bool Function()? automaticRecoveryAllowed;
   Future<void>? _s3OnlyReplay;
@@ -802,6 +808,86 @@ class ActiveNoteStore {
         ? NoteCreateOutcome.savedLocalS3SettingsInvalid
         : NoteCreateOutcome.savedLocalOnly;
     return (entry: await keepLocal(), outcome: outcome);
+  }
+
+  /// Saves picked image [bytes] as a new `ql-img-*` attachment next to the
+  /// notes and returns its id, following the preferred [StorageMode] the way
+  /// [createNote] does:
+  ///
+  /// - [StorageMode.local]: the selected local folder (directory or SAF).
+  /// - [StorageMode.s3]: the bucket; when S3 cannot take it (degraded, no
+  ///   credentials, invalid settings, busy, or the PUT fails) the image is
+  ///   written locally instead. Unlike notes, a locally kept image is not
+  ///   uploaded later.
+  /// - [StorageMode.both]: local first, then the bucket.
+  ///
+  /// Throws when the image landed nowhere, so no dangling link is inserted.
+  Future<ImageSaveResult> saveImage(
+    Uint8List bytes,
+    String extension, {
+    DateTime? now,
+  }) async {
+    bindSessionProbe();
+    final id = imageAttachmentIdFor(now ?? DateTime.now(), extension);
+    final local = await _resolveLocalImageStore();
+    final mode = _session.preferredMode;
+    if (mode == StorageMode.local) {
+      await local.write(id, bytes);
+      return (id: id, outcome: NoteCreateOutcome.saved);
+    }
+    final config = await _s3ConfigForCreate();
+    if (config == null) {
+      await local.write(id, bytes);
+      return (id: id, outcome: NoteCreateOutcome.savedLocalOnly);
+    }
+    // Dual write: the local copy first, its failure kept for later.
+    final dual = mode == StorageMode.both;
+    (Object, StackTrace)? localFailure;
+    if (dual) {
+      try {
+        await local.write(id, bytes);
+      } catch (error, stackTrace) {
+        localFailure = (error, stackTrace);
+      }
+    }
+    try {
+      final s3 = S3ImageAttachmentStore(
+        _LeasedS3ObjectClient(
+          _s3ClientFactory(config),
+          (action) => _withS3Lease(action),
+        ),
+      );
+      await s3.write(id, bytes);
+      return (
+        id: id,
+        outcome: localFailure != null
+            ? NoteCreateOutcome.savedS3Only
+            : NoteCreateOutcome.saved,
+      );
+    } catch (e) {
+      if (e is! S3ConfigException &&
+          e is! S3OperationBusy &&
+          e is! ArgumentError) {
+        // A transport / service failure: skip S3 for a while, as for notes.
+        await _session.markS3Failed();
+      }
+      if (localFailure != null) {
+        Error.throwWithStackTrace(localFailure.$1, localFailure.$2);
+      }
+      if (!dual) await local.write(id, bytes);
+      return (
+        id: id,
+        outcome: e is S3ConfigException
+            ? NoteCreateOutcome.savedLocalS3SettingsInvalid
+            : NoteCreateOutcome.savedLocalOnly,
+      );
+    }
+  }
+
+  Future<ImageAttachmentStore> _resolveLocalImageStore() async {
+    final folder = await _prefs.scopedFolder();
+    if (folder != null) return _safImageStoreFactory(folder.uri);
+    return LocalImageAttachmentStore(await _prefs.directory());
   }
 
   /// Sources for the entry browser: always local; S3 when it is part of the

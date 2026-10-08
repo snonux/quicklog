@@ -35,6 +35,36 @@ internal class SafTreeDocuments(private val resolver: ContentResolver) {
     fun update(raw: String, name: String, text: String) = workflow(raw, write = true).update(name, text)
     fun delete(raw: String, name: String) = workflow(raw, write = true).delete(name)
 
+    /**
+     * Writes a new image attachment [name] into the tree. Images are never
+     * overwritten: when the provider stores the new document under another
+     * name (it de-duplicates clashes as "name (1)"), the copy is removed and
+     * the call fails, so a note never links to a file that is not there.
+     */
+    fun writeImage(raw: String, name: String, mimeType: String, bytes: ByteArray) {
+        workflow(raw, write = true)
+        val tree = Uri.parse(raw)
+        val parent = DocumentsContract.buildDocumentUriUsingTree(tree, DocumentsContract.getTreeDocumentId(tree))
+        val created = DocumentsContract.createDocument(resolver, parent, mimeType, name)
+            ?: throw IOException("Cannot create the image file.")
+        try {
+            val actual = resolver.query(
+                created, arrayOf(DocumentsContract.Document.COLUMN_DISPLAY_NAME), null, null, null,
+            )?.use { if (it.moveToFirst()) it.getString(0) else null }
+            if (actual != name) throw IOException("An image named $name already exists.")
+            val output = resolver.openOutputStream(created, "w")
+                ?: throw IOException("Cannot write the image file.")
+            output.use { it.write(bytes) }
+        } catch (e: Exception) {
+            try {
+                DocumentsContract.deleteDocument(resolver, created)
+            } catch (_: Exception) {
+                // The original error is the one worth reporting.
+            }
+            throw e
+        }
+    }
+
     private inner class ProviderGateway(private val tree: Uri) : SafDocumentGateway {
         override val recoverMovedRename: Boolean
             get() = Build.VERSION.SDK_INT == Build.VERSION_CODES.P &&

@@ -41,6 +41,15 @@ home computer.
   entry viewer. Deletion always goes through a full-screen confirmation that
   shows the filename, timestamp and a preview of the note — the file is
   removed for good, there is no trash folder.
+- **Images in notes**: the image button next to **Log text** (and in the
+  entry editor) adds a photo from the gallery or straight from the camera.
+  The picture is saved as its own file, `ql-img-YYMMDD-HHMMSS-mmm.jpg`, next
+  to the notes -- the same folder, or the same bucket in S3 mode -- and a
+  Markdown link `![](ql-img-….jpg)` is inserted at the cursor, so Obsidian or
+  any Markdown viewer shows it inline. Pictures are scaled to at most 2560 px.
+  In S3-only mode an image that could not reach the bucket stays on the
+  device and is not uploaded later, and `quicklog_drain` moves notes only,
+  not their images.
 - **Share to Quicklog** on Android: share text from any app and Quicklog
   either prefills the editor or logs it immediately, depending on the
   preference.

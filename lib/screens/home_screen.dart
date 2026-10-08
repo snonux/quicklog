@@ -9,6 +9,7 @@ import '../services/preferences.dart';
 import '../services/s3_session_controller.dart';
 import '../services/share_service.dart';
 import '../services/shared_text_handler.dart';
+import '../widgets/image_insert_buttons.dart';
 import '../widgets/s3_degraded_banner.dart';
 import '../widgets/s3_retry.dart';
 import 'entry_browser_screen.dart';
@@ -23,6 +24,8 @@ class HomeScreen extends StatefulWidget {
     this.activeStore,
     this.preferences,
     this.sharedTextCache,
+    this.pickImage,
+    this.cameraSupported,
   });
 
   /// Optional override for tests; defaults to the process-wide session.
@@ -38,6 +41,11 @@ class HomeScreen extends StatefulWidget {
   /// Optional override for tests: the share cache to drain on start-up and
   /// resume. Defaults to the native cache, which exists on Android only.
   final SharedTextCache? sharedTextCache;
+
+  /// Optional overrides for tests: the image picker and whether the
+  /// "Add image" menu offers the camera.
+  final ImagePickFn? pickImage;
+  final bool? cameraSupported;
 
   @override
   State<HomeScreen> createState() => _HomeScreenState();
@@ -466,8 +474,27 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
                               },
                         child: const Text('Clear'),
                       ),
-                      const Spacer(),
-                      Text('$length chars'),
+                      ImageInsertButtons(
+                        controller: _controller,
+                        saveImage: _active.saveImage,
+                        enabled: !_logging,
+                        pickImage: widget.pickImage ?? pickWithImagePicker,
+                        cameraSupported: widget.cameraSupported,
+                        onInserted: () {
+                          if (_loadingShared) _touchedDuringShareLoad = true;
+                          _focusNode.requestFocus();
+                        },
+                      ),
+                      // Yields (ellipsised) rather than overflow the row
+                      // on a narrow phone or with a large font size.
+                      Expanded(
+                        child: Text(
+                          '$length chars',
+                          textAlign: TextAlign.end,
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis,
+                        ),
+                      ),
                     ],
                   ),
                 ],
