@@ -29,6 +29,15 @@ class DualWriteS3Pending implements Exception {
     );
   }
 
+  /// No device copy was involved (an S3-only row); the bucket object
+  /// is still there.
+  factory DualWriteS3Pending.s3OnlyNotDeleted(Object cause) {
+    return DualWriteS3Pending._(
+      'The S3 copy was not deleted and will be removed when S3 is '
+      'reachable. ($cause)',
+    );
+  }
+
   final String message;
 
   @override

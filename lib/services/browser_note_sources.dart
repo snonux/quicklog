@@ -363,6 +363,14 @@ class BrowserNoteSources {
       await repairs.enqueueDelete(located.id);
       return DualWriteS3Pending.notDeleted(s3Error);
     }
+    if (!located.hasLocal && s3Error != null && s3Error is! ArgumentError) {
+      // No device file was involved (an S3-only row, e.g. a leftover whose
+      // delete is already queued). The user asked for the delete, so queue
+      // it for replay — enqueueDelete is idempotent — instead of surfacing
+      // the raw transport error as a failed delete.
+      await repairs.enqueueDelete(located.id);
+      return DualWriteS3Pending.s3OnlyNotDeleted(s3Error);
+    }
     return null;
   }
 
