@@ -1,0 +1,4 @@
+Calmer S3 outages:
+
+* Deleting a note while S3 is unreachable is a notice now, not an error. The S3 copy is removed automatically once S3 is reachable again.
+* The note list shows a single warning while S3 is down instead of two error banners, and invalid S3 settings keep their actionable hint.
