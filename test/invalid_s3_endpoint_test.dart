@@ -421,6 +421,37 @@ void main() {
       expect(find.byTooltip('Move all local to S3'), findsNothing);
     });
 
+    testWidgets('degraded session with invalid endpoint shows what to fix', (
+      tester,
+    ) async {
+      await setUpPrefs(mode: StorageMode.both, endpoint: 'http://');
+      // A failed S3 write earlier armed the degrade window. Real clock: the
+      // degrade expiry timer must not pend on the fake one.
+      await tester.runAsync(() => session.markS3Failed());
+      expect(session.isDegraded, isTrue);
+      await pumpBrowser(
+        tester,
+        ActiveNoteStore(preferences: prefs, session: session),
+      );
+
+      // Local notes are still listed.
+      expect(find.textContaining(localText), findsWidgets);
+      // The setup-error banner survives the degrade window: it says what
+      // to fix, which the session degrade banner cannot.
+      expect(find.textContaining('Could not list S3 notes'), findsOneWidget);
+      expect(
+        find.text(
+          'Check the S3 settings in Preferences: '
+          'S3 endpoint has no host: http://',
+        ),
+        findsOneWidget,
+      );
+      // And the session degrade banner stays hidden instead of doubling the
+      // same outage with a second message.
+      expect(find.textContaining('S3 unavailable'), findsNothing);
+      expect(find.text('Retry S3'), findsNothing);
+    });
+
     testWidgets('valid endpoint shows no banner and keeps Move to S3', (
       tester,
     ) async {
