@@ -47,6 +47,9 @@ void main() {
                 ...notes.keys,
                 if (duplicateListing && notes.isNotEmpty) notes.keys.first,
                 'other.md',
+                // An image attached by v0.4.0; no longer a feature, and
+                // never a note.
+                'ql-img-260101-000000-123.jpg',
                 '../ql-260101-000000.md',
               ];
             case 'create':
@@ -131,10 +134,16 @@ void main() {
       '../ql-260101-000000.md',
       '/ql-260101-000000.md',
       'a.md',
+      // Images left by v0.4.0, and look-alikes: never a note id, so the
+      // native side is not even asked to read, replace or delete them.
+      'ql-img-260101-000000-123.jpg',
+      'ql-img-260101-000000-123.bmp',
+      'ql-img-260101-000000-123.md',
     ]) {
       await expectLater(store.read(id), throwsArgumentError);
       await expectLater(store.update(id, 'x'), throwsArgumentError);
       await expectLater(store.delete(id), throwsArgumentError);
+      expect(await store.firstLine(id), '');
     }
     expect(calls, 0);
   });

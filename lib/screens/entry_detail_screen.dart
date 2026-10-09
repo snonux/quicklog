@@ -1,7 +1,6 @@
 import 'package:flutter/material.dart';
 
 import '../services/entry_handle.dart';
-import '../services/image_attachments.dart';
 import '../services/merged_note_listing.dart';
 import 'delete_confirmation_screen.dart';
 import 'entry_edit_screen.dart';
@@ -14,18 +13,10 @@ import 'entry_tile.dart';
 /// on top of it, and the viewer re-reads afterwards so what is on screen
 /// matches what is stored.
 class EntryDetailScreen extends StatefulWidget {
-  const EntryDetailScreen({
-    super.key,
-    required this.handle,
-    this.location,
-    this.saveImage,
-  });
+  const EntryDetailScreen({super.key, required this.handle, this.location});
 
   final EntryHandle handle;
   final NoteStorageLocation? location;
-
-  /// Passed on to the editor for "Add image".
-  final ImageSaver? saveImage;
 
   @override
   State<EntryDetailScreen> createState() => _EntryDetailScreenState();
@@ -49,11 +40,7 @@ class _EntryDetailScreenState extends State<EntryDetailScreen> {
   }
 
   Future<void> _edit() async {
-    final saved = await editEntry(
-      context,
-      widget.handle,
-      saveImage: widget.saveImage,
-    );
+    final saved = await editEntry(context, widget.handle);
     // true: saved. false: discarded, or a save was attempted and may have
     // written storage. null: no save was attempted, so the text shown is
     // still current.

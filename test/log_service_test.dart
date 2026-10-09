@@ -77,6 +77,77 @@ void main() {
     });
   });
 
+  // v0.4.0 could attach images: each one is a `ql-img-*` file next to the
+  // notes, referenced from the note by a Markdown link. Image support is
+  // gone again, but those files and links are still on users' devices. They
+  // must stay invisible to the note contract and must never be removed.
+  group('LocalNoteStore with image files left by v0.4.0', () {
+    const noteId = 'ql-261008-195018.md';
+    const imageId = 'ql-img-261008-195018-123.jpg';
+    const linked = 'before\n![](ql-img-261008-195018-123.jpg)\nafter';
+    // A JPEG header: not valid UTF-8, so reading it as a note would throw.
+    const imageBytes = [0xFF, 0xD8, 0xFF, 0xE0, 0x00, 0x10];
+    late Directory tmp;
+    late LocalNoteStore store;
+    late File image;
+
+    setUp(() async {
+      tmp = await Directory.systemTemp.createTemp('ql-legacy-img-');
+      store = LocalNoteStore(tmp.path);
+      image = File(p.join(tmp.path, imageId));
+      await image.writeAsBytes(imageBytes);
+      await File(p.join(tmp.path, noteId)).writeAsString(linked);
+    });
+    tearDown(() async {
+      if (await tmp.exists()) await tmp.delete(recursive: true);
+    });
+
+    test('lists the note only; the image link stays plain text', () async {
+      final entries = await store.list();
+      expect(entries.map((e) => e.id), [noteId]);
+      expect(await store.read(noteId), linked);
+      expect(await store.firstLine(noteId), 'before');
+    });
+
+    test('editing and deleting the note keep the image file', () async {
+      await store.update(noteId, '$linked\nedited');
+      expect(await store.read(noteId), '$linked\nedited');
+      await store.delete(noteId);
+      expect(await store.list(), isEmpty);
+      expect(await image.readAsBytes(), imageBytes);
+    });
+
+    test('an image name is refused as a note id and left alone', () async {
+      expect(parseLogEntryId(imageId), isNull);
+      // Awaited: the refusal must have happened before the bytes are checked.
+      await expectLater(() => store.read(imageId), throwsArgumentError);
+      await expectLater(() => store.update(imageId, 'x'), throwsArgumentError);
+      await expectLater(() => store.delete(imageId), throwsArgumentError);
+      expect(await store.firstLine(imageId), '');
+      expect(await image.readAsBytes(), imageBytes);
+    });
+
+    test('malformed leftovers are skipped and kept too', () async {
+      // A name dressed up as a note, a type v0.4.0 never wrote, and a
+      // zero-byte file from an interrupted save.
+      const odd = [
+        'ql-img-261008-195018-123.md',
+        'ql-img-261008-195018-124.bmp',
+        'ql-img-261008-195018-125.jpg',
+      ];
+      for (final name in odd) {
+        await File(p.join(tmp.path, name)).writeAsBytes(const []);
+      }
+
+      expect((await store.list()).map((e) => e.id), [noteId]);
+      for (final name in odd) {
+        expect(parseLogEntryId(name), isNull, reason: name);
+        await expectLater(() => store.delete(name), throwsArgumentError);
+        expect(await File(p.join(tmp.path, name)).exists(), isTrue);
+      }
+    });
+  });
+
   group('LocalNoteStore.delete', () {
     late Directory tmp;
     late LocalNoteStore store;

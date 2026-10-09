@@ -2,8 +2,6 @@ import 'package:flutter/material.dart';
 
 import '../services/dual_write_s3_repair.dart';
 import '../services/entry_handle.dart';
-import '../services/image_attachments.dart';
-import '../widgets/image_insert_buttons.dart';
 
 /// Pushes the full-screen editor for [handle] and returns how it closed.
 ///
@@ -12,16 +10,10 @@ import '../widgets/image_insert_buttons.dart';
 /// the note was saved. `false` means the user left without a successful save
 /// after either discarding edits or attempting a save (which may have written
 /// one backend). `null` means no save was attempted.
-///
-/// With [saveImage] the editor offers "Add image" (gallery or camera).
-Future<bool?> editEntry(
-  BuildContext context,
-  EntryHandle handle, {
-  ImageSaver? saveImage,
-}) {
+Future<bool?> editEntry(BuildContext context, EntryHandle handle) {
   return Navigator.of(context).push<bool>(
     MaterialPageRoute(
-      builder: (_) => EntryEditScreen(handle: handle, saveImage: saveImage),
+      builder: (_) => EntryEditScreen(handle: handle),
     ),
   );
 }
@@ -30,22 +22,9 @@ Future<bool?> editEntry(
 /// keeps its creation timestamp (which is what the filename encodes) and its
 /// position in the browser list.
 class EntryEditScreen extends StatefulWidget {
-  const EntryEditScreen({
-    super.key,
-    required this.handle,
-    this.saveImage,
-    this.pickImage,
-    this.cameraSupported,
-  });
+  const EntryEditScreen({super.key, required this.handle});
 
   final EntryHandle handle;
-
-  /// Saves an added image next to the notes; null hides "Add image".
-  final ImageSaver? saveImage;
-
-  /// Optional overrides for tests, see [ImageInsertButtons].
-  final ImagePickFn? pickImage;
-  final bool? cameraSupported;
 
   @override
   State<EntryEditScreen> createState() => _EntryEditScreenState();
@@ -247,20 +226,16 @@ class _EntryEditScreenState extends State<EntryEditScreen> {
           onPressed: _dirty && !_saving ? _revert : null,
           child: const Text('Revert'),
         ),
-        if (widget.saveImage case final saveImage?)
-          ImageInsertButtons(
-            controller: _controller,
-            saveImage: saveImage,
-            enabled: !_saving,
-            pickImage: widget.pickImage ?? pickWithImagePicker,
-            cameraSupported: widget.cameraSupported,
-          ),
+        const SizedBox(width: 8),
+        // Takes what is left of the row and shrinks to fit it, rather than
+        // overflow the row on a narrow phone or with a large font size.
+        // Shrinking, not an ellipsis: a cut-off number reads as another
+        // count, while a small one is at worst hard to read.
         Expanded(
-          child: Text(
-            '${_controller.text.length} chars',
-            textAlign: TextAlign.end,
-            maxLines: 1,
-            overflow: TextOverflow.ellipsis,
+          child: FittedBox(
+            fit: BoxFit.scaleDown,
+            alignment: AlignmentDirectional.centerEnd,
+            child: Text('${_controller.text.length} chars', maxLines: 1),
           ),
         ),
       ],

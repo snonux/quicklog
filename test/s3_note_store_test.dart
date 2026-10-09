@@ -54,6 +54,51 @@ void main() {
       ]);
     });
 
+    // v0.4.0 uploaded attached images as `ql-img-*` objects beside the
+    // notes. Image support was removed, the objects were not: they must be
+    // skipped by the listing and never read, overwritten or deleted.
+    test('image objects left by v0.4.0 are skipped and kept', () async {
+      const imageKey = 'ql-img-260908-100000-123.jpg';
+      const imageBytes = [0xFF, 0xD8, 0xFF, 0xE0];
+      const linked = 'see\n![]($imageKey)';
+      await client.putObject(imageKey, imageBytes, contentType: 'image/jpeg');
+      final note = await store.create(
+        linked,
+        now: DateTime(2026, 9, 8, 10, 0, 0),
+      );
+
+      expect((await store.list()).map((e) => e.id), [note.id]);
+      expect(await store.read(note.id), linked);
+      // Awaited: the refusals must be over before the bucket is checked.
+      await expectLater(() => store.read(imageKey), throwsArgumentError);
+      await expectLater(() => store.update(imageKey, 'x'), throwsArgumentError);
+      await expectLater(() => store.delete(imageKey), throwsArgumentError);
+
+      await store.delete(note.id);
+      expect(await store.list(), isEmpty);
+      expect(client.objects, {imageKey: imageBytes});
+    });
+
+    test('malformed image leftovers are skipped and kept too', () async {
+      // A name dressed up as a note, a type v0.4.0 never wrote, and a
+      // zero-byte object.
+      const odd = [
+        'ql-img-260908-100000-123.md',
+        'ql-img-260908-100000-124.bmp',
+        'ql-img-260908-100000-125.jpg',
+      ];
+      for (final key in odd) {
+        await client.putObject(key, const []);
+      }
+
+      expect(await store.list(), isEmpty);
+      for (final key in odd) {
+        await expectLater(() => store.read(key), throwsArgumentError);
+        await expectLater(() => store.delete(key), throwsArgumentError);
+      }
+      expect(client.objects.keys, odd);
+    });
+
     test('rejects unsafe ids', () async {
       expect(
         () => store.read('../escape.md'),

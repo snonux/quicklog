@@ -192,6 +192,31 @@ void main() {
     },
   );
 
+  test('recovery uploads notes only and leaves v0.4.0 images alone', () async {
+    final backlog = await local.create('backlog', now: DateTime(2026, 9, 1));
+    // Pictures v0.4.0 kept on the device while S3 was down, plus look-alikes:
+    // a zero-byte one, a type it never wrote, and one ending in `.md`.
+    final images = <String, List<int>>{
+      'ql-img-260901-000000-123.jpg': [0xFF, 0xD8, 0xFF],
+      'ql-img-260901-000000-124.png': const [],
+      'ql-img-260901-000000-125.bmp': [0x42, 0x4D],
+      'ql-img-260901-000000-126.md': utf8.encode('not a note'),
+    };
+    for (final image in images.entries) {
+      await File('${directory.path}/${image.key}').writeAsBytes(image.value);
+    }
+
+    await active.replayS3OnlyLocalNotes();
+
+    expect(remote.objects.keys, [backlog.id]);
+    expect(remote.puts, 1);
+    for (final image in images.entries) {
+      final file = File('${directory.path}/${image.key}');
+      expect(await file.exists(), isTrue, reason: image.key);
+      expect(await file.readAsBytes(), image.value, reason: image.key);
+    }
+  });
+
   test('manual Retry waits for backlog PUT completion', () async {
     final backlog = await local.create('backlog', now: DateTime(2026, 9, 1));
     final entered = Completer<void>();

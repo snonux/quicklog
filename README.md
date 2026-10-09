@@ -41,15 +41,6 @@ home computer.
   entry viewer. Deletion always goes through a full-screen confirmation that
   shows the filename, timestamp and a preview of the note — the file is
   removed for good, there is no trash folder.
-- **Images in notes**: the image button next to **Log text** (and in the
-  entry editor) adds a photo from the gallery or straight from the camera.
-  The picture is saved as its own file, `ql-img-YYMMDD-HHMMSS-mmm.jpg`, next
-  to the notes -- the same folder, or the same bucket in S3 mode -- and a
-  Markdown link `![](ql-img-….jpg)` is inserted at the cursor, so Obsidian or
-  any Markdown viewer shows it inline. Pictures are scaled to at most 2560 px.
-  In S3-only mode an image that could not reach the bucket stays on the
-  device and is not uploaded later, and `quicklog_drain` moves notes only,
-  not their images.
 - **Share to Quicklog** on Android: share text from any app and Quicklog
   either prefills the editor or logs it immediately, depending on the
   preference.
@@ -260,6 +251,27 @@ drain (import or `--dest`) to exactly the named keys, after the usual
 only its own test keys and never touch a note created mid-run. Dotfiles
 wrap the CLI (`taskwarrior::quicklog_import` before `quicklogger` in `ti`
 / `invoke`); that wrapper is not part of this repository.
+
+## Images saved by v0.4.0
+
+Quicklog v0.4.0 could add a picture to a note. That feature was removed
+again, but nothing it wrote was touched:
+
+- Each picture is its own file named `ql-img-YYMMDD-HHMMSS-mmm.<ext>` (`jpg`,
+  `png`, `gif`, `webp` or `heic`) next to the notes: in the notes folder in
+  local mode, in the bucket in **S3 only** mode, and in both in **Local +
+  S3** mode. When S3 could not take a picture it was kept in the notes folder
+  only and never uploaded later, so after an outage the pictures of an **S3
+  only** setup can be spread over the bucket and the device folder. In
+  **Local + S3** mode a picture whose local write failed is in the bucket
+  only.
+- Notes keep the Markdown link `![](ql-img-….<ext>)` that was inserted for the
+  picture. It is ordinary note text: Obsidian or any Markdown viewer shows the
+  picture when the file sits next to the note.
+- These files are not notes. Quicklog does not list, move, upload or delete
+  them, and `quicklog_drain` leaves them in the bucket in every mode
+  (`--import`, `--dest`, `--keys`; `--delete` refuses them). To keep the
+  pictures, copy them out of the notes folder or the bucket yourself.
 
 ## Back up and restore settings
 

@@ -1,5 +1,4 @@
-<manifest xmlns:android="http://schemas.android.com/apk/res/android"
-    xmlns:tools="http://schemas.android.com/tools">
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
     <!-- Optional S3 mode (user-configured endpoint). Default storage is still
          local-only; nothing is sent unless the user enables S3 and pastes keys. -->
     <uses-permission android:name="android.permission.INTERNET"/>
@@ -58,13 +57,6 @@
         <meta-data
             android:name="flutterEmbedding"
             android:value="2" />
-        <!-- image_picker declares this to make Google Play services install
-             its backported photo picker. Quicklog ships on F-Droid without
-             Play services; androidx falls back to the system document picker
-             on devices that lack the built-in photo picker. -->
-        <service
-            android:name="com.google.android.gms.metadata.ModuleDependencies"
-            tools:node="remove" />
     </application>
     <queries>
         <intent>

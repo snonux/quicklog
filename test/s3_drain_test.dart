@@ -126,6 +126,68 @@ void main() {
     expect(client.objects.containsKey('readme.txt'), isTrue);
   });
 
+  // Image objects written by v0.4.0 (`ql-img-*`) are not notes: the drain
+  // must neither download them nor delete them from the bucket.
+  test('leaves image objects from v0.4.0 in the bucket', () async {
+    const imageKey = 'ql-img-260908-100000-123.jpg';
+    await client.putObject(imageKey, [
+      0xFF,
+      0xD8,
+      0xFF,
+    ], contentType: 'image/jpeg');
+    await client.putText('ql-260908-100000.md', '![]($imageKey)');
+
+    final summary = await drainQuicklogObjects(client: client, destDir: dest);
+    expect(summary.fetched, 1);
+    expect(summary.deleted, 1);
+    expect(summary.failed, 0);
+    expect(client.objects.keys, [imageKey]);
+    expect(client.objects[imageKey], [0xFF, 0xD8, 0xFF]);
+    expect(await File(p.join(dest.path, imageKey)).exists(), isFalse);
+    expect(await listQuicklogKeys(client: client), isEmpty);
+    // Even asked for by name (`--delete`), an image is refused, not removed.
+    final refused = await deleteQuicklogObjects(
+      client: client,
+      keys: [imageKey],
+    );
+    expect(refused.deleted, 0);
+    expect(refused.failed, 1);
+    expect(client.objects.keys, [imageKey]);
+    // Nor is it ever read as a note.
+    await expectLater(
+      () => readQuicklogObject(client: client, key: imageKey),
+      throwsArgumentError,
+    );
+  });
+
+  test('--import streams notes only and keeps image objects', () async {
+    // A real picture, a zero-byte one, a type v0.4.0 never wrote and a name
+    // dressed up as a note: none of them may be emitted or deleted.
+    final images = <String, List<int>>{
+      'ql-img-260908-100000-123.jpg': [0xFF, 0xD8, 0xFF],
+      'ql-img-260908-100000-124.png': const [],
+      'ql-img-260908-100000-125.bmp': [0x42, 0x4D],
+      'ql-img-260908-100000-126.md': [0x78],
+    };
+    for (final image in images.entries) {
+      await client.putObject(image.key, image.value);
+    }
+    await client.putText('ql-260908-100000.md', 'note');
+    final emitted = <String>[];
+
+    final summary = await streamQuicklogObjects(
+      client: client,
+      emitNote: (key, content) async => emitted.add('$key:$content'),
+      readAck: (_) async => ImportAck(ok: true),
+    );
+
+    expect(emitted, ['ql-260908-100000.md:note']);
+    expect(summary.fetched, 1);
+    expect(summary.deleted, 1);
+    expect(summary.failed, 0);
+    expect(client.objects, images);
+  });
+
   group('listQuicklogKeys', () {
     test('filters, sorts oldest first, and applies limit', () async {
       await client.putText('ql-260908-100020.md', 'c');

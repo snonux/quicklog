@@ -29,6 +29,11 @@ internal fun requireCompleteListing(loading: Boolean, error: String?) {
     if (loading) throw IOException("The selected folder is still loading. Try again.")
 }
 
+// The note filename contract, always applied as a full match. Keep in step
+// with `_filenameRegex` in the app's lib/services/log_service.dart, which
+// filters the same names again on the Dart side. Anything else in the tree is
+// not a note; that includes the `ql-img-*` image files v0.4.0 saved here,
+// which are left in place now that image support is gone.
 private val noteNamePattern = Regex("ql-[0-9]{6}-[0-9]{6}\\.md")
 
 internal fun isQuicklogNoteName(name: String): Boolean =
@@ -37,7 +42,10 @@ internal fun isQuicklogNoteName(name: String): Boolean =
 /** Keeps old bytes recoverable when a provider cannot replace documents atomically. */
 internal class SafNoteWorkflow(private val gateway: SafDocumentGateway) {
     private var listedNotes: Map<String, SafDocument>? = null
-    private val backupPattern = Regex("^\\.quicklog-backup-[0-9a-f-]+-(ql-[0-9]{6}-[0-9]{6}\\.md)$")
+    // Built from the note contract rather than repeating it, so a backup is
+    // only ever recognised for a name that is a note.
+    private val backupPattern =
+        Regex("^\\.quicklog-backup-[0-9a-f-]+-(${noteNamePattern.pattern})$")
 
     private fun requireName(name: String) {
         require(isQuicklogNoteName(name)) { "Invalid note filename." }

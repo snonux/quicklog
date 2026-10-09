@@ -29,6 +29,19 @@ abstract class NoteStore {
   Future<String> preview(String id, {int maxChars = 200});
 }
 
+// What counts as a note: only names matching this are ever listed, read,
+// edited or deleted as notes, in the local folder, the SAF folder and the
+// bucket alike. (Quicklog does own a few other, short-lived names: the SAF
+// workflow's `.quicklog-pending-*` / `.quicklog-backup-*` staging documents
+// and the drain's `.<name>.tmp.<micros>` files.)
+//
+// The `ql-img-*` image files v0.4.0 wrote next to the notes are not notes
+// and not staging files: image support was removed again, and the files and
+// the Markdown links to them were deliberately left where they are.
+//
+// Keep in step with `noteNamePattern` in the platform package's
+// SafNoteWorkflow.kt, which applies the same contract on the Android side
+// before the Dart side filters the listing again.
 final _filenameRegex = RegExp(r'^ql-(\d{6})-(\d{6})\.md$');
 final _timestampFormat = DateFormat('yyMMdd-HHmmss');
 

@@ -104,6 +104,63 @@ class SafNoteWorkflowTest {
         }
     }
 
+    /**
+     * Pictures v0.4.0 saved next to the notes stay in the tree now that image
+     * support is removed. Every workflow entry point must leave them alone:
+     * not listed, not accepted as an id, not taken for a backup to restore,
+     * and still there after the note linking them is edited and deleted.
+     */
+    @Test
+    fun imageDocumentsLeftByV040AreNeverListedOrRemoved() {
+        val provider = FakeGateway()
+        val images = listOf(
+            "ql-img-260507-143045-123.jpg",
+            // Zero-byte, unknown type, and dressed up as Markdown.
+            "ql-img-260507-143045-124.png",
+            "ql-img-260507-143045-125.bmp",
+            "ql-img-260507-143045-126.md",
+            "ql-img-ql-260507-143045.md",
+            // Shaped like an interrupted-edit backup, but not of a note.
+            ".quicklog-backup-0a1b-ql-img-260507-143045-123.jpg",
+        )
+        images.forEach { provider.add(it, if (it.endsWith(".png")) "" else "bytes of $it") }
+        // Providers de-duplicate nothing: two documents may share a name.
+        // That is an error for notes only.
+        provider.add(images.first(), "second copy")
+        provider.add(note, "see ![](${images.first()})")
+        val before = provider.records.values.filter { it.name != note }.map { it.name to it.text }
+        fun leftovers() = provider.records.values.filter { it.name != note }.map { it.name to it.text }
+        val workflow = SafNoteWorkflow(provider)
+
+        assertEquals(listOf(note), workflow.list())
+        assertEquals("see ![](${images.first()})", workflow.read(note))
+        val listCallsBefore = provider.listCalls
+        for (image in images) {
+            for (action in listOf<(String) -> Unit>(
+                { workflow.read(it) },
+                { workflow.firstLine(it) },
+                { workflow.create(it, "x") },
+                { workflow.update(it, "x") },
+                { workflow.delete(it) },
+            )) {
+                try {
+                    action(image)
+                    fail("Expected $image to be refused")
+                } catch (_: IllegalArgumentException) {
+                    // Refused by name, before the provider is touched.
+                }
+            }
+        }
+        assertEquals(listCallsBefore, provider.listCalls)
+        assertEquals(before, leftovers())
+
+        workflow.update(note, "edited")
+        assertEquals("edited", provider.textAt(note))
+        workflow.delete(note)
+        assertEquals(emptyList<String>(), workflow.list())
+        assertEquals(before, leftovers())
+    }
+
     @Test
     fun createPublishesOnlyAfterCompleteStagedWrite() {
         val provider = FakeGateway()

@@ -12,6 +12,7 @@ import 'package:quicklog/services/s3_session_controller.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
 import 'io_pump.dart';
+import 'support/cramped_view.dart';
 import 'support/memory_s3_object_client.dart';
 
 void main() {
@@ -38,6 +39,7 @@ void main() {
     await tester.enterText(find.byType(TextField), 'hello');
     await tester.pump();
     expect(find.text('5 chars'), findsOneWidget);
+    expectCounterAtRowEndUnshrunk(tester, '5 chars');
   });
 
   testWidgets('Clear button empties the input', (tester) async {
@@ -51,6 +53,64 @@ void main() {
     await tester.tap(find.text('Clear'));
     await tester.pump();
     expect(find.text('0 chars'), findsOneWidget);
+  });
+
+  testWidgets('right-to-left: the counter sits at the left end of the row',
+      (tester) async {
+    await tester.pumpWidget(
+      MaterialApp(
+        builder: rightToLeftBuilder,
+        home: HomeScreen(session: session),
+      ),
+    );
+    await tester.pumpAndSettle();
+
+    expectCounterAtRowEndUnshrunk(
+      tester,
+      '0 chars',
+      direction: TextDirection.rtl,
+    );
+  });
+
+  testWidgets('a long note on a cramped screen does not overflow the row',
+      (tester) async {
+    useCrampedView(tester);
+    await tester.pumpWidget(
+      MaterialApp(
+        builder: crampedTextScaleBuilder,
+        home: HomeScreen(session: session),
+      ),
+    );
+    await tester.pumpAndSettle();
+
+    await tester.enterText(find.byType(TextField), 'x' * 12345);
+    await tester.pump();
+
+    // A row that does not fit reports a RenderFlex overflow as an exception.
+    expect(tester.takeException(), isNull);
+    // The counter gave way instead: its slot is narrower than the text at
+    // full size, which also proves the view really is too tight for this
+    // test to mean anything. It is shrunk into the slot whole, so no digit
+    // of the count is cut off.
+    final counter = find.text('12345 chars');
+    final slot = find.ancestor(of: counter, matching: find.byType(FittedBox));
+    expect(
+      tester.getSize(slot).width,
+      lessThan(tester.getSize(counter).width),
+    );
+    expect(tester.widget<Text>(counter).overflow, isNull);
+    expect(tester.getRect(counter).width, closeTo(tester.getSize(slot).width, 0.5));
+  });
+
+  testWidgets('offers no way to add an image', (tester) async {
+    await tester.pumpWidget(MaterialApp(home: HomeScreen(session: session)));
+    await tester.pumpAndSettle();
+
+    // The screen did render, so "nothing found" below means something.
+    expect(find.widgetWithText(FilledButton, 'Log text'), findsOneWidget);
+    // What the v0.4.0 button looked like; image support was removed again.
+    expect(find.byTooltip('Add image'), findsNothing);
+    expect(find.byIcon(Icons.add_photo_alternate_outlined), findsNothing);
   });
 
   testWidgets('Log text button is rendered and enabled', (tester) async {

@@ -10,6 +10,7 @@ import 'package:quicklog/services/entry_handle.dart';
 import 'package:quicklog/services/log_service.dart';
 
 import 'io_pump.dart';
+import 'support/cramped_view.dart';
 
 /// Writes through [inner], then throws. Models a dual-write that landed on
 /// one backend and failed on the other.
@@ -146,11 +147,13 @@ void main() {
   Future<List<bool?>> pumpEditor(
     WidgetTester tester, {
     EntryHandle? handle,
+    TransitionBuilder? builder,
   }) async {
     final opened = handle ?? BoundNoteStore(store, entry);
     final results = <bool?>[];
     await tester.pumpWidget(
       MaterialApp(
+        builder: builder,
         home: Scaffold(
           body: Builder(
             builder: (ctx) => TextButton(
@@ -185,6 +188,7 @@ void main() {
     expect(find.text(id), findsOneWidget);
     expect(find.text('original body'), findsOneWidget);
     expect(find.text('13 chars'), findsOneWidget);
+    expectCounterAtRowEndUnshrunk(tester, '13 chars');
     final save = tester.widget<FilledButton>(
       find.widgetWithText(FilledButton, 'Save'),
     );
@@ -193,6 +197,51 @@ void main() {
       find.widgetWithText(OutlinedButton, 'Revert'),
     );
     expect(revert.onPressed, isNull);
+  });
+
+  testWidgets('right-to-left: the counter sits at the left end of the row',
+      (tester) async {
+    await pumpEditor(tester, builder: rightToLeftBuilder);
+
+    expectCounterAtRowEndUnshrunk(
+      tester,
+      '13 chars',
+      direction: TextDirection.rtl,
+    );
+  });
+
+  testWidgets('a long note on a cramped screen does not overflow the row',
+      (tester) async {
+    useCrampedView(tester);
+    await pumpEditor(tester, builder: crampedTextScaleBuilder);
+
+    await tester.enterText(find.byType(TextField), 'x' * 12345);
+    await tester.pump();
+
+    // A row that does not fit reports a RenderFlex overflow as an exception.
+    expect(tester.takeException(), isNull);
+    // The counter gave way instead: its slot is narrower than the text at
+    // full size, which also proves the view really is too tight for this
+    // test to mean anything. It is shrunk into the slot whole, so no digit
+    // of the count is cut off.
+    final counter = find.text('12345 chars');
+    final slot = find.ancestor(of: counter, matching: find.byType(FittedBox));
+    expect(
+      tester.getSize(slot).width,
+      lessThan(tester.getSize(counter).width),
+    );
+    expect(tester.widget<Text>(counter).overflow, isNull);
+    expect(tester.getRect(counter).width, closeTo(tester.getSize(slot).width, 0.5));
+  });
+
+  testWidgets('offers no way to add an image', (tester) async {
+    await pumpEditor(tester);
+
+    // The editor did render, so "nothing found" below means something.
+    expect(find.widgetWithText(FilledButton, 'Save'), findsOneWidget);
+    // What the v0.4.0 button looked like; image support was removed again.
+    expect(find.byTooltip('Add image'), findsNothing);
+    expect(find.byIcon(Icons.add_photo_alternate_outlined), findsNothing);
   });
 
   testWidgets('saving writes the edited text and pops with true',
