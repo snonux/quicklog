@@ -76,6 +76,35 @@ class BrowserNoteSources {
     );
   }
 
+  /// S3-only recovery moves local notes into the bucket in the background,
+  /// so a listed row can still claim a device copy that is gone. Writing to
+  /// it would bring the file back as a duplicate (or fail outright on a
+  /// document-provider folder); such a row is treated as the bucket-only
+  /// note it has become. Other modes never lose files this way.
+  Future<LocatedLogEntry> _withoutMovedLocalFile(
+    LocatedLogEntry located,
+  ) async {
+    if (runMutation == null || located.location != NoteStorageLocation.both) {
+      return located;
+    }
+    try {
+      if (!await _deviceFileGone(located.id)) return located;
+    } catch (_) {
+      // An unlistable folder says nothing about this file: leave the row.
+      return located;
+    }
+    return LocatedLogEntry(
+      entry: located.entry,
+      location: NoteStorageLocation.s3,
+    );
+  }
+
+  /// A row as S3-only mutations should see it: [_reconcileS3OnlyLocation]
+  /// for a local row whose note reached the bucket, then
+  /// [_withoutMovedLocalFile] for a device copy that went with it.
+  Future<LocatedLogEntry> _currentS3OnlyRow(LocatedLogEntry located) async =>
+      _withoutMovedLocalFile(await _reconcileS3OnlyLocation(located));
+
   /// Set by [list] when an S3 LIST fails; local rows are still returned.
   bool s3ListFailed = false;
 
@@ -128,7 +157,7 @@ class BrowserNoteSources {
     if (gate != null) {
       return gate(
         located.id,
-        () async => _update(await _reconcileS3OnlyLocation(located), text),
+        () async => _update(await _currentS3OnlyRow(located), text),
       );
     }
     final repairs = pendingRepairs;
@@ -184,7 +213,7 @@ class BrowserNoteSources {
     if (gate != null) {
       return gate(
         located.id,
-        () async => _delete(await _reconcileS3OnlyLocation(located)),
+        () async => _delete(await _currentS3OnlyRow(located)),
       );
     }
     final repairs = pendingRepairs;
@@ -399,9 +428,46 @@ class BrowserNoteSources {
   /// after a successful put).
   Future<void> uploadLocalToS3(LocatedLogEntry located) {
     final gate = runMutation;
-    return gate == null
-        ? _uploadLocalToS3(located)
-        : gate(located.id, () => _uploadLocalToS3(located));
+    if (gate == null) return _uploadLocalToS3(located);
+    return gate(located.id, () async {
+      try {
+        await _uploadLocalToS3(located);
+      } catch (_) {
+        // Background recovery may have moved this very note already; then
+        // nothing is left to upload and the request is fulfilled. Checked
+        // only on failure, so a normal move costs no extra requests.
+        if (!await _alreadyMoved(located)) rethrow;
+      }
+    });
+  }
+
+  /// True only when it is certain: a local-only row whose device file is
+  /// gone and whose note the bucket returns right now. An unreachable
+  /// bucket or an unlistable folder proves nothing.
+  Future<bool> _alreadyMoved(LocatedLogEntry located) async {
+    final remote = s3;
+    if (remote == null || !located.isLocalOnly) return false;
+    try {
+      if (!await _deviceFileGone(located.id)) return false;
+      await remote.read(located.id);
+      return true;
+    } catch (_) {
+      return false;
+    }
+  }
+
+  /// Whether the notes folder could be listed and does not hold [id].
+  /// Throws when the folder cannot be listed. [LocalNoteStore.list] cannot
+  /// answer this: it reports an unreadable folder as an empty one, which
+  /// would make every file in it look moved.
+  Future<bool> _deviceFileGone(String id) async {
+    final store = local;
+    if (store is LocalNoteStore) {
+      return !await Directory(store.directory)
+          .list(followLinks: false)
+          .any((entity) => p.basename(entity.path) == id);
+    }
+    return !(await store.list()).any((entry) => entry.id == id);
   }
 
   Future<void> _uploadLocalToS3(LocatedLogEntry located) async {

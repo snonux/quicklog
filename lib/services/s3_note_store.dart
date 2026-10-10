@@ -4,6 +4,28 @@ import 'log_service.dart';
 import 's3_object_client.dart';
 import 's3_operation_lease.dart';
 
+/// The bucket returned an object, but its bytes are not UTF-8 text. Still a
+/// [FormatException] for existing callers; a type of its own because the S3
+/// client throws plain ones for error pages it cannot parse, and those mean
+/// the bucket was never reached, not that the object is unreadable.
+class S3ObjectNotTextError implements FormatException {
+  const S3ObjectNotTextError(this.id, this.message);
+
+  final String id;
+
+  @override
+  final String message;
+
+  @override
+  Object? get source => null;
+
+  @override
+  int? get offset => null;
+
+  @override
+  String toString() => 'S3 object $id is not UTF-8 text: $message';
+}
+
 /// S3-backed [NoteStore]: object keys are `ql-YYMMDD-HHmmss.md` (same contract
 /// as [LocalNoteStore]). Edit overwrites the same key.
 class S3NoteStore implements NoteStore {
@@ -79,7 +101,11 @@ class S3NoteStore implements NoteStore {
     return _guard(() async {
       _requireId(id);
       final bytes = await client.getObject(id);
-      return utf8.decode(bytes);
+      try {
+        return utf8.decode(bytes);
+      } on FormatException catch (error) {
+        throw S3ObjectNotTextError(id, error.message);
+      }
     }, allowMissingObject: true);
   }
 

@@ -181,21 +181,42 @@ re-save it. The app then uses the local directory for new notes until you tap
 **Retry S3** or an hour elapses / the app cold-starts.
 
 In **S3 only** mode, recovery after an outage or a successful new S3 save also
-uploads local notes whose names are missing from the bucket. Existing S3 notes
-are skipped after a listing and a fresh read before each upload. This protects
-notes already present when checked; a concurrent write from another device
-between that check and upload can still race because the client does not
-support conditional writes. These automatic uploads keep the local copies;
-failed uploads remain on device for the next attempt. On-device receipts remember
-confirmed uploads and inspected existing keys, scoped to the bucket, account and
-local folder. Unchanged retained files are not uploaded again after the laptop
-drains the bucket. A changed local file becomes eligible again; an existing
-remote key still wins.
+moves local notes whose names are missing from the bucket: each is uploaded
+and, once the upload is confirmed, its local copy is deleted, so the note ends
+up in the bucket only. This covers **every** `ql-*.md` note in the notes
+folder, not just the ones saved during an outage: switching from **Local
+only** or **Local + S3** to **S3 only** therefore empties the folder into the
+bucket (and, if the folder is shared with Syncthing, removes the notes from
+the other devices too). Stay on **Local + S3** to keep a copy on the device.
+A local copy is kept when its upload failed (it is retried), when the note
+was edited on the device while its upload ran, when the bucket, account or
+notes folder was changed while the move was running, or when the note
+contains the Unicode replacement character (a sign that the file holds bytes
+that are not valid UTF-8 and would not survive the upload unchanged).
+Existing S3 notes are not overwritten by this move; they are skipped after a
+listing and a fresh read before each upload. (The exception is a note saved
+locally while another S3 write was busy: its latest text replaces the earlier
+write of the same note name, see below.) This protects notes already present when
+checked; a concurrent write from another device between that check and upload
+can still race because the client does not support conditional writes. A local
+note whose name is already in the bucket is deleted from the device only when
+the bucket holds exactly the same text (compared as decoded UTF-8, so a
+leading byte-order mark does not count and is not kept). If the texts differ,
+both versions
+are kept and the bucket's one wins; use the browser's local-copy cleanup
+action to remove the local copy. A local copy that could not be deleted after
+its upload stays as a duplicate and is removed by a later move, as long as
+the bucket still holds the same text.
+On-device receipts remember confirmed uploads and inspected existing keys,
+scoped to the bucket, account and local folder, so a kept local copy is not
+uploaded again after the laptop drains the bucket. A changed local file
+becomes eligible again; an existing remote key still wins. Kept copies alone
+cause no S3 requests; one that has come to match the bucket is removed by the
+next pass that has a note to move.
 If a recovery read or upload is busy, new notes save locally immediately
 instead of waiting for it. These saves carry a persisted repair so their latest
-text can replace an earlier write of the same note name, even after restart.
-Use the browser's explicit move or local-copy cleanup
-actions to remove local copies.
+text can replace an earlier write of the same note name, even after restart;
+they are moved to the bucket like any other local note.
 
 In **S3 only** mode, Preferences → **Retry local notes daily** lets you add or
 remove daily times in your device's time zone. By default retries run only while

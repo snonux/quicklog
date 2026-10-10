@@ -137,7 +137,10 @@ paths by hand.
 If you want notes to land in an S3-compatible bucket (for example Garage)
 instead of a local folder:
 
-1. Open **Preferences** and choose **S3 only**.
+1. Open **Preferences** and choose **S3 only**. This mode keeps no notes on
+   the device: every note already in the local folder is uploaded to the
+   bucket and then deleted locally (also from other devices if the folder is
+   shared, e.g. with Syncthing). Choose **Local + S3** to keep local copies.
 2. Fill endpoint, region, bucket, access key, and secret. Defaults target
    Garage (`https://garage.f3s.buetow.org`, region `garage`, bucket
    `quicklog`). Paste keys from a laptop copy of

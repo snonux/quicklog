@@ -1,5 +1,7 @@
 import 'dart:async';
 
+import 'package:flutter/foundation.dart';
+
 import 'browser_note_sources.dart';
 import 'dual_write_s3_repair.dart';
 import 'lazy_s3_note_store.dart';
@@ -106,6 +108,17 @@ class _BusyFallback {
   final String folderKey;
 }
 
+/// What one S3-only recovery pass works with, fixed when it starts. A pass
+/// outlives settings changes, so anything destructive re-checks
+/// [receiptScope] (bucket, account and folder) against the current settings.
+typedef _S3OnlyPass = ({
+  NoteStore local,
+  NoteStore s3,
+  String folderKey,
+  String receiptScope,
+  Future<bool> Function() current,
+});
+
 /// Resolves the process-active [NoteStore] from prefs + [S3SessionController].
 ///
 /// S3-only preferred (and not degraded) → [S3NoteStore]; otherwise
@@ -149,6 +162,14 @@ class ActiveNoteStore {
   final S3OperationLease Function() _operationLeaseFactory;
   bool _probeBound = false;
   bool Function()? automaticRecoveryAllowed;
+
+  /// Ticks after a recovery pass deleted device copies it had moved to the
+  /// bucket, so a screen listing notes can drop the rows that went with
+  /// them instead of offering files that no longer exist.
+  final ValueNotifier<int> localNotesMoved = ValueNotifier<int>(0);
+  int _localNotesDropped = 0;
+  int _announcedDrops = 0;
+  static const _dropsPerAnnouncement = 25;
   Future<void>? _s3OnlyReplay;
   Future<void> _s3OnlyWriteChain = Future<void>.value();
   int _s3OnlyWritesPending = 0;
@@ -226,52 +247,140 @@ class ActiveNoteStore {
           .toList();
       if (pending.isEmpty) return;
       for (final item in pending) {
-        final fallback = item.value;
-        attempted.add(fallback);
+        attempted.add(item.value);
         try {
-          await fallback.saved;
-          if (!_isCurrentS3Fallback(item.key, fallback) ||
-              !(automaticRecoveryAllowed?.call() ?? true)) {
-            continue;
-          }
-          final repairRevision = await _prefs.repairRevision(
-            fallback.folderKey,
-            item.key.id,
-          );
-          final s3 = _s3StoreFor(fallback.config, markFailures: false);
-          String? remoteText;
-          try {
-            remoteText = await s3.read(item.key.id);
-          } catch (error) {
-            if (!isMissingObjectError(error)) rethrow;
-          }
-          if (!_isCurrentS3Fallback(item.key, fallback) ||
-              !(automaticRecoveryAllowed?.call() ?? true)) {
-            continue;
-          }
-          if (remoteText != fallback.text) {
-            await s3.update(item.key.id, fallback.text);
-          }
-          if (!_isCurrentS3Fallback(item.key, fallback)) continue;
-          await _receipts.confirm(
-            S3UploadReceipts.scope(fallback.config, fallback.folderKey),
-            item.key.id,
-            fallback.text,
-          );
-          await _repairs.clear(
-            item.key.id,
-            folderKey: fallback.folderKey,
-            expectedRevision: repairRevision,
-            checkRevision: true,
-          );
-          if (_isCurrentS3Fallback(item.key, fallback)) {
-            _busyFallbacks.remove(item.key);
-          }
+          await _reconcileBusyFallback(item.key, item.value);
         } catch (_) {
           // The acknowledged local write and durable repair remain safe.
         }
       }
     }
+  }
+
+  /// Brings the bucket to the text of one busy [fallback], retires its
+  /// repair and moves its device copy. Stops quietly as soon as a newer
+  /// save, a mode change or a background transition supersedes it.
+  Future<void> _reconcileBusyFallback(
+    _NoteScope scope,
+    _BusyFallback fallback,
+  ) async {
+    bool superseded() =>
+        !_isCurrentS3Fallback(scope, fallback) ||
+        !(automaticRecoveryAllowed?.call() ?? true);
+    await fallback.saved;
+    if (superseded()) return;
+    final repairRevision = await _prefs.repairRevision(
+      fallback.folderKey,
+      scope.id,
+    );
+    final s3 = _s3StoreFor(fallback.config, markFailures: false);
+    String? remoteText;
+    try {
+      remoteText = await s3.read(scope.id);
+    } catch (error) {
+      if (!isMissingObjectError(error)) rethrow;
+    }
+    if (superseded()) return;
+    if (remoteText != fallback.text) await s3.update(scope.id, fallback.text);
+    if (!_isCurrentS3Fallback(scope, fallback)) return;
+    final receiptScope = S3UploadReceipts.scope(
+      fallback.config,
+      fallback.folderKey,
+    );
+    await _receipts.confirm(receiptScope, scope.id, fallback.text);
+    await _repairs.clear(
+      scope.id,
+      folderKey: fallback.folderKey,
+      expectedRevision: repairRevision,
+      checkRevision: true,
+    );
+    if (!_isCurrentS3Fallback(scope, fallback)) return;
+    _busyFallbacks.remove(scope);
+    // Dropped from the folder in use now; the drop refuses unless that is
+    // still the folder (and bucket) this fallback was written for.
+    await _dropUploadedLocalCopy(
+      (await _resolveLocalWithKey()).store,
+      scope,
+      fallback.text,
+      receiptScope: receiptScope,
+    );
+    _announceDrops();
+  }
+
+  /// S3-only mode keeps a note in the bucket alone, so automatic recovery
+  /// moves rather than copies: once the bucket named by [receiptScope] is
+  /// known to hold exactly [text] for this note, the device copy goes.
+  ///
+  /// It stays whenever deleting could cost something:
+  /// - the mode, bucket, account or notes folder is no longer the one the
+  ///   upload went to (the pass that calls this outlives settings changes,
+  ///   see [_stillMovesTo]);
+  /// - an upload repair is still queued for the note, which means some
+  ///   engine recorded device text the bucket has not confirmed;
+  /// - the file changed since [text] was read, or a busy fallback owns it
+  ///   (that write does not queue behind the caller; its own reconcile
+  ///   drops the copy);
+  /// - [text] holds U+FFFD: a folder reached through Android's document
+  ///   provider decodes invalid bytes to it, so the file may contain bytes
+  ///   that never reached the bucket.
+  ///
+  /// The last read, the busy-fallback check and the delete are not one
+  /// atomic step. Within this engine most writers queue behind the caller
+  /// or are busy fallbacks. The exceptions are a save that goes straight to
+  /// the device (S3 degraded or without credentials) and the device copy
+  /// written after a failed S3 create; both can only produce this note's
+  /// name during the very second the name stands for. The other Flutter
+  /// engine (the background retry worker) shares none of this state. A
+  /// write from any of them that lands between that last read and the
+  /// delete would be lost. A failed read or delete leaves a duplicate
+  /// behind; the next pass that has a note to move retries it while the
+  /// bucket still matches.
+  Future<void> _dropUploadedLocalCopy(
+    NoteStore local,
+    _NoteScope scope,
+    String text, {
+    required String receiptScope,
+  }) async {
+    if (text.contains('\uFFFD')) return;
+    try {
+      if (await local.read(scope.id) != text) return;
+      // After the read, so a settings change made while it ran counts too.
+      if (!await _stillMovesTo(receiptScope)) return;
+      final queued = (await _prefs.dualWritePendingFolders())[scope.folderKey];
+      if (queued?.uploads.contains(scope.id) ?? false) return;
+      // Once more, now that nothing but the delete is left to wait for.
+      if (await local.read(scope.id) != text) return;
+      if (_busyFallbacks.containsKey(scope)) return;
+      await local.delete(scope.id);
+      _localNotesDropped++;
+      // A long first move must not leave a listing full of rows whose files
+      // are gone until the whole pass has finished.
+      if (_localNotesDropped - _announcedDrops >= _dropsPerAnnouncement) {
+        _announceDrops();
+      }
+    } catch (_) {
+      // The note is safe in the bucket; the leftover copy is harmless.
+    }
+  }
+
+  /// Whether S3-only notes of the current folder still go to [receiptScope].
+  /// Reads the stored settings afresh rather than trusting this engine's
+  /// session: the background retry worker loads its session once, while the
+  /// open app may change the mode, bucket or folder at any time.
+  Future<bool> _stillMovesTo(String receiptScope) async {
+    if (_session.preferredMode != StorageMode.s3) return false;
+    await _prefs.reload();
+    if (await _prefs.storageMode() != StorageMode.s3) return false;
+    final folderKey = (await _resolveLocalWithKey()).key;
+    return S3UploadReceipts.scope(await _prefs.s3Config(), folderKey) ==
+        receiptScope;
+  }
+
+  /// Tells listeners about device copies moved since the last announcement.
+  void _announceDrops() {
+    if (_localNotesDropped == _announcedDrops) return;
+    _announcedDrops = _localNotesDropped;
+    localNotesMoved.value++;
   }
 
   Future<bool> _preserveBusyLocal(String id, String folderKey) async {
@@ -326,10 +435,15 @@ class ActiveNoteStore {
     };
   }
 
-  /// On S3-only recovery, copy every local note absent from the bucket.
+  /// On S3-only recovery, move every local note absent from the bucket into
+  /// it: upload, then drop the device copy (see [_dropUploadedLocalCopy]).
   /// A failed replay must not turn a successful probe or new save into a
-  /// failure. Local files remain available; keys found in the bucket are
-  /// skipped (the client cannot make the check and PUT atomic).
+  /// failure, and a note that could not be uploaded stays on the device.
+  /// Keys found in the bucket are not overwritten (the client cannot make
+  /// the check and PUT atomic); their device copy is dropped only when the
+  /// bucket holds the same text, otherwise both versions are kept. The one
+  /// exception is a durably queued upload, which exists to replace an older
+  /// write of the same note and is put over its key.
   Future<void> replayS3OnlyLocalNotes({
     bool retryWhileDegraded = false,
     Future<bool> Function()? stillCurrent,
@@ -361,16 +475,12 @@ class ActiveNoteStore {
       final config = await _prefs.s3Config();
       if (!config.hasCredentials) return;
       final receiptScope = S3UploadReceipts.scope(config, folderKey);
-      final pending = await _receipts.pending(
-        scope: receiptScope,
-        local: local,
-        entries: localEntries,
+      final (:uploads, :pendingIds) = await _s3OnlyBacklog(
+        local,
+        localEntries,
+        folderKey: folderKey,
+        receiptScope: receiptScope,
       );
-      await _prefs.reload();
-      final uploads =
-          (await _prefs.dualWritePendingFolders())[folderKey]?.uploads ??
-          <String>[];
-      final pendingIds = {...pending.map((entry) => entry.id), ...uploads};
       final candidates = localEntries
           .where((entry) => pendingIds.contains(entry.id))
           .toList();
@@ -387,85 +497,214 @@ class ActiveNoteStore {
       if (retryWhileDegraded) {
         await _session.markS3Reachable(expectedDegradedUntil: degradedUntil);
       }
-      for (final id in uploads) {
-        final scope = (folderKey: folderKey, id: id);
-        try {
-          await _serializeS3OnlyWrite(() async {
-            final earlierFallback = _busyFallbacks[scope];
-            final revision = _acknowledgedNoteRevisions[scope];
-            final repairRevision = await _prefs.repairRevision(folderKey, id);
-            final text = await local.read(id);
-            if (!await current()) return;
-            await s3.update(id, text);
-            await _receipts.confirm(receiptScope, id, text);
-            // A newer local snapshot remains pending even if its revision
-            // belongs to another Flutter engine.
-            if (await local.read(id) == text &&
-                identical(_busyFallbacks[scope], earlierFallback) &&
-                _acknowledgedNoteRevisions[scope] == revision) {
-              await _repairs.clear(
-                id,
-                folderKey: folderKey,
-                expectedRevision: repairRevision,
-                checkRevision: true,
-              );
-            }
-          });
-        } catch (_) {
-          // Failed uploads and local changes remain durable for another slot.
-        }
-      }
-      final remoteIds = remoteEntries.map((entry) => entry.id).toSet();
-      for (final entry in candidates) {
-        if (!await current()) break;
-        if (!remoteIds.contains(entry.id) || uploads.contains(entry.id)) {
-          continue;
-        }
-        // Existing remote keys win. Remember the inspected local snapshot,
-        // so draining that remote key cannot resurrect this retained copy.
-        try {
-          await _serializeS3OnlyWrite(() async {
-            if (!await current()) return;
-            await _receipts.confirm(
-              receiptScope,
-              entry.id,
-              await local.read(entry.id),
-            );
-          });
-        } catch (_) {
-          // An unreadable or busy note stays pending without stopping peers.
-        }
-      }
-      await uploadMissingLocalNotes(
+      final _S3OnlyPass pass = (
         local: local,
         s3: s3,
-        localEntries: candidates
-            .where((entry) => !uploads.contains(entry.id))
-            .toList(),
-        s3Entries: remoteEntries,
-        shouldContinue: () => _session.preferredMode == StorageMode.s3,
-        writeMissing: (id, text) => _serializeS3OnlyWrite(() async {
-          if (!await current()) return false;
-          return copyTextToS3IfMissing(
-            s3: s3,
-            id: id,
-            text: text,
-            readCurrentText: () => local.read(id),
-            shouldContinueAsync: current,
-            onConfirmed: (payload) =>
-                _receipts.confirm(receiptScope, id, payload),
-            onExisting: () async {
-              if (await current()) {
-                await _receipts.confirm(receiptScope, id, await local.read(id));
-              }
-            },
-          );
-        }),
+        folderKey: folderKey,
+        receiptScope: receiptScope,
+        current: current,
+      );
+      await _replayQueuedUploads(pass, uploads);
+      final remoteIds = remoteEntries.map((entry) => entry.id).toSet();
+      await _uploadMissingLocalNotes(
+        pass,
+        candidates.where((entry) => !uploads.contains(entry.id)).toList(),
+        remoteEntries,
+      );
+      // Last, so tidying up never delays a note that is not in the bucket
+      // yet. Every local note whose key the listing showed, including copies
+      // an earlier pass (or an older version, which kept them) acknowledged.
+      // These reads never mark S3 failed: a pass that just uploaded must not
+      // re-arm the outage window over a clean-up GET.
+      await _settleCopiesAlreadyInBucket(
+        (
+          local: local,
+          s3: _s3StoreFor(config, markFailures: false),
+          folderKey: folderKey,
+          receiptScope: receiptScope,
+          current: current,
+        ),
+        localEntries.where(
+          (entry) =>
+              remoteIds.contains(entry.id) && !uploads.contains(entry.id),
+        ),
+        unacknowledged: pendingIds,
       );
     } catch (_) {
-      // Nothing is removed locally; another successful attempt retries.
+      // Only confirmed notes left the device; another attempt retries.
     } finally {
       await _s3OnlyWriteChain;
+      _announceDrops();
+    }
+  }
+
+  /// What a pass has to deal with: the ids of durably queued [uploads] of
+  /// this folder, and [pendingIds], those plus every local note without a
+  /// receipt for its current text.
+  Future<({List<String> uploads, Set<String> pendingIds})> _s3OnlyBacklog(
+    NoteStore local,
+    List<LogEntry> localEntries, {
+    required String folderKey,
+    required String receiptScope,
+  }) async {
+    final pending = await _receipts.pending(
+      scope: receiptScope,
+      local: local,
+      entries: localEntries,
+    );
+    await _prefs.reload();
+    final uploads =
+        (await _prefs.dualWritePendingFolders())[folderKey]?.uploads ??
+        <String>[];
+    return (
+      uploads: uploads,
+      pendingIds: {...pending.map((entry) => entry.id), ...uploads},
+    );
+  }
+
+  /// Puts the text of every durably queued upload (a save that fell back to
+  /// the device while S3 was busy) over its bucket key, then moves the note
+  /// unless a newer local snapshot appeared meanwhile.
+  Future<void> _replayQueuedUploads(_S3OnlyPass pass, List<String> ids) async {
+    final (:local, :s3, :folderKey, :receiptScope, :current) = pass;
+    for (final id in ids) {
+      final scope = (folderKey: folderKey, id: id);
+      try {
+        await _serializeS3OnlyWrite(() async {
+          final earlierFallback = _busyFallbacks[scope];
+          final revision = _acknowledgedNoteRevisions[scope];
+          final repairRevision = await _prefs.repairRevision(folderKey, id);
+          final text = await local.read(id);
+          if (!await current()) return;
+          await s3.update(id, text);
+          await _receipts.confirm(receiptScope, id, text);
+          // A newer local snapshot remains pending even if its revision
+          // belongs to another Flutter engine.
+          if (await local.read(id) == text &&
+              identical(_busyFallbacks[scope], earlierFallback) &&
+              _acknowledgedNoteRevisions[scope] == revision) {
+            await _repairs.clear(
+              id,
+              folderKey: folderKey,
+              expectedRevision: repairRevision,
+              checkRevision: true,
+            );
+            // Keeps the copy if that clear was refused (the repair is still
+            // queued): the drop checks the queue itself.
+            await _dropUploadedLocalCopy(
+              local,
+              scope,
+              text,
+              receiptScope: receiptScope,
+            );
+          }
+        });
+      } catch (_) {
+        // Failed uploads and local changes remain durable for another slot.
+      }
+    }
+  }
+
+  /// Moves [entries], local notes the listing [remoteEntries] did not show,
+  /// into the bucket: upload, then drop the device copy.
+  Future<void> _uploadMissingLocalNotes(
+    _S3OnlyPass pass,
+    List<LogEntry> entries,
+    List<LogEntry> remoteEntries,
+  ) async {
+    final (:local, :s3, :folderKey, :receiptScope, :current) = pass;
+    await uploadMissingLocalNotes(
+      local: local,
+      s3: s3,
+      localEntries: entries,
+      s3Entries: remoteEntries,
+      shouldContinue: () => _session.preferredMode == StorageMode.s3,
+      writeMissing: (id, text) => _serializeS3OnlyWrite(() async {
+        if (!await current()) return false;
+        final scope = (folderKey: folderKey, id: id);
+        return copyTextToS3IfMissing(
+          s3: s3,
+          id: id,
+          text: text,
+          readCurrentText: () => local.read(id),
+          shouldContinueAsync: current,
+          onConfirmed: (payload) async {
+            await _receipts.confirm(receiptScope, id, payload);
+            await _dropUploadedLocalCopy(
+              local,
+              scope,
+              payload,
+              receiptScope: receiptScope,
+            );
+          },
+          // The key appeared after the listing: the bucket's text wins, and
+          // the device copy goes only if it is the same text.
+          onExisting: (remoteText) async {
+            if (!await current()) return;
+            final text = await local.read(id);
+            await _receipts.confirm(receiptScope, id, text);
+            if (remoteText == text) {
+              await _dropUploadedLocalCopy(
+                local,
+                scope,
+                text,
+                receiptScope: receiptScope,
+              );
+            }
+          },
+        );
+      }),
+    );
+  }
+
+  /// Handles local [entries] whose key the bucket listing already showed.
+  /// Existing remote keys win and are not overwritten here. For the
+  /// [unacknowledged] ones the inspected local snapshot is remembered, so
+  /// draining that remote key cannot resurrect a retained copy. A copy the
+  /// bucket matches is redundant and is dropped; one that differs is kept
+  /// beside the bucket's version. This is tidying up, so the first read
+  /// that fails because S3 does not answer ends it: the rest waits for a
+  /// later pass.
+  Future<void> _settleCopiesAlreadyInBucket(
+    _S3OnlyPass pass,
+    Iterable<LogEntry> entries, {
+    required Set<String> unacknowledged,
+  }) async {
+    final (:local, :s3, :folderKey, :receiptScope, :current) = pass;
+    var s3Answers = true;
+    for (final entry in entries) {
+      if (!s3Answers || !await current()) break;
+      try {
+        await _serializeS3OnlyWrite(() async {
+          if (!await current()) return;
+          final text = await local.read(entry.id);
+          String? remoteText;
+          try {
+            remoteText = await s3.read(entry.id);
+          } catch (error) {
+            // Gone since the listing, or not text Quicklog can read: this
+            // copy stays, the others are still worth checking. Anything
+            // else (including an error page the client could not parse)
+            // means S3 did not answer, and the note is left unacknowledged
+            // so the next pass comes back to it.
+            s3Answers =
+                isMissingObjectError(error) || error is S3ObjectNotTextError;
+            if (!s3Answers) return;
+          }
+          if (unacknowledged.contains(entry.id)) {
+            await _receipts.confirm(receiptScope, entry.id, text);
+          }
+          if (remoteText != text) return;
+          await _dropUploadedLocalCopy(
+            local,
+            (folderKey: folderKey, id: entry.id),
+            text,
+            receiptScope: receiptScope,
+          );
+        });
+      } catch (_) {
+        // An unreadable or busy note stays pending without stopping peers.
+      }
     }
   }
 

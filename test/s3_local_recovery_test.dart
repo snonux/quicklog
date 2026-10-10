@@ -3,7 +3,10 @@ import 'dart:convert';
 import 'dart:io';
 
 import 'package:flutter_test/flutter_test.dart';
+import 'package:quicklog/screens/entry_browser_controller.dart';
 import 'package:quicklog/services/active_note_store.dart';
+import 'package:quicklog/services/browser_note_sources.dart';
+import 'package:quicklog/services/dual_write_s3_repair.dart';
 import 'package:quicklog/services/log_service.dart';
 import 'package:quicklog/services/merged_note_listing.dart';
 import 'package:quicklog/services/preferences.dart';
@@ -51,6 +54,51 @@ class _SelectiveFailureClient extends MemoryS3ObjectClient {
   }
 }
 
+/// A notes folder that reports every delete together with the text it
+/// removed, and can run a hook between a read and its return.
+class _SpyStore implements NoteStore {
+  _SpyStore(this._inner);
+
+  final NoteStore _inner;
+  Future<void> Function(String id)? afterRead;
+  Future<void> Function(String id, String text)? onDelete;
+  Object? listError;
+
+  @override
+  Future<String> read(String id) async {
+    final text = await _inner.read(id);
+    await afterRead?.call(id);
+    return text;
+  }
+
+  @override
+  Future<void> delete(String id) async {
+    await onDelete?.call(id, await _inner.read(id));
+    await _inner.delete(id);
+  }
+
+  @override
+  Future<List<LogEntry>> list() async {
+    final error = listError;
+    if (error != null) throw error;
+    return _inner.list();
+  }
+
+  @override
+  Future<LogEntry> create(String text, {DateTime? now}) =>
+      _inner.create(text, now: now);
+
+  @override
+  Future<void> update(String id, String text) => _inner.update(id, text);
+
+  @override
+  Future<String> firstLine(String id) => _inner.firstLine(id);
+
+  @override
+  Future<String> preview(String id, {int maxChars = 200}) =>
+      _inner.preview(id, maxChars: maxChars);
+}
+
 void main() {
   TestWidgetsFlutterBinding.ensureInitialized();
   late Directory directory;
@@ -88,6 +136,18 @@ void main() {
     session.dispose();
     await directory.delete(recursive: true);
   });
+
+  /// Rebuilds [active] over [spy], reached like an Android picker folder.
+  Future<void> useSpiedFolder(_SpyStore spy) async {
+    final prefs = PreferencesService();
+    await prefs.setScopedFolder('content://notes/tree/A', 'A');
+    active = ActiveNoteStore(
+      preferences: prefs,
+      session: session,
+      s3ClientFactory: (_) => remote,
+      safStoreFactory: (_) => spy,
+    );
+  }
 
   test('startup finishes while recovery LIST is stalled', () async {
     await local.create('backlog', now: DateTime(2026, 9, 1));
@@ -301,7 +361,8 @@ void main() {
       remote.beforeGet = null;
       await active.replayS3OnlyLocalNotes();
       expect(utf8.decode(remote.objects[entry.id]!), 'new save');
-      expect(await local.read(entry.id), 'new save');
+      // Confirmed in the bucket, so the device copy was moved, not kept.
+      expect(await local.list(), isEmpty);
     },
   );
 
@@ -336,8 +397,9 @@ void main() {
         await changed;
         await active.replayS3OnlyLocalNotes();
         if (mutation == 'edit') {
-          expect(await local.read(entry.id), 'edited');
           expect(utf8.decode(remote.objects[entry.id]!), 'edited');
+          // The edit reached the bucket, so its device copy was moved.
+          expect(await local.list(), isEmpty);
         } else {
           expect(await local.list(), isEmpty);
           expect(remote.objects, isEmpty);
@@ -453,8 +515,9 @@ void main() {
       }
       await blocked;
       await active.replayS3OnlyLocalNotes();
-      expect(await local.read(entry.id), 'latest acknowledged');
       expect(utf8.decode(remote.objects[entry.id]!), 'latest acknowledged');
+      // Confirmed in the bucket, so the device copy was moved, not kept.
+      expect(await local.list(), isEmpty);
     });
   }
 
@@ -717,8 +780,10 @@ void main() {
       remote.beforeGet = null;
       await session.retryS3(probe: () async {});
       await active.replayS3OnlyLocalNotes();
-      expect(await local.read(idA), 'latest A during degrade');
       expect(utf8.decode(remote.objects[idA]!), 'latest A during degrade');
+      expect(utf8.decode(remote.objects[idB]!), 'busy B');
+      // Both notes are confirmed in the bucket, so both were moved.
+      expect(await local.list(), isEmpty);
     },
   );
 
@@ -810,7 +875,8 @@ void main() {
       remote.beforeGet = null;
       await active.replayS3OnlyLocalNotes();
       expect(utf8.decode(remote.objects[entry.id]!), 'latest fallback');
-      expect(await local.read(entry.id), 'latest fallback');
+      // Confirmed in the bucket, so the device copy was moved, not kept.
+      expect(await local.list(), isEmpty);
       expect(await prefs.dualWritePendingUploads(), isEmpty);
     },
   );
@@ -869,7 +935,8 @@ void main() {
       await session.retryS3(probe: () async {});
       await active.replayS3OnlyLocalNotes();
       expect(utf8.decode(remote.objects[id]!), 'latest local ACK');
-      expect(await local.read(id), 'latest local ACK');
+      // Confirmed in the bucket, so the device copy was moved, not kept.
+      expect(await local.list(), isEmpty);
       expect(await prefs.dualWritePendingUploads(), isEmpty);
     });
   }
@@ -933,18 +1000,22 @@ void main() {
         } else {
           await prefs.setDirectory(directory.path);
         }
+        // Uploaded, but its folder was no longer the one in use when the
+        // upload was confirmed, so the device copy was left where it was.
+        expect(await local.read(fallback.entry.id), 'busy acknowledged');
         await remote.putText(fallback.entry.id, 'newer remote edit');
         await active.replayS3OnlyLocalNotes();
         expect(
           utf8.decode(remote.objects[fallback.entry.id]!),
           'newer remote edit',
         );
+        expect(await local.read(fallback.entry.id), 'busy acknowledged');
       },
     );
   }
 
   test(
-    'successful Retry uploads every fallback and keeps local copies',
+    'successful Retry moves every fallback into the bucket',
     () async {
       remote.alwaysFail = StateError('offline');
       final first = await active.createNote('first', now: DateTime(2026, 9, 1));
@@ -962,7 +1033,9 @@ void main() {
         unorderedEquals([first.entry.id, second.entry.id]),
       );
       expect(utf8.decode(remote.objects[first.entry.id]!), 'first');
-      expect(await local.read(second.entry.id), 'second');
+      expect(utf8.decode(remote.objects[second.entry.id]!), 'second');
+      // Confirmed in the bucket, so the device copy was moved, not kept.
+      expect(await local.list(), isEmpty);
       expect(session.isDegraded, isFalse);
     },
   );
@@ -1004,7 +1077,8 @@ void main() {
       await session.markS3Failed(now: failedAt);
       await session.load(now: failedAt.add(kS3DegradeDuration));
       expect(utf8.decode(remote.objects[entry.id]!), 'expired fallback');
-      expect(await local.read(entry.id), 'expired fallback');
+      // Confirmed in the bucket, so the device copy was moved, not kept.
+      expect(await local.list(), isEmpty);
     },
   );
 
@@ -1025,6 +1099,586 @@ void main() {
     },
   );
 
+  test('a successful new save moves the local backlog into the bucket', () async {
+    final backlog = [
+      for (var day = 1; day <= 3; day++)
+        await local.create('backlog $day', now: DateTime(2026, 9, day)),
+    ];
+
+    final saved = await active.createNote('new', now: DateTime(2026, 9, 4));
+    expect(saved.outcome, NoteCreateOutcome.saved);
+    // The save does not wait for the backlog; this joins the pass it started.
+    await active.replayS3OnlyLocalNotes();
+
+    expect({
+      for (final key in remote.objects.keys)
+        key: utf8.decode(remote.objects[key]!),
+    }, {
+      for (final entry in backlog)
+        entry.id: 'backlog ${entry.timestamp.day}',
+      saved.entry.id: 'new',
+    });
+    expect(await local.list(), isEmpty);
+  });
+
+  test('a note edited on the device while its upload ran is kept', () async {
+    final entry = await local.create('uploaded', now: DateTime(2026, 9, 1));
+    remote.afterPut = () => local.update(entry.id, 'edited meanwhile');
+
+    await active.replayS3OnlyLocalNotes();
+
+    expect(utf8.decode(remote.objects[entry.id]!), 'uploaded');
+    // The device now holds text the bucket does not: never delete that.
+    expect(await local.read(entry.id), 'edited meanwhile');
+  });
+
+  test(
+    'a same-second save landing while the copy is being dropped is not deleted',
+    () async {
+      final spy = _SpyStore(local);
+      await useSpiedFolder(spy);
+      final stamp = DateTime(2026, 9, 1);
+      final entry = await local.create('uploaded', now: stamp);
+      // Whatever is deleted from the device must be what the bucket holds.
+      final unsafeDeletes = <String>[];
+      spy.onDelete = (id, text) async {
+        final inBucket = remote.objects[id];
+        if (inBucket == null || utf8.decode(inBucket) != text) {
+          unsafeDeletes.add(text);
+        }
+      };
+      // Once the upload has landed, the next read is the drop's own check.
+      // Let a new note with the same name be saved right behind that read.
+      NoteCreateResult? late;
+      remote.afterPut = () async {
+        remote.afterPut = null;
+        spy.afterRead = (id) async {
+          spy.afterRead = null;
+          late = await active.createNote('saved meanwhile', now: stamp);
+        };
+      };
+
+      await active.replayS3OnlyLocalNotes();
+      await active.replayS3OnlyLocalNotes();
+
+      expect(late?.outcome, NoteCreateOutcome.savedLocalOnly);
+      expect(unsafeDeletes, isEmpty);
+      expect(utf8.decode(remote.objects[entry.id]!), 'saved meanwhile');
+    },
+  );
+
+  test('a copy the bucket already matches is dropped without a PUT', () async {
+    final same = await local.create('same', now: DateTime(2026, 9, 1));
+    await remote.putText(same.id, 'same');
+    remote.puts = 0;
+
+    await active.replayS3OnlyLocalNotes();
+
+    expect(remote.puts, 0);
+    expect(utf8.decode(remote.objects[same.id]!), 'same');
+    expect(await local.list(), isEmpty);
+  });
+
+  test('a kept conflicting copy is dropped once the bucket matches it', () async {
+    final kept = await local.create('device', now: DateTime(2026, 9, 1));
+    await remote.putText(kept.id, 'other device');
+    await active.replayS3OnlyLocalNotes();
+    expect(await local.read(kept.id), 'device');
+
+    // Acknowledged copies alone cause no traffic, so nothing changes yet.
+    await remote.putText(kept.id, 'device');
+    remote.calls = 0;
+    await active.replayS3OnlyLocalNotes();
+    expect(remote.calls, 0);
+    expect(await local.read(kept.id), 'device');
+
+    // The next pass that has work to do also clears the matching leftover.
+    final backlog = await local.create('backlog', now: DateTime(2026, 9, 2));
+    await active.replayS3OnlyLocalNotes();
+    expect(utf8.decode(remote.objects[backlog.id]!), 'backlog');
+    expect(await local.list(), isEmpty);
+  });
+
+  test('a device copy that cannot be deleted is left as a duplicate', () async {
+    final spy = _SpyStore(local);
+    await useSpiedFolder(spy);
+    final entry = await local.create('stuck', now: DateTime(2026, 9, 1));
+    spy.onDelete = (_, _) async => throw const FileSystemException('denied');
+    var announced = 0;
+    active.localNotesMoved.addListener(() => announced++);
+
+    // The pass neither fails nor reports a move that did not happen.
+    await active.replayS3OnlyLocalNotes();
+    expect(utf8.decode(remote.objects[entry.id]!), 'stuck');
+    expect(await local.read(entry.id), 'stuck');
+    expect(announced, 0);
+
+    // Once deleting works, the next pass with a note to move clears it too.
+    spy.onDelete = null;
+    await local.create('backlog', now: DateTime(2026, 9, 2));
+    await active.replayS3OnlyLocalNotes();
+    expect(await local.list(), isEmpty);
+    expect(announced, 1);
+  });
+
+  test('one pass that moves several notes announces it once', () async {
+    for (var day = 1; day <= 3; day++) {
+      await local.create('note $day', now: DateTime(2026, 9, day));
+    }
+    var announced = 0;
+    active.localNotesMoved.addListener(() => announced++);
+
+    await active.replayS3OnlyLocalNotes();
+    expect(await local.list(), isEmpty);
+    expect(announced, 1);
+
+    // A pass that only finds a conflicting copy moves and announces nothing.
+    final kept = await local.create('device', now: DateTime(2026, 9, 4));
+    await remote.putText(kept.id, 'other device');
+    await active.replayS3OnlyLocalNotes();
+    expect(await local.read(kept.id), 'device');
+    expect(announced, 1);
+  });
+
+  for (final sameText in [true, false]) {
+    test(
+      'a key that appears after the listing ${sameText ? "with the same text drops" : "with other text keeps"} the device copy',
+      () async {
+        final entry = await local.create('device', now: DateTime(2026, 9, 1));
+        final arrived = sameText ? 'device' : 'other device';
+        remote.afterList = () async {
+          remote.afterList = null;
+          await remote.putText(entry.id, arrived);
+          remote.puts = 0;
+        };
+
+        await active.replayS3OnlyLocalNotes();
+
+        // Never overwritten, whichever text got there first.
+        expect(remote.puts, 0);
+        expect(utf8.decode(remote.objects[entry.id]!), arrived);
+        if (sameText) {
+          expect(await local.list(), isEmpty);
+        } else {
+          expect(await local.read(entry.id), 'device');
+        }
+      },
+    );
+  }
+
+  test('a failing clean-up read ends the clean-up and marks nothing', () async {
+    final copies = [
+      for (var day = 1; day <= 3; day++)
+        await local.create('same $day', now: DateTime(2026, 9, day)),
+    ];
+    for (final copy in copies) {
+      await remote.putText(copy.id, 'same ${copy.timestamp.day}');
+    }
+    var reads = 0;
+    remote.beforeGet = (_) async {
+      reads++;
+      throw StateError('connection reset');
+    };
+
+    await active.replayS3OnlyLocalNotes();
+
+    // One timeout, not one per copy, and no outage window over tidying up.
+    expect(reads, 1);
+    expect(session.isDegraded, isFalse);
+    expect(await local.list(), hasLength(3));
+
+    // Nothing was acknowledged over a read that never answered, so the
+    // next pass comes back to all three without any new note to move.
+    remote.beforeGet = null;
+    await active.replayS3OnlyLocalNotes();
+    expect(await local.list(), isEmpty);
+  });
+
+  test('a copy whose clean-up read failed is not parked for good', () async {
+    final only = await local.create('same', now: DateTime(2026, 9, 1));
+    await remote.putText(only.id, 'same');
+    remote.beforeGet = (_) async => throw StateError('connection reset');
+    await active.replayS3OnlyLocalNotes();
+    expect(await local.read(only.id), 'same');
+
+    // It is the only local note, so nothing else would bring a pass back
+    // to it: it must still count as unfinished.
+    remote.beforeGet = null;
+    await active.replayS3OnlyLocalNotes();
+    expect(await local.list(), isEmpty);
+  });
+
+  test('an error page the client cannot parse is not a bucket answer', () async {
+    // What the S3 client throws when a proxy answers instead of the bucket.
+    final copies = [
+      for (var day = 1; day <= 2; day++)
+        await local.create('same $day', now: DateTime(2026, 9, day)),
+    ];
+    for (final copy in copies) {
+      await remote.putText(copy.id, 'same ${copy.timestamp.day}');
+    }
+    var reads = 0;
+    remote.beforeGet = (_) async {
+      reads++;
+      throw const FormatException('Bad Gateway');
+    };
+    await active.replayS3OnlyLocalNotes();
+    expect(reads, 1);
+    expect(await local.list(), hasLength(2));
+
+    // Nothing was acknowledged, so the next pass still has both to settle.
+    remote.beforeGet = null;
+    await active.replayS3OnlyLocalNotes();
+    expect(await local.list(), isEmpty);
+  });
+
+  test('an unreadable copy does not stop the clean-up of the others', () async {
+    final corrupt = await local.create('corrupt', now: DateTime(2026, 9, 2));
+    await File('${directory.path}/${corrupt.id}').writeAsBytes([0xff]);
+    await remote.putText(corrupt.id, 'corrupt');
+    final same = await local.create('same', now: DateTime(2026, 9, 1));
+    await remote.putText(same.id, 'same');
+
+    await active.replayS3OnlyLocalNotes();
+
+    expect((await local.list()).map((entry) => entry.id), [corrupt.id]);
+    expect(
+      await File('${directory.path}/${corrupt.id}').readAsBytes(),
+      [0xff],
+    );
+  });
+
+  test('a bucket change during the pass keeps the device copies', () async {
+    final notes = [
+      for (var day = 1; day <= 2; day++)
+        await local.create('note $day', now: DateTime(2026, 9, day)),
+    ];
+    // The user corrects the bucket while the pass is still uploading to the
+    // one it started with.
+    remote.afterPut = () async {
+      remote.afterPut = null;
+      await PreferencesService().setS3Config(
+        S3Config.fromRaw(
+          bucket: 'corrected',
+          accessKeyId: 'test',
+          secretAccessKey: 'test',
+        ),
+      );
+    };
+
+    await active.replayS3OnlyLocalNotes();
+
+    // Nothing left the device for a bucket that is no longer the target.
+    expect(
+      (await local.list()).map((entry) => entry.id),
+      unorderedEquals(notes.map((entry) => entry.id)),
+    );
+    // The corrected bucket (the same fake) then gets them and they move.
+    await active.replayS3OnlyLocalNotes();
+    expect(await local.list(), isEmpty);
+  });
+
+  test(
+    'a busy save is not deleted after the bucket changed before its upload',
+    () async {
+      final corrected = _SelectiveFailureClient();
+      final prefs = PreferencesService();
+      active = ActiveNoteStore(
+        preferences: prefs,
+        session: session,
+        s3ClientFactory: (config) =>
+            config.bucket == 'corrected' ? corrected : remote,
+      );
+      final entered = Completer<void>();
+      final release = Completer<void>();
+      remote.beforePut = (_) async {
+        remote.beforePut = null;
+        entered.complete();
+        await release.future;
+      };
+      final blocker = active.createNote('blocker', now: DateTime(2026, 9, 1));
+      await entered.future;
+      final busy = await active.createNote('busy', now: DateTime(2026, 9, 2));
+      expect(busy.outcome, NoteCreateOutcome.savedLocalOnly);
+      await prefs.setS3Config(
+        S3Config.fromRaw(
+          bucket: 'corrected',
+          accessKeyId: 'test',
+          secretAccessKey: 'test',
+        ),
+      );
+      release.complete();
+      await blocker;
+
+      await active.replayS3OnlyLocalNotes();
+      await active.replayS3OnlyLocalNotes();
+
+      // The busy save was reconciled into the bucket it was made for. Had
+      // its device copy been deleted then, the corrected bucket would never
+      // have received the note.
+      expect(utf8.decode(remote.objects[busy.entry.id]!), 'busy');
+      expect(utf8.decode(corrected.objects[busy.entry.id]!), 'busy');
+    },
+  );
+
+  test('a folder change during the pass keeps the device copies', () async {
+    final other = await Directory.systemTemp.createTemp('ql-other-folder-');
+    addTearDown(() => other.delete(recursive: true));
+    final entry = await local.create('note', now: DateTime(2026, 9, 1));
+    remote.afterPut = () async {
+      remote.afterPut = null;
+      await PreferencesService().setDirectory(other.path);
+    };
+
+    await active.replayS3OnlyLocalNotes();
+
+    expect(utf8.decode(remote.objects[entry.id]!), 'note');
+    expect(await local.read(entry.id), 'note');
+  });
+
+  test(
+    'a mode change stored by the app stops the background engine from deleting',
+    () async {
+      // The retry worker is a second engine: its session was loaded once and
+      // still says S3 only after the open app has stored another mode.
+      final workerSession = S3SessionController(
+        preferences: PreferencesService(),
+      );
+      await workerSession.load();
+      addTearDown(workerSession.dispose);
+      final worker = ActiveNoteStore(
+        preferences: PreferencesService(),
+        session: workerSession,
+        s3ClientFactory: (_) => remote,
+      );
+      final entry = await local.create('note', now: DateTime(2026, 9, 1));
+      remote.afterPut = () async {
+        remote.afterPut = null;
+        await PreferencesService().setStorageMode(StorageMode.both);
+      };
+
+      await worker.replayS3OnlyLocalNotes();
+
+      expect(workerSession.preferredMode, StorageMode.s3);
+      expect(utf8.decode(remote.objects[entry.id]!), 'note');
+      expect(await local.read(entry.id), 'note');
+    },
+  );
+
+  test('a settings change during the last read before the delete counts', () async {
+    final spy = _SpyStore(local);
+    await useSpiedFolder(spy);
+    final entry = await local.create('note', now: DateTime(2026, 9, 1));
+    // Once the upload has landed, the next read is the drop's own check.
+    remote.afterPut = () async {
+      remote.afterPut = null;
+      spy.afterRead = (_) async {
+        spy.afterRead = null;
+        await PreferencesService().setStorageMode(StorageMode.both);
+      };
+    };
+
+    await active.replayS3OnlyLocalNotes();
+
+    expect(utf8.decode(remote.objects[entry.id]!), 'note');
+    expect(await local.read(entry.id), 'note');
+  });
+
+  test('a matching copy with replacement characters is kept as well', () async {
+    final entry = await local.create('caf�', now: DateTime(2026, 9, 1));
+    await remote.putText(entry.id, 'caf�');
+
+    await active.replayS3OnlyLocalNotes();
+
+    expect(await local.read(entry.id), 'caf�');
+  });
+
+  test('a bucket object that is not text does not end the clean-up', () async {
+    final binary = await local.create('binary', now: DateTime(2026, 9, 2));
+    await remote.putObject(binary.id, [0xff]);
+    final same = await local.create('same', now: DateTime(2026, 9, 1));
+    await remote.putText(same.id, 'same');
+
+    await active.replayS3OnlyLocalNotes();
+
+    expect((await local.list()).map((entry) => entry.id), [binary.id]);
+    expect(remote.objects[binary.id], [0xff]);
+    expect(session.isDegraded, isFalse);
+  });
+
+  test('a first move of many notes re-lists before it has finished', () async {
+    for (var minute = 0; minute < 30; minute++) {
+      await local.create('note', now: DateTime(2026, 9, 1, 0, minute));
+    }
+    final leftWhenAnnounced = <int>[];
+    active.localNotesMoved.addListener(() {
+      leftWhenAnnounced.add(directory.listSync().length);
+    });
+
+    await active.replayS3OnlyLocalNotes();
+
+    // Once after 25 notes, once at the end: not per note, not only at the end.
+    expect(leftWhenAnnounced, [5, 0]);
+  });
+
+  test('a note with replacement characters is uploaded but kept', () async {
+    // What a document-provider folder returns for a file with invalid
+    // bytes: the device file may hold more than the uploaded text.
+    final entry = await local.create(
+      'caf�',
+      now: DateTime(2026, 9, 1),
+    );
+
+    await active.replayS3OnlyLocalNotes();
+
+    expect(utf8.decode(remote.objects[entry.id]!), 'caf�');
+    expect(await local.read(entry.id), 'caf�');
+  });
+
+  test('a note with an upload repair queued meanwhile is kept', () async {
+    final entry = await local.create('uploaded', now: DateTime(2026, 9, 1));
+    // Another engine records newer device text for this note right after
+    // the upload landed (the text itself is written a moment later).
+    remote.afterPut = () async {
+      remote.afterPut = null;
+      await DualWriteS3Repair(
+        preferences: PreferencesService(),
+      ).enqueueUpload(entry.id, folderKey: directory.path);
+    };
+
+    await active.replayS3OnlyLocalNotes();
+    expect(await local.read(entry.id), 'uploaded');
+
+    // The next pass replays that repair, clears it and only then moves.
+    await active.replayS3OnlyLocalNotes();
+    expect(utf8.decode(remote.objects[entry.id]!), 'uploaded');
+    expect(await local.list(), isEmpty);
+    expect(await PreferencesService().dualWritePendingUploads(), isEmpty);
+  });
+
+  group('browser rows that outlived a move', () {
+    late LogEntry entry;
+    late BrowserNoteSources sources;
+
+    LocatedLogEntry row(NoteStorageLocation location) =>
+        LocatedLogEntry(entry: entry, location: location);
+
+    setUp(() async {
+      entry = await local.create('moved', now: DateTime(2026, 9, 1));
+      sources = await active.resolveBrowserSources();
+      await active.replayS3OnlyLocalNotes();
+      expect(await local.list(), isEmpty);
+    });
+
+    for (final location in [
+      NoteStorageLocation.local,
+      NoteStorageLocation.both,
+    ]) {
+      test('editing a stale ${location.name} row does not bring the file back',
+          () async {
+        await sources.update(row(location), 'edited');
+        expect(utf8.decode(remote.objects[entry.id]!), 'edited');
+        expect(await local.list(), isEmpty);
+      });
+
+      test('deleting a stale ${location.name} row deletes the bucket note',
+          () async {
+        await sources.delete(row(location));
+        expect(remote.objects, isEmpty);
+        expect(await local.list(), isEmpty);
+      });
+    }
+
+    test('Move to S3 on a stale local row is already done', () async {
+      remote.puts = 0;
+      await sources.uploadLocalToS3(row(NoteStorageLocation.local));
+      expect(remote.puts, 0);
+      expect(utf8.decode(remote.objects[entry.id]!), 'moved');
+    });
+
+    test('Move to S3 does not claim success while the bucket is unreachable',
+        () async {
+      remote.alwaysFail = StateError('offline');
+      await expectLater(
+        sources.uploadLocalToS3(row(NoteStorageLocation.local)),
+        throwsA(isA<FileSystemException>()),
+      );
+    });
+
+    test('an unlistable notes folder does not pass for a moved file', () async {
+      // The note is in the bucket, but whether the device still has it
+      // cannot be told: that must not be reported as a finished move.
+      await directory.delete(recursive: true);
+      addTearDown(() => directory.create());
+      await expectLater(
+        sources.uploadLocalToS3(row(NoteStorageLocation.local)),
+        throwsA(isA<FileSystemException>()),
+      );
+    });
+
+    test('editing a row over an unlistable folder still tries the device',
+        () async {
+      // Whether the device copy is gone cannot be told, so the row keeps
+      // counting as being in both places: the bucket gets the edit and the
+      // device error is reported, not skipped.
+      await directory.delete(recursive: true);
+      addTearDown(() => directory.create());
+      await expectLater(
+        sources.update(row(NoteStorageLocation.both), 'edited'),
+        throwsA(isA<FileSystemException>()),
+      );
+      expect(utf8.decode(remote.objects[entry.id]!), 'edited');
+    });
+
+    test('Move to S3 still fails for a note that is nowhere', () async {
+      remote.objects.clear();
+      await expectLater(
+        sources.uploadLocalToS3(row(NoteStorageLocation.local)),
+        throwsA(isA<FileSystemException>()),
+      );
+      expect(remote.objects, isEmpty);
+    });
+  });
+
+  test('a picker folder that cannot be listed keeps its rows as they are',
+      () async {
+    final spy = _SpyStore(local);
+    await useSpiedFolder(spy);
+    final entry = await local.create('device', now: DateTime(2026, 9, 1));
+    await remote.putText(entry.id, 'bucket');
+    final sources = await active.resolveBrowserSources();
+    spy.listError = StateError('document provider unavailable');
+
+    await sources.update(
+      LocatedLogEntry(entry: entry, location: NoteStorageLocation.both),
+      'edited',
+    );
+
+    // Not mistaken for a moved file: both sides received the edit.
+    expect(utf8.decode(remote.objects[entry.id]!), 'edited');
+    expect(await local.read(entry.id), 'edited');
+  });
+
+  test('the entry browser re-lists after a pass moved notes', () async {
+    final entry = await local.create('backlog', now: DateTime(2026, 9, 1));
+    final browser = EntryBrowserController(
+      session: session,
+      activeStore: active,
+      preferences: PreferencesService(),
+    );
+    addTearDown(browser.dispose);
+    browser.start();
+    expect((await browser.future)!.single.location, NoteStorageLocation.local);
+    final listed = browser.future;
+
+    await active.replayS3OnlyLocalNotes();
+
+    expect(browser.future, isNot(same(listed)));
+    final rows = (await browser.future)!;
+    expect(rows.single.id, entry.id);
+    expect(rows.single.location, NoteStorageLocation.s3);
+  });
+
   test(
     'recovery uploads missing notes and preserves newer remote content',
     () async {
@@ -1033,12 +1687,15 @@ void main() {
       await remote.putText(present.id, 'newer remote');
       await active.replayS3OnlyLocalNotes();
       final rows = await active.listForBrowser();
-      expect(
-        rows.map((row) => row.location),
-        everyElement(NoteStorageLocation.both),
-      );
+      // The uploaded note was moved. The conflicting one is in both places:
+      // the bucket's text wins there and the device keeps its own.
+      expect({for (final row in rows) row.id: row.location}, {
+        missing.id: NoteStorageLocation.s3,
+        present.id: NoteStorageLocation.both,
+      });
       expect(utf8.decode(remote.objects[missing.id]!), 'missing');
       expect(utf8.decode(remote.objects[present.id]!), 'newer remote');
+      expect(await local.read(present.id), 'stale');
     },
   );
 
@@ -1053,10 +1710,16 @@ void main() {
       await session.markS3Failed();
       expect(await session.retryS3(), S3RetryResult.reachable);
       expect(remote.objects.keys, [good.id]);
+      // Only the note that reached the bucket left the device.
       expect(await local.read(bad.id), 'rejected');
+      expect(
+        (await local.list()).map((entry) => entry.id),
+        unorderedEquals([bad.id, corrupt.id]),
+      );
       remote.failedKey = null;
       await active.replayS3OnlyLocalNotes();
       expect(utf8.decode(remote.objects[bad.id]!), 'rejected');
+      expect((await local.list()).map((entry) => entry.id), [corrupt.id]);
     },
   );
 
@@ -1070,6 +1733,27 @@ void main() {
       await remote.putText(entry.id, 'remote edit');
       await active.replayS3OnlyLocalNotes();
       expect(utf8.decode(remote.objects[entry.id]!), 'remote edit');
+      // The bucket now holds other text: the device copy is not redundant.
+      expect(await local.read(entry.id), 'safe');
+    },
+  );
+
+  test(
+    'lost upload response: the next pass finds the note in the bucket and moves it',
+    () async {
+      final entry = await local.create('safe', now: DateTime(2026, 9, 1));
+      remote.putSucceedsButThrows = StateError('response lost');
+      await active.replayS3OnlyLocalNotes();
+      // Unconfirmed, so nothing was deleted, although the PUT did land.
+      expect(await local.read(entry.id), 'safe');
+      expect(utf8.decode(remote.objects[entry.id]!), 'safe');
+      remote.puts = 0;
+
+      await active.replayS3OnlyLocalNotes();
+
+      expect(remote.puts, 0);
+      expect(utf8.decode(remote.objects[entry.id]!), 'safe');
+      expect(await local.list(), isEmpty);
     },
   );
 

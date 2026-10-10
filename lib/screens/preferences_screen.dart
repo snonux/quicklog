@@ -611,8 +611,9 @@ class _PreferencesScreenState extends State<PreferencesScreen>
                 ? 'Notes are written here as Markdown files.'
                 : _storageMode == StorageMode.both
                 ? 'Every note is written here and mirrored to S3.'
-                : 'Local directory is used when S3 is unavailable '
-                      '(degraded fallback).',
+                : 'S3 only keeps no notes here. Every note in this folder, '
+                      'old or new, is uploaded to S3 and then deleted here; '
+                      'new notes land here only while S3 is unavailable.',
             style: Theme.of(context).textTheme.bodySmall,
           ),
           const SizedBox(height: 16),
@@ -648,7 +649,9 @@ class _PreferencesScreenState extends State<PreferencesScreen>
             StorageMode.s3 =>
               'Notes go to a user-configured S3 endpoint only. On failure '
                   'the app falls back to local until you retry or the '
-                  'degrade window ends. Credentials stay on this device; '
+                  'degrade window ends. Every note already in the local '
+                  'directory is moved to S3 too: uploaded, then deleted '
+                  'from this device. Credentials stay on this device; '
                   'nothing is telemetried.',
             StorageMode.both =>
               'Every note is written to this directory and to S3. If S3 '

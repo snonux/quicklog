@@ -76,8 +76,9 @@ Future<void> copyLocalNoteToS3({
 }
 
 /// Copies local notes missing from a successful remote listing. Existing S3
-/// keys may contain newer edits and are skipped. Local copies stay
-/// safe, including when an upload response is lost or one note is unreadable.
+/// keys may contain newer edits and are skipped. This only copies: local
+/// files stay, also when an upload response is lost or one note is
+/// unreadable, and dropping one afterwards is the caller's decision.
 /// Returns only confirmed uploads.
 Future<List<LogEntry>> uploadMissingLocalNotes({
   required NoteStore local,
@@ -110,6 +111,8 @@ Future<List<LogEntry>> uploadMissingLocalNotes({
 /// be stale. Only a confirmed missing object permits a write; other read
 /// errors preserve the local note. This is best effort: the client has no
 /// conditional PUT, so a cross-device create between GET and PUT can race.
+/// [onExisting] gets the text the bucket already holds, so the caller can
+/// tell an identical copy from a conflicting one.
 Future<bool> copyTextToS3IfMissing({
   required NoteStore s3,
   required String id,
@@ -118,11 +121,11 @@ Future<bool> copyTextToS3IfMissing({
   bool Function()? shouldContinue,
   Future<bool> Function()? shouldContinueAsync,
   Future<void> Function(String payload)? onConfirmed,
-  Future<void> Function()? onExisting,
+  Future<void> Function(String remoteText)? onExisting,
 }) async {
   try {
-    await s3.read(id);
-    await onExisting?.call();
+    final remoteText = await s3.read(id);
+    await onExisting?.call(remoteText);
     return false;
   } catch (error) {
     if (!isMissingObjectError(error)) rethrow;

@@ -102,6 +102,9 @@ class EntryBrowserController extends ChangeNotifier {
     _wasDegraded = _session.isDegraded;
     _lastPreferredMode = _session.preferredMode;
     _session.addListener(_onSessionChanged);
+    // S3-only recovery deletes the device copies it moved to the bucket;
+    // re-list so no row keeps pointing at a file that is gone.
+    _active.localNotesMoved.addListener(_onLocalNotesMoved);
     // Session is loaded once in main(); avoid racing re-load (see HomeScreen).
     refresh();
   }
@@ -110,7 +113,12 @@ class EntryBrowserController extends ChangeNotifier {
   void dispose() {
     _disposed = true;
     _session.removeListener(_onSessionChanged);
+    _active.localNotesMoved.removeListener(_onLocalNotesMoved);
     super.dispose();
+  }
+
+  void _onLocalNotesMoved() {
+    if (!_disposed) refresh();
   }
 
   /// Re-list when preferred mode changes or degrade state flips (local

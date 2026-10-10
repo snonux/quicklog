@@ -87,15 +87,20 @@ void main() {
       await active.replayS3OnlyLocalNotes(retryWhileDegraded: true);
       expect(utf8.decode(remote.objects[entry.id]!), 'pending');
       expect(session.isDegraded, isFalse);
-      expect(await local.read(entry.id), 'pending');
+      // Confirmed in the bucket, so the device copy was moved, not kept.
+      expect(await local.list(), isEmpty);
     },
   );
 
   test(
     'confirmed receipts prevent any traffic after remote drain and survive restart',
     () async {
+      // A copy is only retained when the bucket held other text for its
+      // name; the receipt then records that this snapshot was inspected.
       final entry = await local.create('note', now: DateTime(2026, 10, 1));
+      await remote.putText(entry.id, 'other device');
       await active.replayS3OnlyLocalNotes();
+      expect(await local.read(entry.id), 'note');
       remote.objects.clear();
       remote.calls = 0;
       active = ActiveNoteStore(
@@ -383,8 +388,12 @@ void main() {
   test(
     'changed bucket or local folder gets an independent receipt scope',
     () async {
+      // Retained (the bucket held other text) and acknowledged for the
+      // first bucket only.
       final entry = await local.create('safe', now: DateTime(2026, 10, 1));
+      await remote.putText(entry.id, 'other device');
       await active.replayS3OnlyLocalNotes();
+      expect(await local.read(entry.id), 'safe');
       remote.objects.clear();
       await prefs.setS3Config(
         S3Config.fromRaw(
@@ -394,7 +403,7 @@ void main() {
         ),
       );
       await active.replayS3OnlyLocalNotes();
-      expect(remote.objects.containsKey(entry.id), isTrue);
+      expect(utf8.decode(remote.objects[entry.id]!), 'safe');
     },
   );
 }
