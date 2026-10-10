@@ -22,7 +22,7 @@ on:
   workflow_dispatch:
     inputs:
       tag:
-        description: Existing tag to build, e.g. v0.2.2
+        description: Tag to build or create, e.g. v0.2.2
         required: true
 
 permissions:
@@ -42,6 +42,24 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 45
     steps:
+      # Claude sessions cannot push tags, so a dispatch creates a missing one.
+      # Runs before the checkout, which needs the tag to exist.
+      - name: Create the tag if it does not exist yet
+        if: github.event_name == 'workflow_dispatch'
+        working-directory: .
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          if gh api "repos/$GITHUB_REPOSITORY/git/ref/tags/$TAG" >/dev/null 2>&1; then
+            echo "$TAG exists, rebuilding it"; exit 0
+          fi
+          version=$(gh api "repos/$GITHUB_REPOSITORY/contents/pubspec.yaml?ref=$GITHUB_SHA" -H "Accept: application/vnd.github.raw" | sed -n "s/^version: *\([^+]*\).*/\1/p")
+          if [ "v$version" != "$TAG" ]; then
+            echo "::error::Tag $TAG does not match version $version in pubspec.yaml"; exit 1
+          fi
+          gh api "repos/$GITHUB_REPOSITORY/git/refs" -f "ref=refs/tags/$TAG" -f "sha=$GITHUB_SHA" >/dev/null
+          echo "Created $TAG at $GITHUB_SHA"
+
       - uses: actions/checkout@v4
         with:
           ref: ${{ env.TAG }}
