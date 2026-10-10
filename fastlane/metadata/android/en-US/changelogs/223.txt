@@ -1,0 +1,6 @@
+S3 only now moves local notes into the bucket:
+
+* After an outage or a successful save, every note in the local folder is uploaded and then deleted from the device, also notes from before you chose S3 only. Choose Local + S3 to keep copies on the device.
+* A local copy stays if the bucket holds different text under the same name.
+
+Images in notes were removed again. Pictures and links added with 0.4.0 stay where they are.
