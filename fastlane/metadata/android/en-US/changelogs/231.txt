@@ -1,0 +1,2 @@
+* Editing a note while S3 is unavailable now shows a saved-on-device notice instead of an error.
+* Obsolete S3 upload records are cleaned up, while records for temporarily inaccessible local folders stay safe.
