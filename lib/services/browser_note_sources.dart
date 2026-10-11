@@ -57,8 +57,9 @@ class BrowserNoteSources {
   final Future<bool> Function(String id)? preserveNewerLocal;
 
   Future<LocatedLogEntry> _reconcileS3OnlyLocation(
-    LocatedLogEntry located,
-  ) async {
+    LocatedLogEntry located, {
+    bool allowLocalDelete = false,
+  }) async {
     final remote = s3;
     if (runMutation == null || !located.isLocalOnly || remote == null) {
       return located;
@@ -67,6 +68,16 @@ class BrowserNoteSources {
       await remote.read(located.id);
     } catch (error) {
       if (isMissingObjectError(error)) return located;
+      if (allowLocalDelete && error is! S3ObjectNotTextError) {
+        try {
+          // An unreachable bucket does not prove a local-only note has a
+          // remote copy. Delete the device note without a speculative S3
+          // delete, but keep stale rows whose file moved on the remote path.
+          if (!await _deviceFileGone(located.id)) return located;
+        } catch (_) {
+          // An unlistable folder cannot establish a local-only deletion.
+        }
+      }
       // Unknown remote state: try both sides. A transport failure must not
       // prevent the local edit/delete, and the existing error path reports it.
     }
@@ -102,8 +113,12 @@ class BrowserNoteSources {
   /// A row as S3-only mutations should see it: [_reconcileS3OnlyLocation]
   /// for a local row whose note reached the bucket, then
   /// [_withoutMovedLocalFile] for a device copy that went with it.
-  Future<LocatedLogEntry> _currentS3OnlyRow(LocatedLogEntry located) async =>
-      _withoutMovedLocalFile(await _reconcileS3OnlyLocation(located));
+  Future<LocatedLogEntry> _currentS3OnlyRow(
+    LocatedLogEntry located, {
+    bool allowLocalDelete = false,
+  }) async => _withoutMovedLocalFile(
+    await _reconcileS3OnlyLocation(located, allowLocalDelete: allowLocalDelete),
+  );
 
   /// Set by [list] when an S3 LIST fails; local rows are still returned.
   bool s3ListFailed = false;
@@ -213,7 +228,8 @@ class BrowserNoteSources {
     if (gate != null) {
       return gate(
         located.id,
-        () async => _delete(await _currentS3OnlyRow(located)),
+        () async =>
+            _delete(await _currentS3OnlyRow(located, allowLocalDelete: true)),
       );
     }
     final repairs = pendingRepairs;

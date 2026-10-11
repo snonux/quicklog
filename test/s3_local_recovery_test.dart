@@ -1556,6 +1556,76 @@ void main() {
     expect(await PreferencesService().dualWritePendingUploads(), isEmpty);
   });
 
+  test('deleting a local-only row succeeds while S3 is unreachable', () async {
+    final entry = await local.create('local', now: DateTime(2026, 9, 1));
+    remote.alwaysFail = StateError('offline');
+    final sources = await active.resolveBrowserSources();
+    final row = (await sources.list()).single;
+    expect(row.location, NoteStorageLocation.local);
+    expect(sources.s3ListFailed, isTrue);
+
+    await sources.entryStore(row).delete();
+
+    expect(await local.list(), isEmpty);
+    expect(await sources.list(), isEmpty);
+    expect(remote.objects.containsKey(entry.id), isFalse);
+  });
+
+  test('an offline local-only delete still reports a device failure', () async {
+    final entry = await local.create('local', now: DateTime(2026, 9, 1));
+    final spy = _SpyStore(local);
+    spy.onDelete = (_, _) async => throw StateError('device delete failed');
+    await useSpiedFolder(spy);
+    remote.alwaysFail = StateError('offline');
+    final sources = await active.resolveBrowserSources();
+    final row = (await sources.list()).single;
+
+    await expectLater(
+      sources.delete(row),
+      throwsA(
+        isA<StateError>().having(
+          (error) => error.message,
+          'message',
+          'device delete failed',
+        ),
+      ),
+    );
+    expect(await local.read(entry.id), 'local');
+  });
+
+  test('a local row whose S3 copy is not text deletes both copies', () async {
+    final entry = await local.create('local', now: DateTime(2026, 9, 1));
+    final sources = await active.resolveBrowserSources();
+    final row = (await sources.list()).single;
+    expect(row.location, NoteStorageLocation.local);
+    // A remote object can appear after the listing. Even undecodable bytes
+    // prove it exists, so deletion must include it.
+    await remote.putObject(entry.id, [0xff]);
+
+    await sources.delete(row);
+
+    expect(await local.list(), isEmpty);
+    expect(remote.objects, isEmpty);
+  });
+
+  test(
+    'an offline delete of a known both row reports the remote failure',
+    () async {
+      final entry = await local.create('both', now: DateTime(2026, 9, 1));
+      await remote.putText(entry.id, 'both');
+      final sources = await active.resolveBrowserSources();
+      final row = (await sources.list()).single;
+      expect(row.location, NoteStorageLocation.both);
+      final offline = StateError('offline');
+      remote.alwaysFail = offline;
+
+      await expectLater(sources.delete(row), throwsA(same(offline)));
+
+      expect(await local.list(), isEmpty);
+      expect(utf8.decode(remote.objects[entry.id]!), 'both');
+    },
+  );
+
   group('browser rows that outlived a move', () {
     late LogEntry entry;
     late BrowserNoteSources sources;
@@ -1595,6 +1665,22 @@ void main() {
       expect(remote.puts, 0);
       expect(utf8.decode(remote.objects[entry.id]!), 'moved');
     });
+
+    test(
+      'an offline delete of a moved local row reports the remote failure',
+      () async {
+        final offline = StateError('offline');
+        remote.alwaysFail = offline;
+
+        await expectLater(
+          sources.delete(row(NoteStorageLocation.local)),
+          throwsA(same(offline)),
+        );
+
+        expect(utf8.decode(remote.objects[entry.id]!), 'moved');
+        expect(await local.list(), isEmpty);
+      },
+    );
 
     test('Move to S3 does not claim success while the bucket is unreachable',
         () async {

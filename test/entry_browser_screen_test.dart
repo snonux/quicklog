@@ -4,10 +4,14 @@ import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:path/path.dart' as p;
 import 'package:quicklog/screens/entry_browser_screen.dart';
+import 'package:quicklog/services/active_note_store.dart';
+import 'package:quicklog/services/preferences.dart';
+import 'package:quicklog/services/s3_config.dart';
 import 'package:quicklog/services/s3_session_controller.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
 import 'io_pump.dart';
+import 'support/memory_s3_object_client.dart';
 
 void main() {
   TestWidgetsFlutterBinding.ensureInitialized();
@@ -81,6 +85,43 @@ void main() {
     await pumpWithIo(tester);
 
     expect(find.text('Delete entry?'), findsOneWidget);
+  });
+
+  testWidgets('an offline S3-only local deletion shows success and removes '
+      'the row', (tester) async {
+    final prefs = PreferencesService();
+    await tester.runAsync(() async {
+      await prefs.setStorageMode(StorageMode.s3);
+      await prefs.setS3Config(S3Config.fromRaw(
+        accessKeyId: 'test',
+        secretAccessKey: 'test',
+      ));
+      await session.load();
+    });
+    final remote = MemoryS3ObjectClient()..alwaysFail = StateError('offline');
+    final active = ActiveNoteStore(
+      preferences: prefs,
+      session: session,
+      s3ClientFactory: (_) => remote,
+    );
+    await tester.pumpWidget(
+      MaterialApp(
+        home: EntryBrowserScreen(session: session, activeStore: active),
+      ),
+    );
+    await pumpWithIo(tester);
+    expect(find.text('2026-05-07 14:30:45'), findsOneWidget);
+
+    await tester.tap(find.byIcon(Icons.delete_outline));
+    await pumpWithIo(tester);
+    await tester.tap(find.widgetWithText(FilledButton, 'Delete'));
+    await pumpWithIo(tester);
+
+    expect(await fileExists(tester, entryFile), isFalse);
+    expect(find.text('2026-05-07 14:30:45'), findsNothing);
+    expect(find.textContaining('Deleted ql-260507-143045.md'), findsOneWidget);
+    expect(find.textContaining('Could not delete'), findsNothing);
+    expect(tester.takeException(), isNull);
   });
 
   testWidgets('the row edit icon opens the editor and saving updates the list',
