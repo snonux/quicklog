@@ -100,7 +100,7 @@ internal class AtomicS3State(private val storage: S3StateStorage) {
         true
     }
 
-    fun confirmReceipt(scope: String, id: String, digest: String) = synchronized(lock) {
+    private fun receipts(): JSONObject {
         val root = JSONObject(storage.read(receiptsKey) ?: "{}")
         for (key in root.keys()) {
             val notes = root.getJSONObject(key)
@@ -108,6 +108,21 @@ internal class AtomicS3State(private val storage: S3StateStorage) {
                 if (notes.get(note) !is String) throw IllegalArgumentException("Invalid S3 receipt.")
             }
         }
+        return root
+    }
+
+    fun pruneReceipts(scope: String, localIds: Set<String>) = synchronized(lock) {
+        val root = receipts()
+        val notes = root.optJSONObject(scope) ?: return@synchronized
+        val removed = notes.keys().asSequence().filter { it !in localIds }.toList()
+        if (removed.isEmpty()) return@synchronized
+        for (id in removed) notes.remove(id)
+        if (notes.length() == 0) root.remove(scope)
+        storage.write(mapOf(receiptsKey to root.toString()))
+    }
+
+    fun confirmReceipt(scope: String, id: String, digest: String) = synchronized(lock) {
+        val root = receipts()
         val notes = root.optJSONObject(scope) ?: JSONObject()
         notes.put(id, digest)
         root.put(scope, notes)

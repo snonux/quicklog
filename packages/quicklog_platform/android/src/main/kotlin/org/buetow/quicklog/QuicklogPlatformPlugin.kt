@@ -49,6 +49,13 @@ class QuicklogPlatformPlugin : FlutterPlugin {
                             state.confirmReceipt(call.requireString("scope"), call.requireString("id"), call.requireString("digest"))
                             result.success(null)
                         }
+                        "receiptPrune" -> {
+                            val ids = call.argument<List<*>>("localIds")
+                                ?: throw IllegalArgumentException("Local note ids are required.")
+                            require(ids.all { it is String }) { "Invalid local note id." }
+                            state.pruneReceipts(call.requireString("scope"), ids.map { it as String }.toSet())
+                            result.success(null)
+                        }
                         else -> result.notImplemented()
                     }
                 } catch (e: Exception) {

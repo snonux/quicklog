@@ -77,6 +77,128 @@ void main() {
   });
 
   test(
+    'failed local listing preserves receipts after access is restored',
+    () async {
+      final entry = await local.create('kept', now: DateTime(2026, 10, 1));
+      final scope = S3UploadReceipts.scope(
+        await prefs.s3Config(),
+        directory.path,
+      );
+      await S3UploadReceipts(
+        preferences: prefs,
+      ).confirm(scope, entry.id, 'kept');
+      final expected = await prefs.s3UploadReceipts();
+      final movedPath = '${directory.path}-inaccessible';
+      final moved = await directory.rename(movedPath);
+      try {
+        // A regular file at the folder path fails listing on every platform,
+        // even when tests run with privileges that bypass permission bits.
+        await File(directory.path).writeAsString('blocking access');
+        expect(await local.list(), isEmpty);
+        await expectLater(
+          local.listStrict(),
+          throwsA(isA<FileSystemException>()),
+        );
+        await active.replayS3OnlyLocalNotes();
+        expect(await prefs.s3UploadReceipts(), expected);
+        expect(remote.calls, 0);
+      } finally {
+        await File(directory.path).delete();
+        await moved.rename(directory.path);
+      }
+      await active.replayS3OnlyLocalNotes();
+      expect(await prefs.s3UploadReceipts(), expected);
+      expect(await local.read(entry.id), 'kept');
+      expect(remote.calls, 0);
+    },
+  );
+
+  test(
+    'pruning lists local notes only after acquiring the shared lease',
+    () async {
+      final scope = S3UploadReceipts.scope(
+        await prefs.s3Config(),
+        directory.path,
+      );
+      var releases = 0;
+      var injected = false;
+      TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
+          .setMockMethodCallHandler(leaseChannel, (call) async {
+            if (call.method == 'acquire') {
+              if (injected) return true;
+              injected = true;
+              // Another engine finishes its save just before granting the lease.
+              final entry = await local.create(
+                'new',
+                now: DateTime(2026, 10, 1),
+              );
+              await S3UploadReceipts(
+                preferences: prefs,
+              ).confirm(scope, entry.id, 'new');
+              return true;
+            }
+            releases++;
+            return null;
+          });
+      active = ActiveNoteStore(
+        preferences: prefs,
+        session: session,
+        s3ClientFactory: (_) => remote,
+        operationLeaseFactory: () =>
+            S3OperationLease(channel: leaseChannel, android: true),
+      );
+      await active.replayS3OnlyLocalNotes();
+      final entries = await local.list();
+      expect(entries, hasLength(1));
+      expect((await prefs.s3UploadReceipts())[scope], {
+        entries.single.id: S3UploadReceipts.digest('new'),
+      });
+      expect(releases, greaterThanOrEqualTo(1));
+      expect(remote.calls, 0);
+    },
+  );
+
+  test(
+    'replay prunes moved notes even with an empty local directory',
+    () async {
+      final entry = await local.create('note', now: DateTime(2026, 10, 1));
+      final scope = S3UploadReceipts.scope(
+        await prefs.s3Config(),
+        directory.path,
+      );
+      final receipts = S3UploadReceipts(preferences: prefs);
+      await receipts.confirm('other scope', entry.id, 'other');
+      await active.replayS3OnlyLocalNotes();
+      expect(await local.list(), isEmpty);
+      expect((await prefs.s3UploadReceipts())[scope], contains(entry.id));
+      remote.calls = 0;
+      await active.replayS3OnlyLocalNotes();
+      expect((await prefs.s3UploadReceipts()).keys, ['other scope']);
+      expect(remote.calls, 0);
+    },
+  );
+
+  test(
+    'replay prunes absent IDs while keeping acknowledged local notes',
+    () async {
+      final entry = await local.create('kept', now: DateTime(2026, 10, 1));
+      final scope = S3UploadReceipts.scope(
+        await prefs.s3Config(),
+        directory.path,
+      );
+      final receipts = S3UploadReceipts(preferences: prefs);
+      await receipts.confirm(scope, entry.id, 'kept');
+      await receipts.confirm(scope, 'ql-261001-090001.md', 'gone');
+      await active.replayS3OnlyLocalNotes();
+      expect((await prefs.s3UploadReceipts())[scope], {
+        entry.id: S3UploadReceipts.digest('kept'),
+      });
+      expect(await local.read(entry.id), 'kept');
+      expect(remote.calls, 0);
+    },
+  );
+
+  test(
     'scheduled retry ignores degradation only when there are pending local notes',
     () async {
       await session.markS3Failed();

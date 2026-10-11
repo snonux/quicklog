@@ -152,6 +152,29 @@ class PreferencesService {
     await reload();
   }
 
+  /// Retain only receipts for the current local listing in this scope.
+  Future<void> pruneS3UploadReceipts(String scope, Set<String> localIds) async {
+    if (usesAtomicS3State) {
+      await _atomicState.invokeMethod<void>('receiptPrune', {
+        'scope': scope,
+        'localIds': localIds.toList(),
+      });
+      await reload();
+      return;
+    }
+    await reload();
+    final receipts = await s3UploadReceipts();
+    final notes = receipts[scope];
+    if (notes == null) return;
+    final removed = notes.keys.where((id) => !localIds.contains(id)).toList();
+    if (removed.isEmpty) return;
+    for (final id in removed) {
+      notes.remove(id);
+    }
+    if (notes.isEmpty) receipts.remove(scope);
+    await setS3UploadReceipts(receipts);
+  }
+
   /// Background engines have their own preference cache. Refresh before
   /// deciding whether a queued job still targets the selected settings.
   Future<void> reload() async {

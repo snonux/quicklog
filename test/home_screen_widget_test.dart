@@ -164,7 +164,9 @@ void main() {
     expect(tester.widget<FilledButton>(button).enabled, isFalse);
 
     s3.finishPut();
-    await tester.pumpAndSettle();
+    // A successful S3 save starts recovery, whose local listing holds the
+    // write lease. Let its real I/O finish before the next test starts.
+    await pumpWithIo(tester);
 
     expect(s3.objects, hasLength(1));
     expect(tester.widget<FilledButton>(button).enabled, isTrue);

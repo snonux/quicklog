@@ -109,6 +109,52 @@ void main() {
     );
   });
 
+  test(
+    'pruning retains live digests and other scopes, removing empty scopes',
+    () async {
+      await receipts.confirm('scope', 'kept', 'note');
+      await receipts.confirm('scope', 'gone', 'old');
+      await receipts.confirm('other', 'gone', 'other note');
+      await receipts.prune('scope', {'kept'});
+      expect(await prefs.s3UploadReceipts(), {
+        'scope': {'kept': S3UploadReceipts.digest('note')},
+        'other': {'gone': S3UploadReceipts.digest('other note')},
+      });
+      await receipts.prune('scope', {});
+      await receipts.prune('missing', {});
+      expect((await prefs.s3UploadReceipts()).keys, ['other']);
+    },
+  );
+
+  test('pruning and confirmations serialize across receipt services', () async {
+    await receipts.confirm('scope', 'gone', 'old');
+    await Future.wait([
+      receipts.prune('scope', {}),
+      S3UploadReceipts(preferences: prefs).confirm('scope', 'new', 'note'),
+      receipts.confirm('other', 'other', 'other note'),
+    ]);
+    expect(await prefs.s3UploadReceipts(), {
+      'scope': {'new': S3UploadReceipts.digest('note')},
+      'other': {'other': S3UploadReceipts.digest('other note')},
+    });
+  });
+
+  test(
+    'pruning corrupt receipts preserves the ledger and later writes recover',
+    () async {
+      final shared = await SharedPreferences.getInstance();
+      await shared.setString('S3UploadReceipts', '{damaged');
+      await expectLater(receipts.prune('scope', {}), throwsFormatException);
+      expect(shared.getString('S3UploadReceipts'), '{damaged');
+      await shared.setString('S3UploadReceipts', '{}');
+      await receipts.confirm('scope', 'id', 'note');
+      expect(
+        (await prefs.s3UploadReceipts())['scope']!['id'],
+        S3UploadReceipts.digest('note'),
+      );
+    },
+  );
+
   test('corrupt receipts do not overwrite themselves', () async {
     final shared = await SharedPreferences.getInstance();
     await shared.setString('S3UploadReceipts', '{damaged');

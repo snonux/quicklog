@@ -50,6 +50,15 @@ class S3UploadReceipts {
     return pending;
   }
 
+  /// Call with a fresh local listing while holding the S3 write lease.
+  Future<void> prune(String scope, Set<String> localIds) {
+    final result = _writes.then(
+      (_) => _prefs.pruneS3UploadReceipts(scope, localIds),
+    );
+    _writes = result.then((_) {}, onError: (Object _, StackTrace _) {});
+    return result;
+  }
+
   /// Acknowledge exactly the confirmed snapshot, never a later local edit.
   Future<void> confirm(String scope, String id, String text) {
     final result = _writes.then((_) async {

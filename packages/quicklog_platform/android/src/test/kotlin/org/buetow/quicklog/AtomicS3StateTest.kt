@@ -78,6 +78,54 @@ class AtomicS3StateTest {
     }
 
     @Test
+    fun pruningPreservesLiveDigestsAndOtherEngineScopes() {
+        val storage = MemoryS3State()
+        val foreground = AtomicS3State(storage)
+        val worker = AtomicS3State(storage)
+        foreground.confirmReceipt("scope", first, "kept")
+        foreground.confirmReceipt("scope", second, "gone")
+        worker.confirmReceipt("other", second, "other")
+        worker.pruneReceipts("scope", setOf(first))
+        var root = JSONObject(storage.values[AtomicS3State.receiptsKey]!!)
+        assertEquals("kept", root.getJSONObject("scope").getString(first))
+        assertFalse(root.getJSONObject("scope").has(second))
+        assertEquals("other", root.getJSONObject("other").getString(second))
+        foreground.confirmReceipt("scope", second, "new")
+        assertEquals("new", JSONObject(storage.values[AtomicS3State.receiptsKey]!!)
+            .getJSONObject("scope").getString(second))
+        worker.pruneReceipts("scope", emptySet())
+        root = JSONObject(storage.values[AtomicS3State.receiptsKey]!!)
+        assertFalse(root.has("scope"))
+        assertTrue(root.has("other"))
+    }
+
+    @Test
+    fun pruningNoOpDoesNotRewriteReceipts() {
+        val storage = MemoryS3State()
+        val state = AtomicS3State(storage)
+        state.pruneReceipts("missing", emptySet())
+        assertFalse(storage.values.containsKey(AtomicS3State.receiptsKey))
+        val original = """{ "scope": { "$first": "digest" } }"""
+        storage.values[AtomicS3State.receiptsKey] = original
+        state.pruneReceipts("scope", setOf(first))
+        state.pruneReceipts("missing", emptySet())
+        assertEquals(original, storage.values[AtomicS3State.receiptsKey])
+    }
+
+    @Test
+    fun pruningCorruptReceiptsFailsWithoutMutation() {
+        for (damaged in listOf("{broken", "{\"scope\":4}", "{\"scope\":{\"id\":4}}")) {
+            val storage = MemoryS3State()
+            storage.values[AtomicS3State.receiptsKey] = damaged
+            try {
+                AtomicS3State(storage).pruneReceipts("scope", emptySet())
+                fail("damaged receipts accepted")
+            } catch (_: Exception) { }
+            assertEquals(damaged, storage.values[AtomicS3State.receiptsKey])
+        }
+    }
+
+    @Test
     fun anOlderSuccessfulListCannotClearNewerFailureWindow() {
         val storage = MemoryS3State()
         storage.values["flutter.StorageMode"] = "s3"

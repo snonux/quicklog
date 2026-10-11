@@ -35,6 +35,17 @@ void main() {
         .setMockMethodCallHandler(channel, (call) async {
           final args = Map<String, dynamic>.from(call.arguments as Map);
           if (call.method == 'repairRead') return jsonEncode(document);
+          if (call.method == 'receiptPrune') {
+            final scope = args['scope'] as String;
+            final ids = (args['localIds'] as List).cast<String>().toSet();
+            receipts[scope]?.removeWhere((id, _) => !ids.contains(id));
+            if (receipts[scope]?.isEmpty ?? false) receipts.remove(scope);
+            await (await SharedPreferences.getInstance()).setString(
+              'S3UploadReceipts',
+              jsonEncode(receipts),
+            );
+            return null;
+          }
           if (call.method == 'receiptConfirm') {
             (receipts[args['scope'] as String] ??= {})[args['id'] as String] =
                 args['digest'] as String;
@@ -130,6 +141,25 @@ void main() {
           second: S3UploadReceipts.digest('new'),
         },
       });
+    },
+  );
+  test(
+    'native prune receives IDs and refreshes separate engine caches',
+    () async {
+      final uiReceipts = S3UploadReceipts(preferences: ui);
+      final workerReceipts = S3UploadReceipts(preferences: worker);
+      await uiReceipts.confirm('scope', first, 'kept');
+      await workerReceipts.confirm('scope', second, 'gone');
+      await uiReceipts.confirm('other', second, 'other');
+      await workerReceipts.prune('scope', {first});
+      expect(await worker.s3UploadReceipts(), {
+        'scope': {first: S3UploadReceipts.digest('kept')},
+        'other': {second: S3UploadReceipts.digest('other')},
+      });
+      await uiReceipts.confirm('scope', second, 'new');
+      expect((await ui.s3UploadReceipts())['scope']!.keys, [first, second]);
+      await uiReceipts.prune('scope', {});
+      expect((await ui.s3UploadReceipts()).keys, ['other']);
     },
   );
 }

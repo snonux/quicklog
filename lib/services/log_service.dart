@@ -82,21 +82,25 @@ class LocalNoteStore implements NoteStore {
 
   @override
   Future<List<LogEntry>> list() async {
-    final dir = Directory(directory);
-    final entries = <LogEntry>[];
     try {
-      // GrapheneOS Storage Scopes can report a directory as existing while
-      // still denying the actual listing, so treat that as "no entries yet"
-      // rather than surfacing an error for a folder the user hasn't scoped.
-      await for (final entity in dir.list(followLinks: false)) {
-        if (entity is! File) continue;
-        final id = p.basename(entity.path);
-        final ts = parseLogEntryId(id);
-        if (ts == null) continue;
-        entries.add(LogEntry(id: id, timestamp: ts));
-      }
+      return await listStrict();
     } on FileSystemException {
+      // Storage Scopes may deny listing even when the folder exists. The
+      // browser treats that as no entries yet, without changing stored state.
       return const [];
+    }
+  }
+
+  /// An authoritative listing for recovery decisions. Access failures must
+  /// propagate so an inaccessible folder cannot erase upload receipts.
+  Future<List<LogEntry>> listStrict() async {
+    final entries = <LogEntry>[];
+    await for (final entity in Directory(directory).list(followLinks: false)) {
+      if (entity is! File) continue;
+      final id = p.basename(entity.path);
+      final ts = parseLogEntryId(id);
+      if (ts == null) continue;
+      entries.add(LogEntry(id: id, timestamp: ts));
     }
     entries.sort((a, b) => b.timestamp.compareTo(a.timestamp));
     return entries;

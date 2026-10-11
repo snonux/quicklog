@@ -196,8 +196,8 @@ class ActiveNoteStore {
       (_acknowledgedNoteRevisions[scope] ?? 0) <= fallback.revision &&
       _session.preferredMode == StorageMode.s3;
 
-  /// Serialize creates with each recovery existence-check/PUT pair. Local
-  /// listing and reads stay outside this queue, and each note releases it.
+  /// Serialize creates with receipt pruning and each recovery
+  /// existence-check/PUT pair. Each note releases the lease.
   Future<T> _serializeS3OnlyWrite<T>(Future<T> Function() action) {
     _s3OnlyWritesPending++;
     final result = _s3OnlyWriteChain.then((_) => _withS3Lease(action));
@@ -470,11 +470,22 @@ class ActiveNoteStore {
       final location = await _resolveLocalWithKey();
       final local = location.store;
       final folderKey = location.key;
-      final localEntries = await local.list();
-      if (localEntries.isEmpty) return;
       final config = await _prefs.s3Config();
       if (!config.hasCredentials) return;
       final receiptScope = S3UploadReceipts.scope(config, folderKey);
+      final localEntries = await _serializeS3OnlyWrite(() async {
+        // Keep the listing and prune in the same cross-engine lease so a
+        // concurrent save cannot confirm a receipt absent from this snapshot.
+        final entries = await (local is LocalNoteStore
+            ? local.listStrict()
+            : local.list());
+        await _receipts.prune(
+          receiptScope,
+          entries.map((entry) => entry.id).toSet(),
+        );
+        return entries;
+      });
+      if (localEntries.isEmpty) return;
       final (:uploads, :pendingIds) = await _s3OnlyBacklog(
         local,
         localEntries,
