@@ -1,0 +1,1 @@
+* Deleting a local note in S3-only mode now succeeds without an error when S3 is unreachable.
