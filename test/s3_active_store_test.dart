@@ -1041,6 +1041,39 @@ void main() {
     expect(fakeS3.objects, isEmpty);
   });
 
+  testWidgets('saving a local note while S3 is unreachable is no error', (
+    tester,
+  ) async {
+    await useDualWriteMode();
+    const id = 'ql-260908-010000.md';
+    await writeLocal(tester, id, 'original body');
+    await tester.runAsync(() => fakeS3.putText(id, 'original body'));
+    await pumpBrowser(tester);
+
+    await tester.tap(find.byTooltip('Edit entry'));
+    await pumpWithIo(tester);
+    await tester.enterText(find.byType(TextField), 'edited body');
+    await tester.pump();
+    fakeS3.alwaysFail = Exception('network down');
+    await tester.tap(find.widgetWithText(FilledButton, 'Save'));
+    await pumpWithIo(tester);
+
+    expect(
+      await tester.runAsync(() => File(p.join(tmp.path, id)).readAsString()),
+      'edited body',
+    );
+    expect(find.textContaining('Saved on this device'), findsOneWidget);
+    expect(
+      tester.widget<SnackBar>(find.byType(SnackBar)).backgroundColor,
+      isNull,
+    );
+    expect(find.textContaining('Could not save'), findsNothing);
+    expect(find.byType(TextField), findsOneWidget);
+    expect(String.fromCharCodes(fakeS3.objects[id]!), 'original body');
+    final folders = await prefs.dualWritePendingFolders();
+    expect(folders[tmp.path]?.uploads, contains(id));
+  });
+
   testWidgets('deleting a local note while S3 is unreachable is no error', (
     tester,
   ) async {

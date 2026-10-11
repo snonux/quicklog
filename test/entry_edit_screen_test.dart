@@ -339,6 +339,10 @@ void main() {
     await tester.tap(find.widgetWithText(FilledButton, 'Save'));
     await pumpWithIo(tester);
     expect(find.textContaining('Could not save'), findsOneWidget);
+    expect(
+      tester.widget<SnackBar>(find.byType(SnackBar)).backgroundColor,
+      Colors.red,
+    );
 
     // The error snack sits on the action row.
     await tester.pump(const Duration(seconds: 4));

@@ -95,10 +95,11 @@ class _EntryEditScreenState extends State<EntryEditScreen> {
       // not call it unsaved, and stay so the message remains visible.
       // Don't prefix "Could not save". Leaving pops false; the browser
       // replays the queued upload without re-listing every row.
+      // Show a notice: the local save succeeded even though S3 is pending.
       if (!mounted) return;
       _original = text;
       setState(() => _saving = false);
-      _showSnack('$e', isError: true);
+      _showSnack('$e');
       return;
     } catch (e) {
       // Writing can be denied for files outside the app's storage scope;
