@@ -292,10 +292,10 @@ void main() {
       isEmpty,
     );
     expect(find.textContaining('Error:'), findsNothing);
-    expect(
-      find.text('S3 unavailable — the note was saved on this device.'),
-      findsOneWidget,
-    );
+    // Exactly one message: the degrade banner already says the note stayed
+    // on this device, so no snackbar repeats it at the bottom.
+    expect(find.textContaining('Using local (S3 unavailable)'), findsOneWidget);
+    expect(find.byType(SnackBar), findsNothing);
 
     // Drain the 1-hour degrade expiry Timer (armed by markS3Failed during
     // the tap) so no fake-clock timer is pending when the test ends.
@@ -364,15 +364,13 @@ void main() {
       isEmpty,
     );
     expect(find.textContaining('Error:'), findsNothing);
-    expect(
-      find.text('S3 unavailable — the note was saved on this device.'),
-      findsOneWidget,
-    );
-    // The dual-mode banner says local is still the primary target.
+    // The dual-mode banner says local is still the primary target, and is
+    // the only message: no snackbar repeats the outage.
     expect(
       find.textContaining('notes are still being saved locally'),
       findsOneWidget,
     );
+    expect(find.byType(SnackBar), findsNothing);
 
     // Drain the pending degrade expiry Timer (see above).
     await tester.pump(const Duration(hours: 1));

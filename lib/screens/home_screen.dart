@@ -236,7 +236,9 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
       // field rebuilds. Never erase text that was not part of this save.
       if (_controller.text == text) _resetInput();
       final message = _outcomeMessage(result.outcome);
-      if (message != null) {
+      // One message per save: while the degrade banner is up it already
+      // says S3 is unavailable and notes stay on this device.
+      if (message != null && !_bannerCovers(result.outcome)) {
         _showInfo('Saved', message);
       }
     } catch (e) {
@@ -259,6 +261,11 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
           'S3 settings invalid — the note was saved on this device. '
               'Check Preferences.',
       };
+
+  /// True when [S3DegradedBanner] already tells the user what [outcome]
+  /// would: S3 was skipped or failed and the note is on this device.
+  bool _bannerCovers(NoteCreateOutcome outcome) =>
+      outcome == NoteCreateOutcome.savedLocalOnly && _session.isDegraded;
 
   void _showError(Object error) {
     if (!mounted) return;
@@ -307,8 +314,13 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
         logFn: (_, t) async {
           try {
             // Same save path as the main Log text button; an optional custom
-            // message tells the handler where the note landed.
-            return _outcomeMessage((await _active.createNote(t)).outcome);
+            // message tells the handler where the note landed. While the
+            // banner already reports the outage, confirm the share plainly
+            // instead of repeating it; still a custom message, so the app
+            // stays in front where the banner is visible.
+            final outcome = (await _active.createNote(t)).outcome;
+            if (_bannerCovers(outcome)) return 'Shared text has been logged.';
+            return _outcomeMessage(outcome);
           } catch (e) {
             // A failed follow-up must not leave using an earlier leave=true.
             _leaveAfterShareDrain = false;

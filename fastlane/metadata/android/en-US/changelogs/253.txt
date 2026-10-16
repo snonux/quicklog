@@ -1,0 +1,2 @@
+* Saving while S3 is unavailable shows one message instead of the same warning twice.
+* Editing a note stored on the device in S3-only mode no longer reports an error when S3 is unreachable.
