@@ -31,15 +31,9 @@
                 <action android:name="android.intent.action.MAIN"/>
                 <category android:name="android.intent.category.LAUNCHER"/>
             </intent-filter>
-            <!-- Some launchers prefer routing SEND directly to the main activity. -->
-            <intent-filter>
-                <action android:name="android.intent.action.SEND"/>
-                <category android:name="android.intent.category.DEFAULT"/>
-                <data android:mimeType="text/plain"/>
-                <data android:mimeType="text/*"/>
-            </intent-filter>
         </activity>
-        <!-- Translucent share receiver: writes shared text to cache then hands off to MainActivity. -->
+        <!-- Sole SEND target so Quicklog appears once in the share chooser.
+             Writes shared text to cache, then hands off to MainActivity. -->
         <activity
             android:name=".ShareActivity"
             android:exported="true"
