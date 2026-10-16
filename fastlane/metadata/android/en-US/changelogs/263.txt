@@ -1,0 +1,1 @@
+* Quicklog now appears only once when choosing an app to share text with.
