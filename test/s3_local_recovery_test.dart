@@ -62,6 +62,7 @@ class _SpyStore implements NoteStore {
   final NoteStore _inner;
   Future<void> Function(String id)? afterRead;
   Future<void> Function(String id, String text)? onDelete;
+  Future<void> Function(String id, String text)? onUpdate;
   Object? listError;
 
   @override
@@ -89,7 +90,10 @@ class _SpyStore implements NoteStore {
       _inner.create(text, now: now);
 
   @override
-  Future<void> update(String id, String text) => _inner.update(id, text);
+  Future<void> update(String id, String text) async {
+    await onUpdate?.call(id, text);
+    await _inner.update(id, text);
+  }
 
   @override
   Future<String> firstLine(String id) => _inner.firstLine(id);
@@ -1554,6 +1558,34 @@ void main() {
     expect(utf8.decode(remote.objects[entry.id]!), 'uploaded');
     expect(await local.list(), isEmpty);
     expect(await PreferencesService().dualWritePendingUploads(), isEmpty);
+  });
+
+  test('editing a local-only row succeeds while S3 is unreachable', () async {
+    final entry = await local.create('local', now: DateTime(2026, 9, 1));
+    remote.alwaysFail = StateError('offline');
+    final sources = await active.resolveBrowserSources();
+    final row = (await sources.list()).single;
+    expect(row.location, NoteStorageLocation.local);
+
+    await sources.entryStore(row).update('edited');
+
+    expect(await local.read(entry.id), 'edited');
+    expect(remote.objects.containsKey(entry.id), isFalse);
+  });
+
+  test('an offline local-only edit still reports a device failure', () async {
+    await local.create('local', now: DateTime(2026, 9, 1));
+    final spy = _SpyStore(local);
+    spy.onUpdate = (_, _) async => throw StateError('device write failed');
+    await useSpiedFolder(spy);
+    remote.alwaysFail = StateError('offline');
+    final sources = await active.resolveBrowserSources();
+    final row = (await sources.list()).single;
+
+    await expectLater(
+      sources.update(row, 'edited'),
+      throwsA(isA<StateError>()),
+    );
   });
 
   test('deleting a local-only row succeeds while S3 is unreachable', () async {

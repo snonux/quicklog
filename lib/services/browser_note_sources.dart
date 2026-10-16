@@ -165,25 +165,39 @@ class BrowserNoteSources {
   /// device has the new text, and [replayPendingS3] overwrites the bucket
   /// later. A failed LIST hides remote ids, so a local-only row is still
   /// written to S3 in that case. S3-only mode has no queue and still throws
-  /// the raw S3 error. The attempt shares the repair lock with [replay] so a
+  /// the raw S3 error, except for a row listed as local-only whose device
+  /// copy took the edit (recovery uploads it later). The attempt shares the repair lock with [replay] so a
   /// save cannot land after a replay has already read older text.
   Future<void> update(LocatedLogEntry located, String text) {
     final gate = runMutation;
     if (gate != null) {
-      return gate(
-        located.id,
-        () async => _update(await _currentS3OnlyRow(located), text),
-      );
+      return gate(located.id, () async {
+        final current = await _currentS3OnlyRow(located);
+        // A local-only row is only written to S3 because the bucket could
+        // not say whether it holds the note. If that write fails too, the
+        // edit is still on the device and S3-only recovery uploads it when
+        // the bucket is back, so the save succeeded.
+        await _update(
+          current,
+          text,
+          s3Optional: located.isLocalOnly && current.hasLocal,
+        );
+      });
     }
     final repairs = pendingRepairs;
     if (repairs == null) return _update(located, text);
     return repairs.run(() => _update(located, text));
   }
 
-  Future<void> _update(LocatedLogEntry located, String text) async {
+  Future<void> _update(
+    LocatedLogEntry located,
+    String text, {
+    bool s3Optional = false,
+  }) async {
     located = await _includingLocalFile(located);
     Object? s3Error;
     Object? localError;
+    var localWritten = false;
     final remote = s3;
     final s3Attempted = _shouldWriteS3(located);
     if (s3Attempted && remote != null) {
@@ -197,6 +211,7 @@ class BrowserNoteSources {
         !(await preserveNewerLocal?.call(located.id) ?? false)) {
       try {
         await local.update(located.id, text);
+        localWritten = true;
       } catch (e) {
         localError = e;
       }
@@ -209,6 +224,9 @@ class BrowserNoteSources {
       localError: localError,
     );
     if (pending != null) throw pending;
+    if (s3Optional && localWritten && s3Error is! ArgumentError) {
+      return;
+    }
     final firstError = s3Error ?? localError;
     if (firstError != null) throw firstError;
   }
